@@ -1340,7 +1340,8 @@ function toast(msg, type="default") {
 /* ══ 컴포넌트 ════════════════════════════════════════════════════════════════ */
 
 // ─ Topbar ─
-function Topbar({page, setPage, user, onLogout}) {
+function Topbar({page, setPage, user, onLogout, onExport, onImport}) {
+  const importRef = useRef(null);
   const pages = [
     {id:"dashboard",label:"대시보드"},
     {id:"projects",label:"프로젝트"},
@@ -1367,6 +1368,24 @@ function Topbar({page, setPage, user, onLogout}) {
       </nav>
       <div className="user">
         <SyncStatusBar/>
+        {onExport && (
+          <button onClick={onExport} title="데이터 내보내기" style={{
+            background:"rgba(16,185,129,.1)",border:"1px solid rgba(16,185,129,.2)",
+            color:"#34d399",borderRadius:7,padding:"4px 10px",fontSize:11,fontWeight:600,
+            cursor:"pointer",transition:"all .15s",whiteSpace:"nowrap",
+          }}>📦 백업</button>
+        )}
+        {onImport && (
+          <>
+            <input ref={importRef} type="file" accept=".json" style={{display:"none"}}
+              onChange={e=>{if(e.target.files[0])onImport(e.target.files[0]);e.target.value="";}}/>
+            <button onClick={()=>importRef.current?.click()} title="데이터 가져오기" style={{
+              background:"rgba(99,102,241,.1)",border:"1px solid rgba(99,102,241,.2)",
+              color:"#a5b4fc",borderRadius:7,padding:"4px 10px",fontSize:11,fontWeight:600,
+              cursor:"pointer",transition:"all .15s",whiteSpace:"nowrap",
+            }}>📥 복원</button>
+          </>
+        )}
         <div style={{width:8,height:8,borderRadius:"50%",background:"#10b981",boxShadow:"0 0 6px #10b981"}}/>
         <span className="user-name">{user?.name} {user?.role}</span>
         <div className="user-badge" style={{background:user?.color||"linear-gradient(135deg,#6366f1,#ec4899)"}}>{user?.initial||"?"}</div>
@@ -5305,9 +5324,40 @@ function App() {
     return null;
   };
 
+  // 데이터 내보내기
+  const exportData = () => {
+    const data = { projects, users, priceList, expenses, laborCosts, purchases, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type:"application/json"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `EventOS_backup_${today}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("📦 데이터가 다운로드되었습니다", "success");
+  };
+
+  // 데이터 가져오기
+  const importData = (file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        if (data.projects) setProjects(data.projects);
+        if (data.users) setUsers(data.users);
+        if (data.priceList) setPriceList(data.priceList);
+        if (data.expenses) setExpenses(data.expenses);
+        if (data.laborCosts) setLaborCosts(data.laborCosts);
+        if (data.purchases) setPurchases(data.purchases);
+        toast("✅ 데이터를 성공적으로 불러왔습니다!", "success");
+      } catch { toast("❌ 파일을 읽을 수 없습니다", "error"); }
+    };
+    reader.readAsText(file);
+  };
+
   return (
     <>
-      <Topbar page={page} setPage={setPage} user={authedUser} onLogout={handleLogout}/>
+      <Topbar page={page} setPage={setPage} user={authedUser} onLogout={handleLogout}
+        onExport={exportData} onImport={importData}/>
       <BottomNav page={page} setPage={setPage} user={authedUser}/>
       <div id="main">{renderPage()}</div>
     </>
