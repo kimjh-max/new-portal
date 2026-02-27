@@ -152,6 +152,9 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
 /* ─ AI panel ─ */
 .ai-panel{background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(139,92,246,.08));border:1px solid rgba(99,102,241,.2);border-radius:var(--radius);padding:16px}
 
+/* ─ Sync spinner ─ */
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+
 /* ══ RESPONSIVE ══ */
 @media(max-width:768px){
   #topbar nav{display:none}
@@ -197,6 +200,187 @@ const INIT_USERS = [
 const MAX_ATTEMPTS = 5;
 const LOCK_MINUTES = 10;
 const USER_COLORS = ["#6366f1","#ec4899","#10b981","#f59e0b","#06b6d4","#a855f7","#f97316","#84cc16"];
+
+/* ══ Google Drive 연동 설정 ══════════════════════════════════════════════════
+   Google Apps Script Web App URL을 아래에 설정하세요.
+   설정 방법: https://script.google.com 에서 Code.gs 배포 후 URL 복사
+═══════════════════════════════════════════════════════════════════════════ */
+const DRIVE_CONFIG = {
+  GAS_URL: "",  // ← Google Apps Script 배포 URL을 여기에 입력
+  ROOT_FOLDER_ID: "17KmQNhns3Q35o2psQIw7NMBs3BawdRcu",
+  SYNC_DEBOUNCE_MS: 3000,
+  ENABLED: false, // GAS_URL 설정 시 자동 활성화
+};
+// GAS_URL이 있으면 자동 활성화
+if (DRIVE_CONFIG.GAS_URL) DRIVE_CONFIG.ENABLED = true;
+
+/* ── localStorage 영속화 + Google Drive 동기화 모듈 ────────────────────────── */
+
+// SyncManager: 디바운스된 Google Drive 동기화 큐
+const SyncManager = {
+  _timers: {},
+  _status: "idle", // "idle" | "syncing" | "success" | "error" | "offline"
+  _listeners: new Set(),
+  _lastSyncTime: null,
+
+  subscribe(fn) { this._listeners.add(fn); return () => this._listeners.delete(fn); },
+  _notify() { this._listeners.forEach(fn => fn(this._status, this._lastSyncTime)); },
+
+  setStatus(s) { this._status = s; this._notify(); },
+  getStatus() { return this._status; },
+
+  // GAS에 데이터 저장 (디바운스)
+  queueSync(action, data) {
+    if (!DRIVE_CONFIG.ENABLED) return;
+    if (!navigator.onLine) { this.setStatus("offline"); return; }
+
+    clearTimeout(this._timers[action]);
+    this._timers[action] = setTimeout(async () => {
+      this.setStatus("syncing");
+      try {
+        const res = await fetch(DRIVE_CONFIG.GAS_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: JSON.stringify({ action, ...data }),
+          redirect: "follow",
+        });
+        const text = await res.text();
+        let result;
+        try { result = JSON.parse(text); } catch { result = { ok: true }; }
+        if (result.error) throw new Error(result.error);
+        this._lastSyncTime = new Date();
+        this.setStatus("success");
+      } catch (err) {
+        console.error("[DriveSync]", action, err);
+        this.setStatus("error");
+      }
+    }, DRIVE_CONFIG.SYNC_DEBOUNCE_MS);
+  },
+
+  // GAS에서 전체 데이터 로드
+  async loadFromCloud() {
+    if (!DRIVE_CONFIG.ENABLED) return null;
+    if (!navigator.onLine) { this.setStatus("offline"); return null; }
+    this.setStatus("syncing");
+    try {
+      const res = await fetch(`${DRIVE_CONFIG.GAS_URL}?action=loadAll`, { redirect: "follow" });
+      const text = await res.text();
+      const data = JSON.parse(text);
+      if (data.error) throw new Error(data.error);
+      this._lastSyncTime = new Date();
+      this.setStatus("success");
+      return data;
+    } catch (err) {
+      console.error("[DriveSync] loadAll error:", err);
+      this.setStatus("error");
+      return null;
+    }
+  },
+
+  // 파일 업로드
+  async uploadFile(projectName, fileName, base64Data, mimeType) {
+    if (!DRIVE_CONFIG.ENABLED) { toast("Google Drive가 연결되지 않았습니다.", "error"); return null; }
+    this.setStatus("syncing");
+    try {
+      const res = await fetch(DRIVE_CONFIG.GAS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ action: "uploadFile", projectName, fileName, base64Data, mimeType }),
+        redirect: "follow",
+      });
+      const text = await res.text();
+      const result = JSON.parse(text);
+      if (result.error) throw new Error(result.error);
+      this._lastSyncTime = new Date();
+      this.setStatus("success");
+      return result;
+    } catch (err) {
+      console.error("[DriveSync] uploadFile error:", err);
+      this.setStatus("error");
+      return null;
+    }
+  },
+
+  // 파일 목록 조회
+  async listFiles(projectName) {
+    if (!DRIVE_CONFIG.ENABLED) return [];
+    try {
+      const res = await fetch(`${DRIVE_CONFIG.GAS_URL}?action=listFiles&projectName=${encodeURIComponent(projectName)}`, { redirect: "follow" });
+      const text = await res.text();
+      const result = JSON.parse(text);
+      return result.files || [];
+    } catch (err) {
+      console.error("[DriveSync] listFiles error:", err);
+      return [];
+    }
+  },
+};
+
+// 온라인/오프라인 감지
+if (typeof window !== "undefined") {
+  window.addEventListener("online", () => { if (SyncManager._status === "offline") SyncManager.setStatus("idle"); });
+  window.addEventListener("offline", () => SyncManager.setStatus("offline"));
+}
+
+// usePersistedState: useState + localStorage 자동 동기화
+function usePersistedState(key, defaultValue) {
+  const [state, setState] = useState(() => {
+    try {
+      const saved = localStorage.getItem(key);
+      if (saved !== null) return JSON.parse(saved);
+    } catch {}
+    return defaultValue;
+  });
+
+  const setPersistedState = useCallback((valOrFn) => {
+    setState(prev => {
+      const next = typeof valOrFn === "function" ? valOrFn(prev) : valOrFn;
+      try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, [key]);
+
+  return [state, setPersistedState];
+}
+
+// useSyncStatus: SyncManager 상태를 React 상태로 연결
+function useSyncStatus() {
+  const [status, setStatus] = useState(SyncManager.getStatus());
+  const [lastSync, setLastSync] = useState(SyncManager._lastSyncTime);
+  useEffect(() => {
+    return SyncManager.subscribe((s, t) => { setStatus(s); setLastSync(t); });
+  }, []);
+  return { status, lastSync };
+}
+
+// SyncStatusBar 컴포넌트: Topbar에 표시되는 동기화 상태
+function SyncStatusBar() {
+  const { status, lastSync } = useSyncStatus();
+  if (!DRIVE_CONFIG.ENABLED) {
+    return (
+      <div style={{display:"flex",alignItems:"center",gap:5,padding:"3px 10px",borderRadius:6,
+        background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.2)",fontSize:11,color:"#fbbf24",whiteSpace:"nowrap"}}>
+        <span>📁</span><span>Drive 미연결</span>
+      </div>
+    );
+  }
+  const configs = {
+    idle:    { icon:"☁️", text:"대기", bg:"rgba(255,255,255,.04)", border:"var(--border)", color:"var(--txt4)" },
+    syncing: { icon:"🔄", text:"저장 중...", bg:"rgba(99,102,241,.1)", border:"rgba(99,102,241,.2)", color:"#a5b4fc" },
+    success: { icon:"✅", text: lastSync ? `${lastSync.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})} 동기화` : "동기화됨", bg:"rgba(16,185,129,.08)", border:"rgba(16,185,129,.2)", color:"#34d399" },
+    error:   { icon:"⚠️", text:"동기화 실패", bg:"rgba(239,68,68,.08)", border:"rgba(239,68,68,.2)", color:"#fca5a5" },
+    offline: { icon:"📴", text:"오프라인", bg:"rgba(107,114,128,.1)", border:"rgba(107,114,128,.2)", color:"#9ca3af" },
+  };
+  const c = configs[status] || configs.idle;
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:5,padding:"3px 10px",borderRadius:6,
+      background:c.bg,border:`1px solid ${c.border}`,fontSize:11,color:c.color,whiteSpace:"nowrap",
+      transition:"all .3s"}}>
+      <span style={status==="syncing"?{animation:"spin 1s linear infinite"}:{}}>{c.icon}</span>
+      <span>{c.text}</span>
+    </div>
+  );
+}
 
 /* ── 로그인 페이지 ─────────────────────────────────────────────────────────── */
 function LoginPage({ onLogin, users }) {
@@ -1182,6 +1366,7 @@ function Topbar({page, setPage, user, onLogout}) {
         ))}
       </nav>
       <div className="user">
+        <SyncStatusBar/>
         <div style={{width:8,height:8,borderRadius:"50%",background:"#10b981",boxShadow:"0 0 6px #10b981"}}/>
         <span className="user-name">{user?.name} {user?.role}</span>
         <div className="user-badge" style={{background:user?.color||"linear-gradient(135deg,#6366f1,#ec4899)"}}>{user?.initial||"?"}</div>
@@ -2660,6 +2845,196 @@ function ReportsTabWrapper({project}) {
 // helper to use CSS vars in inline styles
 function var_(name) { return `var(--${name})`; }
 
+// ─ File Manager (Google Drive 연동 파일 관리) ─
+function FileManager({project, onUpdate}) {
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState("");
+  const [driveFiles, setDriveFiles] = useState([]);
+  const [loadingFiles, setLoadingFiles] = useState(false);
+  const fileInputRef = useRef(null);
+
+  // Drive에서 파일 목록 로드
+  useEffect(() => {
+    if (!DRIVE_CONFIG.ENABLED) return;
+    setLoadingFiles(true);
+    SyncManager.listFiles(project.name).then(files => {
+      setDriveFiles(files);
+      setLoadingFiles(false);
+    });
+  }, [project.name]);
+
+  // 파일 선택/드롭 핸들러
+  const handleFiles = async (fileList) => {
+    if (!fileList || !fileList.length) return;
+
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      if (file.size > 50 * 1024 * 1024) {
+        toast(`⚠️ "${file.name}" 파일이 50MB를 초과합니다.`, "error");
+        continue;
+      }
+
+      setUploading(true);
+      setUploadProgress(`"${file.name}" 업로드 중... (${(file.size/1024/1024).toFixed(1)}MB)`);
+
+      // base64 변환
+      const base64 = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(",")[1]);
+        reader.readAsDataURL(file);
+      });
+
+      if (DRIVE_CONFIG.ENABLED) {
+        // Google Drive에 업로드
+        const result = await SyncManager.uploadFile(project.name, file.name, base64, file.type);
+        if (result && result.ok) {
+          // 프로젝트 files 배열 업데이트
+          const fileEntry = { name: file.name, driveFileId: result.fileId, mimeType: file.type, size: file.size, uploadedAt: new Date().toISOString(), url: result.url };
+          const updatedFiles = [...(project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== file.name), fileEntry];
+          onUpdate({...project, files: updatedFiles});
+          setDriveFiles(prev => [...prev.filter(f=>f.name!==file.name), { fileId: result.fileId, name: file.name, mimeType: file.type, size: file.size, url: result.url, lastUpdated: new Date().toISOString() }]);
+          toast(`✅ "${file.name}" 업로드 완료`, "success");
+        } else {
+          toast(`❌ "${file.name}" 업로드 실패`, "error");
+        }
+      } else {
+        // Drive 미연결: 파일명만 저장
+        const fileEntry = { name: file.name, mimeType: file.type, size: file.size, uploadedAt: new Date().toISOString() };
+        const updatedFiles = [...(project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== file.name), fileEntry];
+        onUpdate({...project, files: updatedFiles});
+        toast(`📁 "${file.name}" 등록됨 (Drive 연결 시 자동 업로드)`, "warn");
+      }
+    }
+    setUploading(false);
+    setUploadProgress("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleDrop = (e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); };
+  const handleDragOver = (e) => { e.preventDefault(); };
+
+  // 파일 다운로드
+  const handleDownload = async (file) => {
+    if (file.url) {
+      window.open(file.url, "_blank");
+    } else if (file.driveFileId && DRIVE_CONFIG.ENABLED) {
+      try {
+        const res = await fetch(`${DRIVE_CONFIG.GAS_URL}?action=downloadFile&fileId=${file.driveFileId}`, {redirect:"follow"});
+        const data = await res.json();
+        if (data.webViewLink) window.open(data.webViewLink, "_blank");
+      } catch { toast("다운로드 링크를 가져올 수 없습니다", "error"); }
+    } else {
+      toast("Google Drive 연결 후 다운로드 가능합니다", "warn");
+    }
+  };
+
+  // 파일 삭제
+  const handleDelete = async (file) => {
+    const fileName = typeof file === "string" ? file : file.name;
+    // 프로젝트에서 제거
+    const updatedFiles = (project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== fileName);
+    onUpdate({...project, files: updatedFiles});
+    // Drive에서도 삭제
+    if (file.driveFileId && DRIVE_CONFIG.ENABLED) {
+      try {
+        await fetch(DRIVE_CONFIG.GAS_URL, {
+          method:"POST", headers:{"Content-Type":"text/plain"},
+          body: JSON.stringify({action:"deleteFile", fileId: file.driveFileId}), redirect:"follow",
+        });
+      } catch {}
+    }
+    setDriveFiles(prev => prev.filter(f=>f.name!==fileName));
+    toast(`🗑️ "${fileName}" 삭제됨`);
+  };
+
+  // files 배열 통합 (기존 string[] + 새 object[])
+  const allFiles = useMemo(() => {
+    const projectFiles = (project.files||[]).map(f => typeof f === "string" ? { name: f, legacy: true } : f);
+    // driveFiles에만 있는 파일 추가
+    const projNames = new Set(projectFiles.map(f=>f.name));
+    const extra = driveFiles.filter(df => !projNames.has(df.name));
+    return [...projectFiles, ...extra];
+  }, [project.files, driveFiles]);
+
+  const fmtSize = (s) => s ? (s > 1048576 ? (s/1048576).toFixed(1)+"MB" : (s/1024).toFixed(0)+"KB") : "";
+
+  return (
+    <div>
+      <div style={{color:"var(--txt)",fontWeight:700,marginBottom:14,fontSize:14}}>📁 파일 & 공유 드라이브</div>
+
+      {/* 업로드 드롭존 */}
+      <input ref={fileInputRef} type="file" multiple style={{display:"none"}} onChange={e=>handleFiles(e.target.files)}/>
+      <div className="drop-zone" onClick={()=>fileInputRef.current?.click()} onDrop={handleDrop} onDragOver={handleDragOver}
+        style={uploading?{borderColor:"#6366f1",background:"rgba(99,102,241,.06)"}:{}}>
+        {uploading ? (
+          <>
+            <div style={{fontSize:32,marginBottom:10,animation:"spin 1s linear infinite"}}>🔄</div>
+            <div style={{color:"#a5b4fc",marginBottom:6}}>{uploadProgress}</div>
+          </>
+        ) : (
+          <>
+            <div style={{fontSize:32,marginBottom:10}}>☁️</div>
+            <div style={{color:"#94a3b8",marginBottom:6}}>파일 드래그 또는 클릭하여 업로드</div>
+            <div style={{color:"var(--txt4)",fontSize:12}}>
+              {DRIVE_CONFIG.ENABLED ? "업로드 파일은 Google Drive에 자동 저장됩니다" : "Google Drive 연결 후 클라우드 동기화 가능"}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* 파일 목록 */}
+      <div className="card-sm" style={{marginTop:14}}>
+        <div className="flex-between" style={{marginBottom:10}}>
+          <span style={{color:"var(--txt3)",fontSize:12}}>📂 Google Drive: /{project.name}</span>
+          {loadingFiles && <span style={{color:"var(--txt4)",fontSize:11}}>로딩 중...</span>}
+          {DRIVE_CONFIG.ENABLED && !loadingFiles && (
+            <button className="btn btn-ghost" style={{padding:"2px 8px",fontSize:10}}
+              onClick={()=>{setLoadingFiles(true);SyncManager.listFiles(project.name).then(f=>{setDriveFiles(f);setLoadingFiles(false)})}}>
+              🔄 새로고침
+            </button>
+          )}
+        </div>
+
+        {allFiles.length === 0 && (
+          <div style={{textAlign:"center",color:"var(--txt4)",padding:20,fontSize:13}}>등록된 파일이 없습니다</div>
+        )}
+
+        {allFiles.map((f, i) => (
+          <div key={f.name+i} className="flex-between" style={{padding:"8px 0",borderBottom:"1px solid rgba(255,255,255,.04)",flexWrap:"wrap",gap:6}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,flex:1,minWidth:0}}>
+              <span style={{fontSize:16,flexShrink:0}}>{
+                f.mimeType?.includes("pdf") ? "📄" :
+                f.mimeType?.includes("image") ? "🖼️" :
+                f.mimeType?.includes("video") ? "🎬" :
+                f.mimeType?.includes("zip") || f.mimeType?.includes("compressed") ? "📦" :
+                f.mimeType?.includes("presentation") || f.name?.endsWith(".pptx") ? "📊" : "📎"
+              }</span>
+              <div style={{minWidth:0}}>
+                <div style={{color:"var(--txt2)",fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.name}</div>
+                {(f.size || f.uploadedAt) && (
+                  <div style={{color:"var(--txt4)",fontSize:10}}>
+                    {fmtSize(f.size)} {f.uploadedAt ? ` · ${f.uploadedAt.slice(0,10)}` : ""}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
+              {(f.driveFileId || f.url) && <span style={{color:"#10b981",fontSize:11}}>Drive ✓</span>}
+              {f.legacy && !f.driveFileId && <span style={{color:"var(--txt4)",fontSize:10}}>로컬</span>}
+              <button className="btn btn-ghost" style={{padding:"3px 10px",fontSize:11}}
+                onClick={()=>handleDownload(f)}>
+                {f.driveFileId || f.url ? "열기" : "다운로드"}
+              </button>
+              <button className="btn btn-ghost" style={{padding:"3px 8px",fontSize:11,color:"#fca5a5",borderColor:"rgba(239,68,68,.2)"}}
+                onClick={()=>handleDelete(f)}>삭제</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─ Project Detail ─
 function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
   const [tab, setTab] = useState("overview");
@@ -2745,27 +3120,7 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
       {tab==="logs"&&<WorkLog project={project} onUpdate={onUpdate} users={users} currentUser={currentUser}/>}
       {tab==="reports"&&<ReportsTabWrapper project={project}/>}
       {tab==="files"&&(
-        <div>
-          <div style={{color:"var(--txt)",fontWeight:700,marginBottom:14,fontSize:14}}>📁 파일 & 공유 드라이브</div>
-          <div className="drop-zone" onClick={()=>toast("📤 파일 업로드 준비 중 (Google Drive 연동 예정)","warn")}>
-            <div style={{fontSize:32,marginBottom:10}}>☁️</div>
-            <div style={{color:"#94a3b8",marginBottom:6}}>파일 드래그 또는 클릭하여 업로드</div>
-            <div style={{color:"var(--txt4)",fontSize:12}}>업로드 파일은 Google Drive 공유 드라이브 자동 동기화</div>
-          </div>
-          <div className="card-sm" style={{marginTop:14}}>
-            <div style={{color:"var(--txt3)",fontSize:12,marginBottom:10}}>📂 Google Drive: /EventOS/{project.name}</div>
-            {project.files.map(f=>(
-              <div key={f} className="flex-between" style={{padding:"8px 0",borderBottom:"1px solid rgba(255,255,255,.04)"}}>
-                <span style={{color:"var(--txt2)",fontSize:13}}>📄 {f}</span>
-                <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                  <span style={{color:"#10b981",fontSize:11}}>Drive ✓</span>
-                  <button className="btn btn-ghost" style={{padding:"3px 10px",fontSize:11}}
-                    onClick={()=>toast(`📥 "${f}" 다운로드 준비 중`)}>다운로드</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <FileManager project={project} onUpdate={onUpdate}/>
       )}
     </div>
   );
@@ -3126,48 +3481,77 @@ function MyWork({projects, user, users, setDetail, setPage, expenses=[], laborCo
 
 // ─ Files Page ─
 function FilesPage({projects}) {
+  const driveConnected = DRIVE_CONFIG.ENABLED;
+  const totalFiles = projects.reduce((s,p)=>(s+(p.files||[]).length),0);
+
+  // 파일 이름 추출 헬퍼
+  const getFileName = (f) => typeof f === "string" ? f : f.name;
+  const getFileObj = (f) => typeof f === "string" ? { name: f, legacy: true } : f;
+
+  const handleFileOpen = async (file) => {
+    const f = getFileObj(file);
+    if (f.url) { window.open(f.url, "_blank"); return; }
+    if (f.driveFileId && driveConnected) {
+      try {
+        const res = await fetch(`${DRIVE_CONFIG.GAS_URL}?action=downloadFile&fileId=${f.driveFileId}`, {redirect:"follow"});
+        const data = await res.json();
+        if (data.webViewLink) window.open(data.webViewLink, "_blank");
+      } catch { toast("파일을 열 수 없습니다", "error"); }
+    } else {
+      toast("Google Drive 연결 후 파일을 열 수 있습니다", "warn");
+    }
+  };
+
   return (
     <div>
       <h1 style={{color:"var(--txt)",fontSize:20,fontWeight:800,marginBottom:4}}>파일 / 공유 드라이브</h1>
-      <div style={{color:"var(--txt4)",fontSize:13,marginBottom:24}}>전체 프로젝트 파일 관리</div>
+      <div style={{color:"var(--txt4)",fontSize:13,marginBottom:24}}>전체 프로젝트 파일 관리 · {totalFiles}개 파일</div>
       {/* Drive 상태 */}
       <div style={{
-        background:"rgba(99,102,241,.08)",border:"1px solid rgba(99,102,241,.2)",borderRadius:12,padding:18,marginBottom:22,
+        background: driveConnected ? "rgba(99,102,241,.08)" : "rgba(245,158,11,.08)",
+        border: `1px solid ${driveConnected ? "rgba(99,102,241,.2)" : "rgba(245,158,11,.2)"}`,
+        borderRadius:12,padding:18,marginBottom:22,
         display:"flex",alignItems:"center",gap:14,flexWrap:"wrap",
       }}>
         <span style={{fontSize:28}}>☁️</span>
         <div>
-          <div style={{color:"#a5b4fc",fontWeight:700,fontSize:14}}>Google Drive 공유 드라이브 연동</div>
-          <div style={{color:"var(--txt4)",fontSize:12}}>모든 프로젝트 파일이 /EventOS/ 폴더에 자동 동기화됩니다</div>
+          <div style={{color: driveConnected?"#a5b4fc":"#fbbf24",fontWeight:700,fontSize:14}}>
+            Google Drive {driveConnected ? "연동 활성화" : "미연결"}
+          </div>
+          <div style={{color:"var(--txt4)",fontSize:12}}>
+            {driveConnected ? "모든 프로젝트 파일이 자동 동기화됩니다" : "DRIVE_CONFIG.GAS_URL을 설정하여 Drive 연동을 활성화하세요"}
+          </div>
         </div>
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6}}>
-          <div style={{width:8,height:8,borderRadius:"50%",background:"#10b981",boxShadow:"0 0 6px #10b981"}}/>
-          <span style={{color:"#10b981",fontSize:13,fontWeight:600}}>연결됨</span>
+          <div style={{width:8,height:8,borderRadius:"50%",background:driveConnected?"#10b981":"#f59e0b",boxShadow:`0 0 6px ${driveConnected?"#10b981":"#f59e0b"}`}}/>
+          <span style={{color:driveConnected?"#10b981":"#f59e0b",fontSize:13,fontWeight:600}}>
+            {driveConnected ? "연결됨" : "미연결"}
+          </span>
         </div>
-      </div>
-      {/* 업로드 영역 */}
-      <div className="drop-zone" style={{marginBottom:22}} onClick={()=>toast("📤 파일 업로드는 Google Drive 연동 후 지원 예정입니다","warn")}>
-        <div style={{fontSize:32,marginBottom:10}}>📤</div>
-        <div style={{color:"var(--txt2)",fontWeight:600,marginBottom:4}}>파일 업로드 (드래그 또는 클릭)</div>
-        <div style={{color:"var(--txt4)",fontSize:12}}>PDF, Word, Excel, 이미지, 영상 · Google Drive 자동 동기화</div>
       </div>
       {/* 프로젝트별 파일 */}
       {projects.map(p=>(
         <div key={p.id} className="card-sm" style={{marginBottom:10}}>
           <div className="flex-between" style={{marginBottom:10}}>
             <div style={{color:"var(--txt)",fontWeight:600,fontSize:14}}>📁 {p.name}</div>
-            <span style={{color:"var(--txt4)",fontSize:12}}>{p.files.length}개 파일</span>
+            <span style={{color:"var(--txt4)",fontSize:12}}>{(p.files||[]).length}개 파일</span>
           </div>
-          {p.files.length>0 ? p.files.map(f=>(
-            <div key={f} className="flex-between" style={{padding:"7px 0",borderBottom:"1px solid rgba(255,255,255,.04)"}}>
-              <span style={{color:"var(--txt2)",fontSize:13}}>📄 {f}</span>
-              <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                <span style={{color:"#10b981",fontSize:11}}>Drive ✓</span>
-                <button className="btn btn-ghost" style={{padding:"3px 10px",fontSize:11}}
-                  onClick={()=>toast(`📥 "${f}" 다운로드 준비 중`)}>다운로드</button>
+          {(p.files||[]).length>0 ? (p.files||[]).map((f,i)=>{
+            const fo = getFileObj(f);
+            return (
+              <div key={fo.name+i} className="flex-between" style={{padding:"7px 0",borderBottom:"1px solid rgba(255,255,255,.04)"}}>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{color:"var(--txt2)",fontSize:13}}>📄 {fo.name}</span>
+                  {fo.size && <span style={{color:"var(--txt4)",fontSize:10}}>({fo.size>1048576?(fo.size/1048576).toFixed(1)+"MB":(fo.size/1024).toFixed(0)+"KB"})</span>}
+                </div>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  {(fo.driveFileId||fo.url) && <span style={{color:"#10b981",fontSize:11}}>Drive ✓</span>}
+                  <button className="btn btn-ghost" style={{padding:"3px 10px",fontSize:11}}
+                    onClick={()=>handleFileOpen(f)}>{fo.driveFileId||fo.url?"열기":"다운로드"}</button>
+                </div>
               </div>
-            </div>
-          )) : <div style={{color:"var(--txt4)",fontSize:12,padding:"8px 0"}}>파일 없음</div>}
+            );
+          }) : <div style={{color:"var(--txt4)",fontSize:12,padding:"8px 0"}}>파일 없음</div>}
         </div>
       ))}
     </div>
@@ -4806,15 +5190,59 @@ function PurchasePanel({purchases, setPurchases, projects, users, currentUser}) 
 }
 
 function App() {
-  const [users, setUsers] = useState(INIT_USERS);
+  // ── localStorage 영속화 (새로고침해도 데이터 유지) ──
+  const [users, setUsers] = usePersistedState("eventos_users", INIT_USERS);
   const [authedUser, setAuthedUser] = useState(null);
   const [page, setPage] = useState("dashboard");
   const [detail, setDetail] = useState(null);
-  const [projects, setProjects] = useState(INIT_PROJECTS);
-  const [priceList, setPriceList] = useState(INIT_PRICE_LIST); // admin 관리 기준 금액
-  const [expenses, setExpenses] = useState([]);       // 지출결의
-  const [laborCosts, setLaborCosts] = useState([]);   // 인건비
-  const [purchases, setPurchases] = useState([]);     // 구매요청
+  const [projects, setProjects] = usePersistedState("eventos_projects", INIT_PROJECTS);
+  const [priceList, setPriceList] = usePersistedState("eventos_priceList", INIT_PRICE_LIST);
+  const [expenses, setExpenses] = usePersistedState("eventos_expenses", []);
+  const [laborCosts, setLaborCosts] = usePersistedState("eventos_laborCosts", []);
+  const [purchases, setPurchases] = usePersistedState("eventos_purchases", []);
+  const [driveLoaded, setDriveLoaded] = useState(false);
+
+  // ── Google Drive 동기화: 시스템 데이터 변경 시 Drive에 저장 ──
+  const appDataRef = useRef(null);
+  useEffect(() => {
+    if (!driveLoaded) return; // 초기 로드 완료 전에는 싱크하지 않음
+    const payload = { users, priceList, expenses, laborCosts, purchases };
+    // 이전과 같으면 스킵
+    const json = JSON.stringify(payload);
+    if (appDataRef.current === json) return;
+    appDataRef.current = json;
+    SyncManager.queueSync("saveAppData", { data: payload });
+  }, [users, priceList, expenses, laborCosts, purchases, driveLoaded]);
+
+  // ── Google Drive 동기화: 프로젝트 변경 시 각 프로젝트 개별 저장 ──
+  const projectsRef = useRef(null);
+  useEffect(() => {
+    if (!driveLoaded) return;
+    const json = JSON.stringify(projects);
+    if (projectsRef.current === json) return;
+    projectsRef.current = json;
+    projects.forEach(p => {
+      SyncManager.queueSync(`saveProject_${p.id}`, { project: p });
+    });
+  }, [projects, driveLoaded]);
+
+  // ── Google Drive 초기 로드 (앱 시작 시) ──
+  useEffect(() => {
+    (async () => {
+      if (!DRIVE_CONFIG.ENABLED) { setDriveLoaded(true); return; }
+      const cloud = await SyncManager.loadFromCloud();
+      if (cloud && !cloud.error) {
+        if (cloud.users?.length) setUsers(cloud.users);
+        if (cloud.priceList?.length) setPriceList(cloud.priceList);
+        if (cloud.expenses) setExpenses(cloud.expenses);
+        if (cloud.laborCosts) setLaborCosts(cloud.laborCosts);
+        if (cloud.purchases) setPurchases(cloud.purchases);
+        if (cloud.projects?.length) setProjects(cloud.projects);
+        toast("☁️ Google Drive에서 데이터를 불러왔습니다.", "success");
+      }
+      setDriveLoaded(true);
+    })();
+  }, []);
 
   // 로그인
   const handleLogin = (user) => {
