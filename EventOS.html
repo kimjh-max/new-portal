@@ -4571,16 +4571,20 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
 
   // 견적 이력 저장
   const saveQuoteSnapshot = () => {
+    // 구분별 소계 기록
+    const divSummary = quoteByDiv.filter(d=>d.subtotal>0).map(d=>({div:d.div, subtotal:d.subtotal}));
     const snapshot = {
       id: Date.now(),
       date: today,
       author: currentUser?.name || "사용자",
       quoteType,
-      A, B, C, D, totalFinal,
+      priceMult,
+      A, B, C, D, total, totalFinal,
+      divSummary,
       note: historyNote,
       items: [
-        ...project.checklist.map(c=>({...c})),
-        ...(project.customItems||[]).map(c=>({...c})),
+        ...project.checklist.filter(c=>(c.unitPrice||0)>0).map(c=>({division:c.division||"기타",category:c.category,item:c.item,unitPrice:c.unitPrice,qty:c.qty||1,days:c.days||1,note:c.note||""})),
+        ...(project.customItems||[]).map(c=>({division:c.division||"기타",category:c.category,item:c.item,unitPrice:c.unitPrice,qty:c.qty||1,days:c.days||1,note:c.note||"",isCustom:true})),
       ],
     };
     onUpdate({
@@ -5076,30 +5080,22 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
                 {!(project.quoteHistory||[]).length && (
                   <div style={{color:"var(--txt4)",fontSize:12,textAlign:"center",padding:"12px 0"}}>저장된 견적 이력이 없습니다</div>
                 )}
-                {[...(project.quoteHistory||[])].reverse().map((snap,idx)=>(
-                  <div key={snap.id} style={{
-                    background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.06)",
-                    borderRadius:7,padding:"8px 12px",marginBottom:6,
-                  }}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
-                      <span style={{color:"var(--txt3)",fontSize:11}}>
-                        <span style={{color:"#a5b4fc",fontWeight:700}}>#{(project.quoteHistory||[]).length - idx}</span>
-                        &nbsp;·&nbsp;{snap.date}&nbsp;·&nbsp;{snap.author}&nbsp;·&nbsp;
-                        <span style={{color:snap.quoteType==="공공기관"?"#a5b4fc":"#38bdf8"}}>{snap.quoteType}</span>
-                      </span>
-                      <span style={{color:"#a5b4fc",fontWeight:700,fontSize:13}}>
-                        {snap.totalFinal.toLocaleString()}원
-                      </span>
-                    </div>
-                    {snap.note&&<div style={{color:"var(--txt4)",fontSize:11,marginBottom:4}}>📝 {snap.note}</div>}
-                    <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-                      <span style={{color:"var(--txt4)",fontSize:11}}>A:{snap.A.toLocaleString()}</span>
-                      {snap.B>0&&<span style={{color:"var(--txt4)",fontSize:11}}>B:{snap.B.toLocaleString()}</span>}
-                      {snap.C>0&&<span style={{color:"var(--txt4)",fontSize:11}}>C:{snap.C.toLocaleString()}</span>}
-                      <span style={{color:"var(--txt4)",fontSize:11}}>D:{snap.D.toLocaleString()}</span>
-                    </div>
-                  </div>
-                ))}
+                {[...(project.quoteHistory||[])].reverse().map((snap,idx)=>{
+                  const snapNum = (project.quoteHistory||[]).length - idx;
+                  const snapMult = snap.priceMult || (snap.quoteType==="일반기업"?1.1:1.0);
+                  const snapCalc = (it) => Math.round((it.unitPrice||0)*snapMult*(it.qty||1)*(it.days||1));
+                  // 구분별 그룹핑
+                  const snapDivs = {};
+                  (snap.items||[]).forEach(it=>{
+                    const d = it.division||"기타";
+                    if(!snapDivs[d]) snapDivs[d]={items:[],subtotal:0};
+                    snapDivs[d].items.push(it);
+                    snapDivs[d].subtotal += snapCalc(it);
+                  });
+                  return (
+                  <QuoteHistoryCard key={snap.id} snap={snap} snapNum={snapNum} snapDivs={snapDivs} snapCalc={snapCalc}/>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -5691,6 +5687,109 @@ function FileManager({project, onUpdate}) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ─ 견적 이력 카드 (세부항목 포함) ─
+function QuoteHistoryCard({snap, snapNum, snapDivs, snapCalc}) {
+  const [expanded, setExpanded] = useState(false);
+  const divEntries = Object.entries(snapDivs);
+  const itemCount = (snap.items||[]).length;
+  return (
+    <div style={{
+      background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.06)",
+      borderRadius:8,marginBottom:8,overflow:"hidden",
+    }}>
+      {/* 헤더 - 항상 보임 */}
+      <div style={{padding:"10px 12px",cursor:"pointer"}} onClick={()=>setExpanded(e=>!e)}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+          <span style={{color:"var(--txt3)",fontSize:11}}>
+            <span style={{color:"#a5b4fc",fontWeight:700}}>#{snapNum}</span>
+            &nbsp;·&nbsp;{snap.date}&nbsp;·&nbsp;{snap.author}&nbsp;·&nbsp;
+            <span style={{color:snap.quoteType==="공공기관"?"#a5b4fc":"#38bdf8"}}>{snap.quoteType}</span>
+            <span style={{color:"var(--txt4)",marginLeft:6,fontSize:10}}>({itemCount}개 항목)</span>
+          </span>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{color:"#a5b4fc",fontWeight:700,fontSize:13}}>
+              {snap.totalFinal?.toLocaleString()}원
+            </span>
+            <span style={{color:"var(--txt4)",fontSize:11,transition:"transform .2s",transform:expanded?"rotate(180deg)":"rotate(0deg)"}}>▼</span>
+          </div>
+        </div>
+        {snap.note&&<div style={{color:"var(--txt4)",fontSize:11}}>📝 {snap.note}</div>}
+        {/* 요약 바: 구분별 소계 가로 바 */}
+        {!expanded && divEntries.length>0 && (
+          <div style={{display:"flex",gap:6,marginTop:6,flexWrap:"wrap"}}>
+            {divEntries.map(([div,data])=>(
+              <span key={div} style={{background:"rgba(99,102,241,.08)",border:"1px solid rgba(99,102,241,.15)",
+                borderRadius:4,padding:"2px 7px",fontSize:10,color:"#a5b4fc"}}>
+                {div} {data.subtotal.toLocaleString()}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 확장: 세부 항목 테이블 */}
+      {expanded && (
+        <div style={{borderTop:"1px solid rgba(255,255,255,.06)",padding:"0 12px 12px"}}>
+          {divEntries.map(([div,data])=>(
+            <div key={div} style={{marginTop:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                <span style={{color:"#818cf8",fontSize:11,fontWeight:700}}>{div}</span>
+                <span style={{color:"var(--txt4)",fontSize:10}}>소계 {data.subtotal.toLocaleString()}원</span>
+              </div>
+              <div style={{borderRadius:6,overflow:"hidden",border:"1px solid rgba(255,255,255,.06)"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                  <thead>
+                    <tr style={{background:"rgba(99,102,241,.06)"}}>
+                      <th style={{textAlign:"left",padding:"5px 8px",color:"var(--txt3)",fontWeight:600,fontSize:10}}>항목</th>
+                      <th style={{textAlign:"right",padding:"5px 8px",color:"var(--txt3)",fontWeight:600,fontSize:10,width:70}}>단가</th>
+                      <th style={{textAlign:"center",padding:"5px 8px",color:"var(--txt3)",fontWeight:600,fontSize:10,width:36}}>수량</th>
+                      <th style={{textAlign:"center",padding:"5px 8px",color:"var(--txt3)",fontWeight:600,fontSize:10,width:36}}>일수</th>
+                      <th style={{textAlign:"right",padding:"5px 8px",color:"var(--txt3)",fontWeight:600,fontSize:10,width:85}}>금액</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.items.map((it,i)=>(
+                      <tr key={i} style={{borderTop:"1px solid rgba(255,255,255,.04)"}}>
+                        <td style={{padding:"4px 8px",color:"var(--txt2)"}}>
+                          {it.item}
+                          {it.isCustom&&<span style={{color:"#f59e0b",fontSize:9,marginLeft:4}}>추가</span>}
+                          {it.note&&<span style={{color:"var(--txt4)",fontSize:9,marginLeft:4}}>({it.note})</span>}
+                        </td>
+                        <td style={{padding:"4px 8px",textAlign:"right",color:"var(--txt3)"}}>{(it.unitPrice||0).toLocaleString()}</td>
+                        <td style={{padding:"4px 8px",textAlign:"center",color:"var(--txt3)"}}>{it.qty||1}</td>
+                        <td style={{padding:"4px 8px",textAlign:"center",color:"var(--txt3)"}}>{it.days||1}</td>
+                        <td style={{padding:"4px 8px",textAlign:"right",color:"var(--txt)",fontWeight:600}}>{snapCalc(it).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+          {/* 합계 */}
+          <div style={{marginTop:12,padding:"8px 10px",background:"rgba(99,102,241,.06)",borderRadius:6}}>
+            <div style={{display:"flex",flexWrap:"wrap",gap:8,fontSize:11}}>
+              <span style={{color:"var(--txt3)"}}>공급가액(A) <strong style={{color:"var(--txt)"}}>{snap.A?.toLocaleString()}</strong></span>
+              {snap.B>0&&<span style={{color:"var(--txt3)"}}>관리비(B) <strong style={{color:"var(--txt)"}}>{snap.B?.toLocaleString()}</strong></span>}
+              {snap.C>0&&<span style={{color:"var(--txt3)"}}>수익(C) <strong style={{color:"var(--txt)"}}>{snap.C?.toLocaleString()}</strong></span>}
+              <span style={{color:"var(--txt3)"}}>부가세(D) <strong style={{color:"var(--txt)"}}>{snap.D?.toLocaleString()}</strong></span>
+            </div>
+            <div style={{display:"flex",justifyContent:"flex-end",marginTop:6}}>
+              <span style={{color:"#a5b4fc",fontWeight:800,fontSize:14}}>최종: ₩{snap.totalFinal?.toLocaleString()}</span>
+            </div>
+          </div>
+          {/* 이전 이력과 비교 (priceMult 정보) */}
+          <div style={{marginTop:6,display:"flex",justifyContent:"flex-end",gap:8}}>
+            <span style={{color:"var(--txt4)",fontSize:10}}>
+              단가배율: ×{(snap.priceMult||1).toFixed(1)}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
