@@ -413,14 +413,15 @@ function useSyncStatus() {
   return { status, lastSync };
 }
 
-// SyncStatusBar 컴포넌트: Topbar에 표시되는 동기화 상태
+// SyncStatusBar 컴포넌트: Topbar에 표시되는 저장 상태
 function SyncStatusBar() {
   const { status, lastSync } = useSyncStatus();
+  // Drive 미연결 시 localStorage 저장 상태만 표시
   if (!DRIVE_CONFIG.ENABLED) {
     return (
       <div style={{display:"flex",alignItems:"center",gap:5,padding:"3px 10px",borderRadius:6,
-        background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.2)",fontSize:11,color:"#fbbf24",whiteSpace:"nowrap"}}>
-        <span>📁</span><span>Drive 미연결</span>
+        background:"rgba(16,185,129,.08)",border:"1px solid rgba(16,185,129,.2)",fontSize:11,color:"#34d399",whiteSpace:"nowrap"}}>
+        <span>💾</span><span>자동저장</span>
       </div>
     );
   }
@@ -5826,13 +5827,24 @@ function Dashboard({projects, setPage, setDetail}) {
 }
 
 // ─ Projects Page ─
-function ProjectsPage({projects, setDetail, setPage, onAddProject, priceList}) {
+function ProjectsPage({projects, setDetail, setPage, onAddProject, onDeleteProject, priceList, currentUser}) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("전체");
   const [showModal, setShowModal] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const isAdmin = currentUser?.isAdmin || false;
   const filtered = projects
     .filter(p=>status==="전체"||p.status===status)
     .filter(p=>!search||p.name.includes(search)||p.client.includes(search)||p.producer.includes(search));
+
+  const handleDelete = () => {
+    if (deleteTarget && onDeleteProject) {
+      onDeleteProject(deleteTarget.id);
+      toast(`"${deleteTarget.name}" 프로젝트가 삭제되었습니다`, "default");
+      setDeleteTarget(null);
+    }
+  };
+
   return (
     <div>
       <div className="flex-between" style={{marginBottom:20,flexWrap:"wrap",gap:10}}>
@@ -5855,13 +5867,54 @@ function ProjectsPage({projects, setDetail, setPage, onAddProject, priceList}) {
       </div>
       <div className="grid-3">
         {filtered.map(p=>(
-          <ProjectCard key={p.id} project={p} onClick={()=>{setDetail(p);setPage("detail");}}/>
+          <div key={p.id} style={{position:"relative"}}>
+            <ProjectCard project={p} onClick={()=>{setDetail(p);setPage("detail");}}/>
+            {isAdmin && (
+              <button
+                onClick={(e)=>{e.stopPropagation();setDeleteTarget(p);}}
+                title="프로젝트 삭제"
+                style={{
+                  position:"absolute",top:12,right:12,zIndex:2,
+                  background:"rgba(239,68,68,.1)",border:"1px solid rgba(239,68,68,.2)",
+                  borderRadius:6,padding:"4px 8px",cursor:"pointer",
+                  color:"#f87171",fontSize:12,fontWeight:600,
+                  transition:"all .15s",
+                }}
+                onMouseEnter={e=>{e.target.style.background="rgba(239,68,68,.2)";}}
+                onMouseLeave={e=>{e.target.style.background="rgba(239,68,68,.1)";}}
+              >🗑</button>
+            )}
+          </div>
         ))}
         {filtered.length===0&&(
           <div style={{gridColumn:"1/-1",textAlign:"center",color:"var(--txt4)",padding:40}}>검색 결과가 없습니다</div>
         )}
       </div>
       {showModal&&<NewProjectModal onClose={()=>setShowModal(false)} onSave={onAddProject} priceList={priceList}/>}
+      {/* 삭제 확인 모달 */}
+      {deleteTarget && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}
+          onClick={()=>setDeleteTarget(null)}>
+          <div className="card-sm" style={{maxWidth:420,width:"100%",padding:28}} onClick={e=>e.stopPropagation()}>
+            <div style={{textAlign:"center",marginBottom:20}}>
+              <div style={{fontSize:40,marginBottom:10}}>⚠️</div>
+              <div style={{color:"var(--txt)",fontSize:17,fontWeight:700,marginBottom:6}}>프로젝트 삭제</div>
+              <div style={{color:"var(--txt3)",fontSize:13,lineHeight:1.6}}>
+                <strong style={{color:"#f87171"}}>"{deleteTarget.name}"</strong> 프로젝트를 삭제하시겠습니까?<br/>
+                체크리스트, 업무로그, 파일 등 모든 데이터가 삭제됩니다.<br/>
+                <span style={{color:"#f87171",fontWeight:600}}>이 작업은 되돌릴 수 없습니다.</span>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:10,justifyContent:"center"}}>
+              <button className="btn btn-ghost" onClick={()=>setDeleteTarget(null)} style={{padding:"8px 24px"}}>취소</button>
+              <button className="btn" onClick={handleDelete}
+                style={{padding:"8px 24px",background:"#ef4444",color:"#fff",border:"1px solid #dc2626",fontWeight:700}}>
+                삭제 확인
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -6078,7 +6131,7 @@ function FilesPage({projects}) {
         if (data.webViewLink) window.open(data.webViewLink, "_blank");
       } catch { toast("파일을 열 수 없습니다", "error"); }
     } else {
-      toast("Google Drive 연결 후 파일을 열 수 있습니다", "warn");
+      toast("파일 미리보기를 사용할 수 없습니다", "warn");
     }
   };
 
@@ -6086,26 +6139,26 @@ function FilesPage({projects}) {
     <div>
       <h1 style={{color:"var(--txt)",fontSize:20,fontWeight:800,marginBottom:4}}>파일 / 공유 드라이브</h1>
       <div style={{color:"var(--txt4)",fontSize:13,marginBottom:24}}>전체 프로젝트 파일 관리 · {totalFiles}개 파일</div>
-      {/* Drive 상태 */}
+      {/* 저장 상태 */}
       <div style={{
-        background: driveConnected ? "rgba(99,102,241,.08)" : "rgba(245,158,11,.08)",
-        border: `1px solid ${driveConnected ? "rgba(99,102,241,.2)" : "rgba(245,158,11,.2)"}`,
+        background: "rgba(16,185,129,.08)",
+        border: "1px solid rgba(16,185,129,.2)",
         borderRadius:12,padding:18,marginBottom:22,
         display:"flex",alignItems:"center",gap:14,flexWrap:"wrap",
       }}>
-        <span style={{fontSize:28}}>☁️</span>
+        <span style={{fontSize:28}}>💾</span>
         <div>
-          <div style={{color: driveConnected?"#a5b4fc":"#fbbf24",fontWeight:700,fontSize:14}}>
-            Google Drive {driveConnected ? "연동 활성화" : "미연결"}
+          <div style={{color:"#34d399",fontWeight:700,fontSize:14}}>
+            자동저장 활성화
           </div>
           <div style={{color:"var(--txt4)",fontSize:12}}>
-            {driveConnected ? "모든 프로젝트 파일이 자동 동기화됩니다" : "DRIVE_CONFIG.GAS_URL을 설정하여 Drive 연동을 활성화하세요"}
+            모든 프로젝트 파일이 브라우저에 자동 저장됩니다 · 상단 📦백업으로 데이터를 내보낼 수 있습니다
           </div>
         </div>
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6}}>
-          <div style={{width:8,height:8,borderRadius:"50%",background:driveConnected?"#10b981":"#f59e0b",boxShadow:`0 0 6px ${driveConnected?"#10b981":"#f59e0b"}`}}/>
-          <span style={{color:driveConnected?"#10b981":"#f59e0b",fontSize:13,fontWeight:600}}>
-            {driveConnected ? "연결됨" : "미연결"}
+          <div style={{width:8,height:8,borderRadius:"50%",background:"#10b981",boxShadow:"0 0 6px #10b981"}}/>
+          <span style={{color:"#10b981",fontSize:13,fontWeight:600}}>
+            저장됨
           </span>
         </div>
       </div>
@@ -6125,7 +6178,7 @@ function FilesPage({projects}) {
                   {fo.size && <span style={{color:"var(--txt4)",fontSize:10}}>({fo.size>1048576?(fo.size/1048576).toFixed(1)+"MB":(fo.size/1024).toFixed(0)+"KB"})</span>}
                 </div>
                 <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                  {(fo.driveFileId||fo.url) && <span style={{color:"#10b981",fontSize:11}}>Drive ✓</span>}
+                  {(fo.driveFileId||fo.url) && <span style={{color:"#10b981",fontSize:11}}>✓ 저장됨</span>}
                   <button className="btn btn-ghost" style={{padding:"3px 10px",fontSize:11}}
                     onClick={()=>handleFileOpen(f)}>{fo.driveFileId||fo.url?"열기":"다운로드"}</button>
                 </div>
@@ -7860,6 +7913,11 @@ function App() {
     setProjects(prev=>[proj,...prev]);
   }, []);
 
+  const deleteProject = useCallback((projectId) => {
+    setProjects(prev => prev.filter(p => p.id !== projectId));
+    if (detail?.id === projectId) { setDetail(null); setPage("projects"); }
+  }, [detail]);
+
   // ── 로그인 전: 로그인 페이지 ──
   if (!authedUser) {
     return <LoginPage onLogin={handleLogin} users={users}/>;
@@ -7871,7 +7929,7 @@ function App() {
       return <ProjectDetail project={live} onBack={()=>setPage("projects")} onUpdate={updateProject} currentUser={authedUser} users={users}/>;
     }
     if (page==="dashboard") return <Dashboard projects={projects} setPage={setPage} setDetail={setDetail}/>;
-    if (page==="projects") return <ProjectsPage projects={projects} setDetail={setDetail} setPage={setPage} onAddProject={addProject} priceList={priceList}/>;
+    if (page==="projects") return <ProjectsPage projects={projects} setDetail={setDetail} setPage={setPage} onAddProject={addProject} onDeleteProject={deleteProject} priceList={priceList} currentUser={authedUser}/>;
     if (page==="mywork") return <MyWork projects={projects} user={authedUser} users={users} setDetail={setDetail} setPage={setPage} expenses={expenses} laborCosts={laborCosts} purchases={purchases}/>;
     if (page==="expense") return <ExpensePanel expenses={expenses} setExpenses={setExpenses} projects={projects} users={users} currentUser={authedUser}/>;
     if (page==="labor") return <LaborPanel laborCosts={laborCosts} setLaborCosts={setLaborCosts} projects={projects} users={users} currentUser={authedUser}/>;
