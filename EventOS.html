@@ -7063,42 +7063,104 @@ tr:nth-child(even) td{background:#f8fafc}
     const footerTxt = `${p.name||""} ${docTitle} · (주)에픽스테이지`;
     const HDR_H = 1.0;
     const BODY_TOP = 1.2;
-    const PAGE_BOTTOM = 7.0;
+    const MAX_Y = 6.7;
+    const ROW_H = 0.32;
+
+    /* ── 페이지 매니저 (자동 분할 핵심) ── */
+    function PageMgr(num, title, sub) {
+      this.num = num; this.title = title; this.sub = sub; this.page = 0;
+      this.sl = null; this.y = BODY_TOP;
+      this.newSlide = () => {
+        this.page++;
+        this.sl = pptx.addSlide();
+        this.sl.background = {fill:"FFFFFF"};
+        this.sl.addShape(pptx.ShapeType.rect,{x:0,y:0,w:"100%",h:HDR_H,fill:{color:"0F1623"}});
+        const lbl = this.page > 1 ? `${this.num} (${this.page})` : this.num;
+        this.sl.addText(lbl,{x:0.3,y:0.1,w:1.2,h:0.8,fontSize:36,color:"6366F1",bold:true});
+        this.sl.addText(this.title,{x:1.5,y:0.15,w:8,h:0.4,fontSize:20,color:"FFFFFF",bold:true});
+        this.sl.addText(this.sub,{x:1.5,y:0.55,w:8,h:0.3,fontSize:9,color:"818CF8"});
+        if (this.page > 1) this.sl.addText("continued",{x:10,y:0.55,w:3,h:0.3,fontSize:9,color:"F59E0B",align:"right",italic:true});
+        this.sl.addText(footerTxt,{x:0,y:7.1,w:"100%",h:0.3,align:"right",fontSize:8,color:"94A3B8",margin:[0,20,0,0]});
+        this.y = BODY_TOP;
+        return this.sl;
+      };
+      this.need = (h) => { if (!this.sl || this.y + h > MAX_Y) this.newSlide(); };
+      this.newSlide();
+    }
 
     /* ── 공통 헬퍼 ── */
-    const makeSlide = (num, title, sub) => {
-      const sl = pptx.addSlide();
-      sl.background = {fill:"FFFFFF"};
-      sl.addShape(pptx.ShapeType.rect,{x:0,y:0,w:"100%",h:HDR_H,fill:{color:"0F1623"}});
-      sl.addText(num,{x:0.3,y:0.1,w:0.8,h:0.8,fontSize:36,color:"6366F1",bold:true});
-      sl.addText(title,{x:1.2,y:0.15,w:8,h:0.4,fontSize:20,color:"FFFFFF",bold:true});
-      sl.addText(sub,{x:1.2,y:0.55,w:8,h:0.3,fontSize:9,color:"818CF8"});
-      sl.addText(footerTxt,{x:0,y:7.1,w:"100%",h:0.3,align:"right",fontSize:8,color:"94A3B8",margin:[0,20,0,0]});
-      return sl;
-    };
-    const addField = (sl, label, val, x, y, w, h) => {
-      if (!val || !String(val).trim()) return y;
-      sl.addText(label, {x,y,w:w||12.33,h:0.25,fontSize:9,color:"6366F1",bold:true,valign:"top"});
-      const lines = String(val).split("\n");
-      const textH = Math.min(Math.max(lines.length * 0.22, 0.3), h||2.0);
-      sl.addText(String(val), {x,y:y+0.25,w:w||12.33,h:textH,fontSize:11,color:"1E293B",valign:"top",wrap:true,lineSpacingMultiple:1.15});
-      return y + 0.25 + textH + 0.1;
-    };
-    const tblHdr = (cols) => [cols.map(c=>({text:c,options:{fontSize:9,bold:true,color:"FFFFFF",fill:{color:"0F1623"},align:"center",border:{pt:0.5,color:"E2E8F0"}}}))];
+    const tblHdr = (cols) => cols.map(c=>({text:c,options:{fontSize:9,bold:true,color:"FFFFFF",fill:{color:"0F1623"},align:"center",border:{pt:0.5,color:"E2E8F0"}}}));
     const tblRow = (cells) => cells.map(c=>({text:String(c||""),options:{fontSize:10,color:"1E293B",border:{pt:0.5,color:"E2E8F0"},valign:"middle"}}));
-    const addImages = (sl, secData, yStart) => {
-      const imgs = secData?.images || [];
+
+    const pmField = (pm, label, val, w, maxH) => {
+      if (!val || !String(val).trim()) return;
+      const lines = String(val).split("\n");
+      const textH = Math.min(Math.max(lines.length * 0.22, 0.3), maxH||2.0);
+      const totalH = 0.25 + textH + 0.1;
+      pm.need(totalH);
+      pm.sl.addText(label,{x:0.5,y:pm.y,w:w||12.33,h:0.25,fontSize:9,color:"6366F1",bold:true,valign:"top"});
+      pm.sl.addText(String(val),{x:0.5,y:pm.y+0.25,w:w||12.33,h:textH,fontSize:11,color:"1E293B",valign:"top",wrap:true,lineSpacingMultiple:1.15});
+      pm.y += totalH;
+    };
+
+    /* 테이블 자동 분할: 헤더 행 포함하여 페이지에 맞게 나눔 */
+    const pmTable = (pm, label, hdrRow, dataRows, colW) => {
+      if (!dataRows.length) return;
+      pm.need(0.6);
+      pm.sl.addText(label,{x:0.5,y:pm.y,w:12.33,h:0.25,fontSize:9,color:"6366F1",bold:true});
+      pm.y += 0.3;
+      let idx = 0;
+      while (idx < dataRows.length) {
+        const avail = Math.floor((MAX_Y - pm.y - 0.1) / ROW_H) - 1;
+        if (avail < 1) { pm.newSlide(); continue; }
+        const chunk = dataRows.slice(idx, idx + avail);
+        const rows = [hdrRow, ...chunk];
+        pm.sl.addTable(rows,{x:0.5,y:pm.y,w:12.33,colW,fontSize:10,border:{pt:0.5,color:"E2E8F0"},autoPage:false});
+        pm.y += ROW_H * rows.length + 0.15;
+        idx += chunk.length;
+        if (idx < dataRows.length) pm.newSlide();
+      }
+    };
+
+    /* 이미지 자동 분할 */
+    const pmImages = (pm, secData) => {
+      const imgs = (secData?.images || []);
       if (!imgs.length) return;
-      let imgX = 0.5, imgY = Math.max(yStart, 4.0);
       imgs.forEach((img) => {
-        if (imgX + 4 > 13 || imgY + 2.5 > PAGE_BOTTOM) return;
+        pm.need(2.6);
         try {
-          sl.addImage({data:img.data,x:imgX,y:imgY,w:3.8,h:2.2,rounding:true});
-          if ((img.annotations||[]).length) sl.addText(img.annotations.map(a=>a.text).join(" · "),{x:imgX,y:imgY+2.2,w:3.8,h:0.25,fontSize:8,color:"64748B",align:"center"});
+          pm.sl.addImage({data:img.data,x:0.5,y:pm.y,w:5,h:2.8,rounding:true});
+          if ((img.annotations||[]).length) pm.sl.addText(img.annotations.map(a=>a.text).join(" · "),{x:0.5,y:pm.y+2.8,w:5,h:0.25,fontSize:8,color:"64748B",align:"center"});
+          pm.y += 3.15;
         } catch(e){}
-        imgX += 4.1;
-        if (imgX + 4 > 13) { imgX = 0.5; imgY += 2.6; }
       });
+    };
+
+    /* 2열 필드 */
+    const pm2Col = (pm, l1, v1, l2, v2, w) => {
+      const halfW = w || 6.0, gap = 0.33;
+      if (!v1 && !v2) return;
+      pm.need(0.65);
+      if (l1) pm.sl.addText(l1,{x:0.5,y:pm.y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
+      if (l2) pm.sl.addText(l2,{x:0.5+halfW+gap,y:pm.y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
+      pm.y += 0.22;
+      if (v1) pm.sl.addText(v1,{x:0.5,y:pm.y,w:halfW,h:0.3,fontSize:11,color:"1E293B"});
+      if (v2) pm.sl.addText(v2,{x:0.5+halfW+gap,y:pm.y,w:halfW,h:0.3,fontSize:11,color:"1E293B"});
+      pm.y += 0.4;
+    };
+
+    const pm2ColBig = (pm, l1, v1, l2, v2, w) => {
+      const halfW = w || 6.0, gap = 0.33;
+      if (!v1 && !v2) return;
+      const l1n = (v1||"").split("\n").length, l2n = (v2||"").split("\n").length;
+      const maxH = Math.min(Math.max(l1n, l2n) * 0.22, 2.0);
+      pm.need(0.22 + maxH + 0.1);
+      if (l1) pm.sl.addText(l1,{x:0.5,y:pm.y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
+      if (l2) pm.sl.addText(l2,{x:0.5+halfW+gap,y:pm.y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
+      pm.y += 0.22;
+      if (v1) pm.sl.addText(v1,{x:0.5,y:pm.y,w:halfW,h:maxH,fontSize:10,color:"1E293B",valign:"top",wrap:true,lineSpacingMultiple:1.15});
+      if (v2) pm.sl.addText(v2,{x:0.5+halfW+gap,y:pm.y,w:halfW,h:maxH,fontSize:10,color:"1E293B",valign:"top",wrap:true,lineSpacingMultiple:1.15});
+      pm.y += maxH + 0.1;
     };
 
     /* ── Cover Slide ── */
@@ -7113,210 +7175,98 @@ tr:nth-child(even) td{background:#f8fafc}
     /* ── 01 Over View ── */
     (() => {
       const d = sd("overview");
-      const sl = makeSlide("01","Over View","행사 개요 | EVENT OVERVIEW");
-      let y = BODY_TOP;
-      // 2-column fields
-      const leftW = 6.0, rightW = 6.0, gap = 0.33;
-      if ((d.eventName||p.name) || (d.organizer||p.client)) {
-        sl.addText("행사명",{x:0.5,y,w:leftW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-        sl.addText("주최사",{x:0.5+leftW+gap,y,w:rightW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-        y += 0.22;
-        sl.addText(d.eventName||p.name||"",{x:0.5,y,w:leftW,h:0.35,fontSize:12,color:"1E293B",bold:true});
-        sl.addText(d.organizer||p.client||"",{x:0.5+leftW+gap,y,w:rightW,h:0.35,fontSize:12,color:"1E293B"});
-        y += 0.45;
-      }
-      if ((d.date||p.eventDate) || d.time) {
-        sl.addText("일시",{x:0.5,y,w:leftW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-        sl.addText("시간",{x:0.5+leftW+gap,y,w:rightW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-        y += 0.22;
-        sl.addText(d.date||p.eventDate||"",{x:0.5,y,w:leftW,h:0.3,fontSize:11,color:"1E293B"});
-        sl.addText(d.time||"",{x:0.5+leftW+gap,y,w:rightW,h:0.3,fontSize:11,color:"1E293B"});
-        y += 0.4;
-      }
-      y = addField(sl,"장소",d.venue||p.brief?.venue,0.5,y,12.33,0.4);
-      y = addField(sl,"행사 내용",d.content||p.brief?.purpose,0.5,y,12.33,1.0);
-      if (d.character || d.support) {
-        const halfW = 6.0;
-        if (d.character) { sl.addText("행사 성격",{x:0.5,y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true}); }
-        if (d.support) { sl.addText("지원 사항",{x:0.5+halfW+gap,y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true}); }
-        y += 0.22;
-        const charLines = (d.character||"").split("\n").length;
-        const supLines = (d.support||"").split("\n").length;
-        const maxH = Math.min(Math.max(charLines, supLines) * 0.22, 1.5);
-        if (d.character) sl.addText(d.character,{x:0.5,y,w:halfW,h:maxH,fontSize:10,color:"1E293B",valign:"top",wrap:true,lineSpacingMultiple:1.15});
-        if (d.support) sl.addText(d.support,{x:0.5+halfW+gap,y,w:halfW,h:maxH,fontSize:10,color:"1E293B",valign:"top",wrap:true,lineSpacingMultiple:1.15});
-        y += maxH + 0.1;
-      }
-      y = addField(sl,"기타사항",d.extraNotes,0.5,y,12.33,0.6);
-      addImages(sl, d, y);
+      const pm = new PageMgr("01","Over View","행사 개요 | EVENT OVERVIEW");
+      pm2Col(pm,"행사명",d.eventName||p.name||"","주최사",d.organizer||p.client||"");
+      pm2Col(pm,"일시",d.date||p.eventDate||"","시간",d.time||"");
+      pmField(pm,"장소",d.venue||p.brief?.venue,12.33,0.4);
+      pmField(pm,"행사 내용",d.content||p.brief?.purpose,12.33,1.5);
+      pm2ColBig(pm,"행사 성격",d.character,"지원 사항",d.support);
+      pmField(pm,"기타사항",d.extraNotes,12.33,0.8);
+      pmImages(pm, d);
     })();
 
     /* ── 02 Venue ── */
     (() => {
       const d = sd("venue");
-      const sl = makeSlide("02","Venue","장소 안내 | VENUE INFORMATION");
-      let y = BODY_TOP;
-      const halfW = 6.0, gap = 0.33;
-      // Row 1: 장소명, 수용 인원
-      if ((d.venueName||p.brief?.venue) || (d.capacity||p.brief?.attendance)) {
-        sl.addText("장소명",{x:0.5,y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-        sl.addText("수용 인원",{x:0.5+halfW+gap,y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-        y += 0.22;
-        sl.addText(d.venueName||p.brief?.venue||"",{x:0.5,y,w:halfW,h:0.3,fontSize:12,color:"1E293B",bold:true});
-        sl.addText(d.capacity||p.brief?.attendance||"",{x:0.5+halfW+gap,y,w:halfW,h:0.3,fontSize:11,color:"1E293B"});
-        y += 0.4;
-      }
-      // Row 2: 주소, 층/홀
-      if (d.address || d.floor) {
-        sl.addText("주소",{x:0.5,y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-        sl.addText("층/홀",{x:0.5+halfW+gap,y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-        y += 0.22;
-        sl.addText(d.address||"",{x:0.5,y,w:halfW,h:0.3,fontSize:11,color:"1E293B"});
-        sl.addText(d.floor||"",{x:0.5+halfW+gap,y,w:halfW,h:0.3,fontSize:11,color:"1E293B"});
-        y += 0.4;
-      }
-      y = addField(sl,"장소 특이사항",d.notes,0.5,y,12.33,0.6);
-      // 장비/시설 목록 테이블
-      const eqList = (d.equipList||[]).filter(e=>e.name);
-      if (eqList.length) {
-        sl.addText("장비/시설 목록",{x:0.5,y,w:12.33,h:0.25,fontSize:9,color:"6366F1",bold:true});
-        y += 0.3;
-        const rows = [...tblHdr(["#","장비명","규격","수량","비고"]), ...eqList.map((e,i)=>tblRow([i+1,e.name,e.spec,e.qty,e.note]))];
-        sl.addTable(rows,{x:0.5,y,w:12.33,colW:[0.5,4,3.5,1.33,3],fontSize:10,border:{pt:0.5,color:"E2E8F0"},autoPage:false});
-        y += 0.35 * (eqList.length + 1) + 0.2;
-      }
-      addImages(sl, d, y);
+      const pm = new PageMgr("02","Venue","장소 안내 | VENUE INFORMATION");
+      pm2Col(pm,"장소명",d.venueName||p.brief?.venue||"","수용 인원",d.capacity||p.brief?.attendance||"");
+      pm2Col(pm,"주소",d.address||"","층/홀",d.floor||"");
+      pmField(pm,"장소 특이사항",d.notes,12.33,0.8);
+      pmTable(pm,"장비/시설 목록",tblHdr(["#","장비명","규격","수량","비고"]),
+        (d.equipList||[]).filter(e=>e.name).map((e,i)=>tblRow([i+1,e.name,e.spec,e.qty,e.note])),
+        [0.5,4,3.5,1.33,3]);
+      pmImages(pm, d);
     })();
 
     /* ── 03 Design ── */
     (() => {
       const d = sd("design");
-      const sl = makeSlide("03","Design","디자인 계획 | DESIGN PLAN");
-      let y = BODY_TOP;
-      // 현수막/배너 테이블
-      const bnList = (d.bannerList||[]).filter(b=>b.name);
-      if (bnList.length) {
-        sl.addText("현수막/배너 목록",{x:0.5,y,w:12.33,h:0.25,fontSize:9,color:"6366F1",bold:true});
-        y += 0.3;
-        const rows = [...tblHdr(["#","품목명","규격 (mm)","수량"]), ...bnList.map((b,i)=>tblRow([i+1,b.name,b.size,b.qty]))];
-        sl.addTable(rows,{x:0.5,y,w:12.33,colW:[0.5,5,4.5,2.33],fontSize:10,border:{pt:0.5,color:"E2E8F0"},autoPage:false});
-        y += 0.35 * (bnList.length + 1) + 0.2;
-      }
-      const halfW = 6.0, gap = 0.33;
-      if (d.videoNotes || d.printNotes) {
-        if (d.videoNotes) sl.addText("디지털/영상 계획",{x:0.5,y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-        if (d.printNotes) sl.addText("인쇄물",{x:0.5+halfW+gap,y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-        y += 0.22;
-        const vLines = (d.videoNotes||"").split("\n").length;
-        const pLines = (d.printNotes||"").split("\n").length;
-        const maxH = Math.min(Math.max(vLines, pLines) * 0.22, 1.5);
-        if (d.videoNotes) sl.addText(d.videoNotes,{x:0.5,y,w:halfW,h:maxH,fontSize:10,color:"1E293B",valign:"top",wrap:true,lineSpacingMultiple:1.15});
-        if (d.printNotes) sl.addText(d.printNotes,{x:0.5+halfW+gap,y,w:halfW,h:maxH,fontSize:10,color:"1E293B",valign:"top",wrap:true,lineSpacingMultiple:1.15});
-        y += maxH + 0.1;
-      }
-      y = addField(sl,"LED/스크린 계획",d.ledNotes,0.5,y,12.33,0.8);
-      if (!isPlan && d.resultNotes) y = addField(sl,"결과 메모",d.resultNotes,0.5,y,12.33,0.6);
-      addImages(sl, d, y);
+      const pm = new PageMgr("03","Design","디자인 계획 | DESIGN PLAN");
+      pmTable(pm,"현수막/배너 목록",tblHdr(["#","품목명","규격 (mm)","수량"]),
+        (d.bannerList||[]).filter(b=>b.name).map((b,i)=>tblRow([i+1,b.name,b.size,b.qty])),
+        [0.5,5,4.5,2.33]);
+      pm2ColBig(pm,"디지털/영상 계획",d.videoNotes,"인쇄물",d.printNotes);
+      pmField(pm,"LED/스크린 계획",d.ledNotes,12.33,1.0);
+      if (!isPlan) pmField(pm,"결과 메모",d.resultNotes,12.33,0.8);
+      pmImages(pm, d);
     })();
 
     /* ── 04 Program ── */
     (() => {
       const d = sd("program");
-      const sl = makeSlide("04","Program","진행 순서 | EVENT PROGRAM");
-      let y = BODY_TOP;
-      const pgList = (d.timeline||[]).filter(t=>t.time||t.content);
-      if (pgList.length) {
-        sl.addText("타임테이블 / 진행순서",{x:0.5,y,w:12.33,h:0.25,fontSize:9,color:"6366F1",bold:true});
-        y += 0.3;
-        const rows = [...tblHdr(["#","시간","소요(분)","내용","비고"]), ...pgList.map((t,i)=>tblRow([i+1,t.time,t.duration,t.content,t.note]))];
-        sl.addTable(rows,{x:0.5,y,w:12.33,colW:[0.5,2,1.2,5.63,3],fontSize:10,border:{pt:0.5,color:"E2E8F0"},autoPage:false});
-        y += 0.35 * Math.min(pgList.length + 1, 14) + 0.2;
-      }
-      y = addField(sl,"MC / 진행 메모",d.mcInfo,0.5,y,12.33,0.6);
-      if (!isPlan && d.resultNotes) y = addField(sl,"프로그램 결과 메모",d.resultNotes,0.5,y,12.33,0.6);
-      addImages(sl, d, y);
+      const pm = new PageMgr("04","Program","진행 순서 | EVENT PROGRAM");
+      pmTable(pm,"타임테이블 / 진행순서",tblHdr(["#","시간","소요(분)","내용","비고"]),
+        (d.timeline||[]).filter(t=>t.time||t.content).map((t,i)=>tblRow([i+1,t.time,t.duration,t.content,t.note])),
+        [0.5,2,1.2,5.63,3]);
+      pmField(pm,"MC / 진행 메모",d.mcInfo,12.33,0.8);
+      if (!isPlan) pmField(pm,"프로그램 결과 메모",d.resultNotes,12.33,0.8);
+      pmImages(pm, d);
     })();
 
     /* ── 05 Operation ── */
     (() => {
       const d = sd("operation");
-      const sl = makeSlide("05","Operation","운영 계획 | OPERATION PLAN");
-      let y = BODY_TOP;
-      const halfW = 6.0, gap = 0.33;
-      if (d.mcName || d.mcProfile) {
-        sl.addText("MC 이름",{x:0.5,y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-        sl.addText("MC 프로필",{x:0.5+halfW+gap,y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-        y += 0.22;
-        sl.addText(d.mcName||"",{x:0.5,y,w:halfW,h:0.3,fontSize:11,color:"1E293B",bold:true});
-        const profH = Math.min(((d.mcProfile||"").split("\n").length) * 0.22, 0.8);
-        sl.addText(d.mcProfile||"",{x:0.5+halfW+gap,y,w:halfW,h:profH||0.3,fontSize:10,color:"1E293B",valign:"top",wrap:true});
-        y += Math.max(0.35, profH) + 0.1;
-      }
-      y = addField(sl,"운영 특이사항",d.notes,0.5,y,12.33,0.6);
-      // 스태프 배치 테이블
-      const sfList = (d.staffList||[]).filter(s=>s.role||s.name);
-      if (sfList.length) {
-        sl.addText("스태프 배치",{x:0.5,y,w:12.33,h:0.25,fontSize:9,color:"6366F1",bold:true});
-        y += 0.3;
-        const rows = [...tblHdr(["#","역할","이름","연락처","비고"]), ...sfList.map((s,i)=>tblRow([i+1,s.role,s.name,s.contact,s.note]))];
-        sl.addTable(rows,{x:0.5,y,w:12.33,colW:[0.5,3,2.5,3,3.33],fontSize:10,border:{pt:0.5,color:"E2E8F0"},autoPage:false});
-        y += 0.35 * (sfList.length + 1) + 0.2;
-      }
-      // 경품 목록 테이블
-      const prList = (d.prizeList||[]).filter(pr=>pr.grade||pr.item);
-      if (prList.length) {
-        sl.addText("경품 목록",{x:0.5,y,w:12.33,h:0.25,fontSize:9,color:"6366F1",bold:true});
-        y += 0.3;
-        const rows = [...tblHdr(["#","등급","품목","수량","비고"]), ...prList.map((pr,i)=>tblRow([i+1,pr.grade,pr.item,pr.qty,pr.note]))];
-        sl.addTable(rows,{x:0.5,y,w:12.33,colW:[0.5,2,4,1.5,4.33],fontSize:10,border:{pt:0.5,color:"E2E8F0"},autoPage:false});
-        y += 0.35 * (prList.length + 1) + 0.2;
-      }
-      addImages(sl, d, y);
+      const pm = new PageMgr("05","Operation","운영 계획 | OPERATION PLAN");
+      pm2Col(pm,"MC 이름",d.mcName||"","MC 프로필",d.mcProfile||"");
+      pmField(pm,"운영 특이사항",d.notes,12.33,0.8);
+      pmTable(pm,"스태프 배치",tblHdr(["#","역할","이름","연락처","비고"]),
+        (d.staffList||[]).filter(s=>s.role||s.name).map((s,i)=>tblRow([i+1,s.role,s.name,s.contact,s.note])),
+        [0.5,3,2.5,3,3.33]);
+      pmTable(pm,"경품 목록",tblHdr(["#","등급","품목","수량","비고"]),
+        (d.prizeList||[]).filter(pr=>pr.grade||pr.item).map((pr,i)=>tblRow([i+1,pr.grade,pr.item,pr.qty,pr.note])),
+        [0.5,2,4,1.5,4.33]);
+      pmImages(pm, d);
     })();
 
     /* ── 06 Time Line ── */
     (() => {
       const d = sd("timeline");
-      const sl = makeSlide("06","Time Line","일정 계획 | PROJECT TIMELINE");
-      let y = BODY_TOP;
+      const pm = new PageMgr("06","Time Line","일정 계획 | PROJECT TIMELINE");
       const mlList = (d.milestones||[]).filter(m=>m.task);
+      const STATUS_CLR = {"완료":"10B981","진행중":"F59E0B","예정":"6366F1"};
       if (mlList.length) {
-        sl.addText("타임라인 (간트차트 연동)",{x:0.5,y,w:12.33,h:0.25,fontSize:9,color:"6366F1",bold:true});
-        y += 0.3;
-        const STATUS_CLR = {"완료":"10B981","진행중":"F59E0B","예정":"6366F1"};
-        const rows = [
-          ...tblHdr(["구분","항목","시작일","종료일","진행률","상태"]),
-          ...mlList.map(m=>[
+        pmTable(pm,"타임라인 (간트차트 연동)",tblHdr(["구분","항목","시작일","종료일","진행률","상태"]),
+          mlList.map(m=>[
             {text:m.division||"",options:{fontSize:10,color:"1E293B",border:{pt:0.5,color:"E2E8F0"}}},
             {text:m.task||"",options:{fontSize:10,color:m.isSubtask?"64748B":"1E293B",bold:!m.isSubtask,border:{pt:0.5,color:"E2E8F0"}}},
             {text:m.startDate||"",options:{fontSize:9,color:"1E293B",border:{pt:0.5,color:"E2E8F0"},align:"center"}},
             {text:m.endDate||"",options:{fontSize:9,color:"1E293B",border:{pt:0.5,color:"E2E8F0"},align:"center"}},
             {text:(m.progress||0)+"%",options:{fontSize:10,color:"1E293B",border:{pt:0.5,color:"E2E8F0"},align:"center"}},
             {text:m.status||"",options:{fontSize:9,color:STATUS_CLR[m.status]||"1E293B",bold:true,border:{pt:0.5,color:"E2E8F0"},align:"center"}},
-          ])
-        ];
-        sl.addTable(rows,{x:0.5,y,w:12.33,colW:[1.5,3.5,2,2,1.33,2],fontSize:10,border:{pt:0.5,color:"E2E8F0"},autoPage:false});
-        y += 0.35 * Math.min(mlList.length + 1, 14) + 0.2;
+          ]), [1.5,3.5,2,2,1.33,2]);
       } else {
-        // 간트차트에서 직접 가져오기
         const gantt = p.gantt || [];
         if (gantt.length) {
-          sl.addText("프로젝트 일정",{x:0.5,y,w:12.33,h:0.25,fontSize:9,color:"6366F1",bold:true});
-          y += 0.3;
-          const rows = [
-            ...tblHdr(["구분","항목","시작일","종료일","진행률"]),
-            ...gantt.flatMap(g => {
-              const mainRow = tblRow([g.division||"",g.task||"",g.startDate||"",g.endDate||"",(g.progress||0)+"%"]);
-              const subRows = (g.subtasks||[]).map(s=>tblRow(["","└ "+s.task,s.startDate||"",s.endDate||"",s.done?"100%":"0%"]));
-              return [mainRow,...subRows];
-            })
-          ];
-          sl.addTable(rows,{x:0.5,y,w:12.33,colW:[2,4,2.33,2.33,1.67],fontSize:10,border:{pt:0.5,color:"E2E8F0"},autoPage:false});
-          y += 0.35 * Math.min(rows.length, 14) + 0.2;
+          const allRows = gantt.flatMap(g => {
+            const main = tblRow([g.division||"",g.task||"",g.startDate||"",g.endDate||"",(g.progress||0)+"%"]);
+            const subs = (g.subtasks||[]).map(s=>tblRow(["","└ "+s.task,s.startDate||"",s.endDate||"",s.done?"100%":"0%"]));
+            return [main,...subs];
+          });
+          pmTable(pm,"프로젝트 일정",tblHdr(["구분","항목","시작일","종료일","진행률"]),allRows,[2,4,2.33,2.33,1.67]);
         }
       }
-      y = addField(sl,"특이사항 메모",d.notes,0.5,y,12.33,0.6);
-      addImages(sl, d, y);
+      pmField(pm,"특이사항 메모",d.notes,12.33,0.8);
+      pmImages(pm, d);
     })();
 
     pptx.writeFile({fileName:`${p.name||"EventOS"}_${docTitle}_${today}.pptx`})
