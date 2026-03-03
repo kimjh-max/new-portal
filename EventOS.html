@@ -4495,9 +4495,9 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
   const [historyNote, setHistoryNote] = useState("");
 
   const customItems = project.customItems || [];
-  const priceMult = quoteType === "일반기업" ? 1.1 : 1.0;
+  const priceMult = quoteType === "일반기업" ? 1.15 : 1.0;
 
-  // 금액 계산: 단가 × 수량 × 일자 (일반기업이면 단가 ×1.1)
+  // 금액 계산: 단가 × 수량 × 일자 (일반기업이면 단가 ×1.15)
   const calcAmt = (item) => Math.round((item.unitPrice||0) * priceMult * (item.qty||1) * (item.days||1));
 
   // 구분별 견적 데이터
@@ -4848,7 +4848,7 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
 
   // 저장된 견적 이력에서 PDF 재출력
   const printFromSnapshot = (snap) => {
-    const snapMult = snap.priceMult || (snap.quoteType==="일반기업"?1.1:1.0);
+    const snapMult = snap.priceMult || (snap.quoteType==="일반기업"?1.15:1.0);
     const snapCalcAmt = (it) => Math.round((it.unitPrice||0)*snapMult*(it.qty||1)*(it.days||1));
     // 구분별 그룹핑
     const groups = {};
@@ -5320,7 +5320,7 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
                 )}
                 {[...(project.quoteHistory||[])].reverse().map((snap,idx)=>{
                   const snapNum = (project.quoteHistory||[]).length - idx;
-                  const snapMult = snap.priceMult || (snap.quoteType==="일반기업"?1.1:1.0);
+                  const snapMult = snap.priceMult || (snap.quoteType==="일반기업"?1.15:1.0);
                   const snapCalc = (it) => Math.round((it.unitPrice||0)*snapMult*(it.qty||1)*(it.days||1));
                   // 구분별 그룹핑
                   const snapDivs = {};
