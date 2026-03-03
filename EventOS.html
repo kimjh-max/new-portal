@@ -268,8 +268,10 @@ const USER_COLORS = ["#6366f1","#ec4899","#10b981","#f59e0b","#06b6d4","#a855f7"
 ═══════════════════════════════════════════════════════════════════════════ */
 const DRIVE_CONFIG = {
   GAS_URL: "",  // ← Google Apps Script 배포 URL을 여기에 입력
-  ROOT_FOLDER_ID: "17KmQNhns3Q35o2psQIw7NMBs3BawdRcu",
+  ROOT_FOLDER_ID: "0ACU1M-ct4JPoUk9PVA",
   SYNC_DEBOUNCE_MS: 3000,
+  AUTO_BACKUP_INTERVAL_MS: 30 * 60 * 1000, // 30분 자동 백업
+  MAX_LOCAL_BACKUPS: 3,  // localStorage에 최근 3개 백업 보관
   ENABLED: false, // GAS_URL 설정 시 자동 활성화
 };
 // GAS_URL이 있으면 자동 활성화
@@ -414,15 +416,39 @@ function useSyncStatus() {
   return { status, lastSync };
 }
 
-// SyncStatusBar 컴포넌트: Topbar에 표시되는 저장 상태
+// SyncStatusBar 컴포넌트: Topbar에 표시되는 저장 상태 + 자동 백업 시간
 function SyncStatusBar() {
   const { status, lastSync } = useSyncStatus();
-  // Drive 미연결 시 localStorage 저장 상태만 표시
+  const [lastBackup, setLastBackup] = React.useState(null);
+  const [showBackupPanel, setShowBackupPanel] = React.useState(false);
+
+  React.useEffect(() => {
+    const check = () => {
+      try {
+        const backups = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
+        if (backups.length && backups[0].backupAt) setLastBackup(new Date(backups[0].backupAt));
+      } catch {}
+    };
+    check();
+    const t = setInterval(check, 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  const backupTimeStr = lastBackup
+    ? lastBackup.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})
+    : null;
+
+  // Drive 미연결 시 localStorage 저장 + 백업 상태 표시
   if (!DRIVE_CONFIG.ENABLED) {
     return (
-      <div style={{display:"flex",alignItems:"center",gap:5,padding:"3px 10px",borderRadius:6,
-        background:"rgba(16,185,129,.08)",border:"1px solid rgba(16,185,129,.2)",fontSize:11,color:"#34d399",whiteSpace:"nowrap"}}>
-        <span>💾</span><span>자동저장</span>
+      <div style={{position:"relative"}}>
+        <div onClick={()=>setShowBackupPanel(!showBackupPanel)}
+          style={{display:"flex",alignItems:"center",gap:5,padding:"3px 10px",borderRadius:6,
+          background:"rgba(16,185,129,.08)",border:"1px solid rgba(16,185,129,.2)",fontSize:11,color:"#34d399",whiteSpace:"nowrap",cursor:"pointer"}}>
+          <span>💾</span>
+          <span>자동저장{backupTimeStr ? ` · 백업 ${backupTimeStr}` : ""}</span>
+        </div>
+        {showBackupPanel && <BackupPanel onClose={()=>setShowBackupPanel(false)}/>}
       </div>
     );
   }
@@ -435,11 +461,82 @@ function SyncStatusBar() {
   };
   const c = configs[status] || configs.idle;
   return (
-    <div style={{display:"flex",alignItems:"center",gap:5,padding:"3px 10px",borderRadius:6,
-      background:c.bg,border:`1px solid ${c.border}`,fontSize:11,color:c.color,whiteSpace:"nowrap",
-      transition:"all .3s"}}>
-      <span style={status==="syncing"?{animation:"spin 1s linear infinite"}:{}}>{c.icon}</span>
-      <span>{c.text}</span>
+    <div style={{position:"relative"}}>
+      <div onClick={()=>setShowBackupPanel(!showBackupPanel)}
+        style={{display:"flex",alignItems:"center",gap:5,padding:"3px 10px",borderRadius:6,
+        background:c.bg,border:`1px solid ${c.border}`,fontSize:11,color:c.color,whiteSpace:"nowrap",
+        transition:"all .3s",cursor:"pointer"}}>
+        <span style={status==="syncing"?{animation:"spin 1s linear infinite"}:{}}>{c.icon}</span>
+        <span>{c.text}{backupTimeStr ? ` · 백업 ${backupTimeStr}` : ""}</span>
+      </div>
+      {showBackupPanel && <BackupPanel onClose={()=>setShowBackupPanel(false)}/>}
+    </div>
+  );
+}
+
+// 백업 이력 패널 (SyncStatusBar 클릭 시 표시)
+function BackupPanel({onClose}) {
+  const [backups, setBackups] = React.useState([]);
+  const [restoring, setRestoring] = React.useState(false);
+  React.useEffect(() => {
+    try {
+      const b = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
+      setBackups(b);
+    } catch {}
+  }, []);
+
+  const restoreBackup = (idx) => {
+    if (!window.confirm(`이 백업(${new Date(backups[idx].backupAt).toLocaleString("ko-KR")})으로 복원하시겠습니까?\n현재 데이터를 덮어씁니다.`)) return;
+    setRestoring(true);
+    const b = backups[idx];
+    try {
+      if (b.projects) localStorage.setItem("eventos_projects", JSON.stringify(b.projects));
+      if (b.users) localStorage.setItem("eventos_users", JSON.stringify(b.users));
+      if (b.priceList) localStorage.setItem("eventos_priceList", JSON.stringify(b.priceList));
+      if (b.expenses) localStorage.setItem("eventos_expenses", JSON.stringify(b.expenses));
+      if (b.laborCosts) localStorage.setItem("eventos_laborCosts", JSON.stringify(b.laborCosts));
+      if (b.purchases) localStorage.setItem("eventos_purchases", JSON.stringify(b.purchases));
+      window.location.reload();
+    } catch (e) {
+      setRestoring(false);
+      alert("복원 실패: " + e.message);
+    }
+  };
+
+  return (
+    <div style={{position:"absolute",top:"100%",right:0,marginTop:8,width:320,background:"var(--card)",
+      border:"1px solid var(--border)",borderRadius:12,boxShadow:"0 8px 32px rgba(0,0,0,.4)",zIndex:9999,padding:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <span style={{fontSize:13,fontWeight:800,color:"var(--txt)"}}>🔄 자동 백업 이력</span>
+        <button onClick={onClose} style={{background:"none",border:"none",color:"var(--txt3)",cursor:"pointer",fontSize:16}}>✕</button>
+      </div>
+      <div style={{fontSize:11,color:"var(--txt4)",marginBottom:10}}>30분마다 자동 백업됩니다. 최근 {DRIVE_CONFIG.MAX_LOCAL_BACKUPS}개 보관.</div>
+      {backups.length === 0 ? (
+        <div style={{textAlign:"center",padding:20,color:"var(--txt4)",fontSize:12}}>아직 자동 백업이 없습니다</div>
+      ) : backups.map((b,i)=>{
+        const dt = new Date(b.backupAt);
+        const projCount = (b.projects||[]).length;
+        return (
+          <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+            padding:"8px 10px",borderRadius:8,background:"rgba(255,255,255,.03)",border:"1px solid var(--border)",marginBottom:6}}>
+            <div>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--txt)"}}>{dt.toLocaleDateString("ko-KR")} {dt.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})}</div>
+              <div style={{fontSize:10,color:"var(--txt4)"}}>프로젝트 {projCount}개 · {b.type==="auto"?"자동":"수동"}</div>
+            </div>
+            <button onClick={()=>restoreBackup(i)} disabled={restoring}
+              style={{padding:"4px 10px",borderRadius:6,border:"1px solid rgba(99,102,241,.3)",
+                background:"rgba(99,102,241,.1)",color:"#818cf8",fontSize:11,fontWeight:600,cursor:"pointer"}}>
+              복원
+            </button>
+          </div>
+        );
+      })}
+      {DRIVE_CONFIG.ENABLED && (
+        <div style={{marginTop:8,padding:"6px 10px",borderRadius:6,background:"rgba(16,185,129,.06)",
+          border:"1px solid rgba(16,185,129,.15)",fontSize:11,color:"#34d399"}}>
+          ☁️ Google Drive에도 백업이 저장됩니다 (최근 48개)
+        </div>
+      )}
     </div>
   );
 }
@@ -8799,9 +8896,35 @@ function App() {
     });
   }, [projects, driveLoaded]);
 
-  // ── Google Drive 초기 로드 (앱 시작 시) ──
+  // ── Google Drive 초기 로드 (앱 시작 시) + 데이터 무결성 검증 ──
   useEffect(() => {
     (async () => {
+      // 1) 데이터 무결성 검증
+      const validateData = () => {
+        try {
+          const p = JSON.parse(localStorage.getItem("eventos_projects") || "[]");
+          if (!Array.isArray(p)) throw new Error("projects is not array");
+          return true;
+        } catch (e) {
+          console.error("[EventOS] 데이터 무결성 검증 실패:", e);
+          // 자동 백업에서 복구 시도
+          try {
+            const backups = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
+            if (backups.length && backups[0].projects) {
+              localStorage.setItem("eventos_projects", JSON.stringify(backups[0].projects));
+              if (backups[0].users) localStorage.setItem("eventos_users", JSON.stringify(backups[0].users));
+              if (backups[0].priceList) localStorage.setItem("eventos_priceList", JSON.stringify(backups[0].priceList));
+              toast("⚠️ 데이터 오류 감지 → 자동 백업에서 복구했습니다", "warn");
+              window.location.reload();
+              return false;
+            }
+          } catch {}
+          return true; // 복구 불가 시 기본값으로 진행
+        }
+      };
+      validateData();
+
+      // 2) Google Drive 로드
       if (!DRIVE_CONFIG.ENABLED) { setDriveLoaded(true); return; }
       const cloud = await SyncManager.loadFromCloud();
       if (cloud && !cloud.error) {
@@ -8816,6 +8939,42 @@ function App() {
       setDriveLoaded(true);
     })();
   }, []);
+
+  // ── 30분 자동 백업 시스템 ──
+  const lastBackupRef = useRef(null);
+  useEffect(() => {
+    const createAutoBackup = () => {
+      const snapshot = {
+        projects, users, priceList, expenses, laborCosts, purchases,
+        backupAt: new Date().toISOString(),
+        type: "auto"
+      };
+      // JSON 비교로 변경 없으면 스킵
+      const json = JSON.stringify({p:projects,u:users,pl:priceList,e:expenses,l:laborCosts,pu:purchases});
+      if (lastBackupRef.current === json) return;
+      lastBackupRef.current = json;
+
+      // localStorage에 최근 N개 백업 보관
+      try {
+        const backups = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
+        backups.unshift(snapshot);
+        if (backups.length > DRIVE_CONFIG.MAX_LOCAL_BACKUPS) backups.length = DRIVE_CONFIG.MAX_LOCAL_BACKUPS;
+        localStorage.setItem("eventos_autoBackups", JSON.stringify(backups));
+      } catch (e) { console.error("[EventOS] 자동 백업 저장 실패:", e); }
+
+      // Drive 백업 (GAS 활성 시)
+      if (DRIVE_CONFIG.ENABLED) {
+        SyncManager.queueSync("saveBackup", { data: snapshot });
+      }
+      console.log("[EventOS] 자동 백업 완료:", new Date().toLocaleTimeString("ko-KR"));
+    };
+
+    // 앱 시작 10초 후 첫 백업 + 30분 간격 반복
+    const initialTimer = setTimeout(createAutoBackup, 10000);
+    const intervalTimer = setInterval(createAutoBackup, DRIVE_CONFIG.AUTO_BACKUP_INTERVAL_MS);
+
+    return () => { clearTimeout(initialTimer); clearInterval(intervalTimer); };
+  }, [projects, users, priceList, expenses, laborCosts, purchases]);
 
   // 로그인
   const handleLogin = (user) => {
