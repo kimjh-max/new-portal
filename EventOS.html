@@ -1155,6 +1155,7 @@ const DIV_CATS = {
 };
 const ALL_CATS = Object.values(DIV_CATS).flat();
 const DIV_COLORS = { "기획":"#6366f1", "테크니컬":"#06b6d4", "제작":"#f59e0b", "기타":"#10b981" };
+const DESIGN_ITEM_CATS = ["디자인","사이니지","연출물","디지털"];
 
 // admin이 관리하는 기준 단가 목록 (단가 × 수량 × 일자 = 금액)
 const INIT_PRICE_LIST = [
@@ -6724,6 +6725,7 @@ function DocEditorPanel({docType, project}) {
   ];
 
   const [activeSection, setActiveSection] = React.useState("overview");
+  const [activeDesignItem, setActiveDesignItem] = React.useState(null);
 
   // 프로젝트별 문서 데이터 저장 (프로젝트id+타입 키)
   const [allDocs, setAllDocs] = React.useState({});
@@ -6909,9 +6911,9 @@ tr:nth-child(even) td{background:#f8fafc}
       <div class="info-box"><div class="info-label">행사명</div><div class="info-value">${ov.eventName||p.name||""}</div></div>
       <div class="info-box"><div class="info-label">주최</div><div class="info-value">${ov.organizer||p.client||""}</div></div>
       <div class="info-box"><div class="info-label">일시</div><div class="info-value">${ov.date||p.eventDate||""} ${ov.time||""}</div></div>
-      <div class="info-box"><div class="info-label">장소</div><div class="info-value">${ov.venue||p.brief?.venue||""}</div></div>
+      <div class="info-box"><div class="info-label">장소</div><div class="info-value">${ov.venue||p.taskOrder?.venue||""}</div></div>
     </div>
-    <div class="box"><div class="box-title">행사 내용</div><div class="box-val">${ov.content||p.brief?.purpose||""}</div></div>
+    <div class="box"><div class="box-title">행사 내용</div><div class="box-val">${ov.content||p.taskOrder?.purpose||""}</div></div>
     <div class="two-col">
       <div class="box"><div class="box-title">행사 성격</div><div class="box-val">${ov.character||""}</div></div>
       <div class="box"><div class="box-title">지원 사항</div><div class="box-val">${ov.support||""}</div></div>
@@ -6933,7 +6935,7 @@ tr:nth-child(even) td{background:#f8fafc}
   </div>
   <div class="sec-body">
     <div class="info-grid">
-      <div class="info-box"><div class="info-label">장소명</div><div class="info-value">${ve.venueName||p.brief?.venue||""}</div></div>
+      <div class="info-box"><div class="info-label">장소명</div><div class="info-value">${ve.venueName||p.taskOrder?.venue||""}</div></div>
       <div class="info-box"><div class="info-label">수용 인원</div><div class="info-value">${ve.capacity||""}</div></div>
       <div class="info-box"><div class="info-label">주소</div><div class="info-value">${ve.address||""}</div></div>
       <div class="info-box"><div class="info-label">층/홀</div><div class="info-value">${ve.floor||""}</div></div>
@@ -6975,6 +6977,37 @@ tr:nth-child(even) td{background:#f8fafc}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>
+
+${/* ── 03-X 디자인 아이템 개별 페이지 ── */
+(de.designItems||[]).map((dItem,dIdx)=>{
+  const dImgs = (dItem.images||[]);
+  const dImgGrid = dImgs.length ? `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:16px">${dImgs.map(img=>`
+    <div style="border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
+      <img src="${img.data}" style="width:100%;display:block"/>
+      ${(img.annotations||[]).length?`<div style="padding:4px 8px;background:#f8fafc;font-size:10px;color:#475569">${img.annotations.map(a=>a.text).join(" / ")}</div>`:""}
+    </div>`).join("")}</div>` : "";
+  return `
+<div class="page sec-page">
+  <div class="sec-header">
+    <div class="sec-num">03</div>
+    <div class="sec-title-block">
+      <div class="sec-title">${dItem.itemName||"Design Item"}</div>
+      <div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div>
+    </div>
+  </div>
+  <div class="sec-body">
+    <div class="info-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:12px">
+      <div class="info-box"><div class="info-label">카테고리</div><div class="info-value">${dItem.category||"-"}</div></div>
+      <div class="info-box"><div class="info-label">구분</div><div class="info-value">${dItem.division||"-"}</div></div>
+      <div class="info-box"><div class="info-label">규격 / 사이즈</div><div class="info-value">${dItem.specs||"-"}</div></div>
+      <div class="info-box"><div class="info-label">수량</div><div class="info-value">${dItem.qty||1}</div></div>
+    </div>
+    ${dItem.notes?`<div class="box"><div class="box-title">메모</div><div class="box-val">${dItem.notes}</div></div>`:""}
+    ${dImgGrid}
+  </div>
+  <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
+</div>`;
+}).join("\n")}
 
 <!-- 04 PROGRAM -->
 <div class="page sec-page">
@@ -7178,8 +7211,8 @@ tr:nth-child(even) td{background:#f8fafc}
       const pm = new PageMgr("01","Over View","행사 개요 | EVENT OVERVIEW");
       pm2Col(pm,"행사명",d.eventName||p.name||"","주최사",d.organizer||p.client||"");
       pm2Col(pm,"일시",d.date||p.eventDate||"","시간",d.time||"");
-      pmField(pm,"장소",d.venue||p.brief?.venue,12.33,0.4);
-      pmField(pm,"행사 내용",d.content||p.brief?.purpose,12.33,1.5);
+      pmField(pm,"장소",d.venue||p.taskOrder?.venue,12.33,0.4);
+      pmField(pm,"행사 내용",d.content||p.taskOrder?.purpose,12.33,1.5);
       pm2ColBig(pm,"행사 성격",d.character,"지원 사항",d.support);
       pmField(pm,"기타사항",d.extraNotes,12.33,0.8);
       pmImages(pm, d);
@@ -7189,7 +7222,7 @@ tr:nth-child(even) td{background:#f8fafc}
     (() => {
       const d = sd("venue");
       const pm = new PageMgr("02","Venue","장소 안내 | VENUE INFORMATION");
-      pm2Col(pm,"장소명",d.venueName||p.brief?.venue||"","수용 인원",d.capacity||p.brief?.attendance||"");
+      pm2Col(pm,"장소명",d.venueName||p.taskOrder?.venue||"","수용 인원",d.capacity||p.taskOrder?.attendance||"");
       pm2Col(pm,"주소",d.address||"","층/홀",d.floor||"");
       pmField(pm,"장소 특이사항",d.notes,12.33,0.8);
       pmTable(pm,"장비/시설 목록",tblHdr(["#","장비명","규격","수량","비고"]),
@@ -7209,6 +7242,27 @@ tr:nth-child(even) td{background:#f8fafc}
       pmField(pm,"LED/스크린 계획",d.ledNotes,12.33,1.0);
       if (!isPlan) pmField(pm,"결과 메모",d.resultNotes,12.33,0.8);
       pmImages(pm, d);
+
+      /* ── 03-X 디자인 아이템 개별 슬라이드 ── */
+      const _diList = d.designItems || [];
+      _diList.forEach((dItem, dIdx) => {
+        const itemLetter = String.fromCharCode(65 + dIdx);
+        const itemPm = new PageMgr(`03-${itemLetter}`, dItem.itemName||"Design Item", `${dItem.category||"디자인"} | DESIGN ITEM`);
+        pm2Col(itemPm,"카테고리",dItem.category||"-","구분",dItem.division||"-");
+        pm2Col(itemPm,"규격 / 사이즈",dItem.specs||"-","수량",String(dItem.qty||1));
+        if (dItem.notes) pmField(itemPm,"메모",dItem.notes,12.33,0.8);
+        // 포트폴리오 스타일 이미지 (크게)
+        const dImgs = dItem.images||[];
+        dImgs.forEach(img=>{
+          itemPm.need(4.0);
+          try {
+            itemPm.sl.addImage({data:img.data,x:1.5,y:itemPm.y,w:10,h:5.2,rounding:true});
+            if ((img.annotations||[]).length)
+              itemPm.sl.addText(img.annotations.map(a=>a.text).join(" · "),{x:1.5,y:itemPm.y+5.2,w:10,h:0.3,fontSize:9,color:"64748B",align:"center"});
+            itemPm.y+=5.6;
+          } catch(e){}
+        });
+      });
     })();
 
     /* ── 04 Program ── */
@@ -7298,9 +7352,9 @@ tr:nth-child(even) td{background:#f8fafc}
           <FG label="일시"><input className="form-input" value={ov.date||proj?.eventDate||""} onChange={e=>updateDoc("overview","date",e.target.value)} placeholder="예) 2025년 11월 25일(화)"/></FG>
           <FG label="시간"><input className="form-input" value={ov.time||""} onChange={e=>updateDoc("overview","time",e.target.value)} placeholder="예) 오전 10:30 ~ 오후 1:30 (3시간)"/></FG>
         </div>
-        <FG label="장소"><input className="form-input" value={ov.venue||proj?.brief?.venue||""} onChange={e=>updateDoc("overview","venue",e.target.value)} placeholder="행사 장소명"/></FG>
+        <FG label="장소"><input className="form-input" value={ov.venue||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("overview","venue",e.target.value)} placeholder="행사 장소명"/></FG>
         <FG label="행사 내용">
-          <textarea className="form-input" rows={3} value={ov.content||proj?.brief?.purpose||""} onChange={e=>updateDoc("overview","content",e.target.value)} placeholder="행사의 주요 내용 및 목적" style={{resize:"vertical"}}/>
+          <textarea className="form-input" rows={3} value={ov.content||proj?.taskOrder?.purpose||""} onChange={e=>updateDoc("overview","content",e.target.value)} placeholder="행사의 주요 내용 및 목적" style={{resize:"vertical"}}/>
         </FG>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
           <FG label="행사 성격">
@@ -7321,8 +7375,8 @@ tr:nth-child(even) td{background:#f8fafc}
       return (
         <div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <FG label="장소명"><input className="form-input" value={ve.venueName||proj?.brief?.venue||""} onChange={e=>updateDoc("venue","venueName",e.target.value)} placeholder="장소명"/></FG>
-            <FG label="수용 인원"><input className="form-input" value={ve.capacity||proj?.brief?.attendance||""} onChange={e=>updateDoc("venue","capacity",e.target.value)} placeholder="예) 300명"/></FG>
+            <FG label="장소명"><input className="form-input" value={ve.venueName||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("venue","venueName",e.target.value)} placeholder="장소명"/></FG>
+            <FG label="수용 인원"><input className="form-input" value={ve.capacity||proj?.taskOrder?.attendance||""} onChange={e=>updateDoc("venue","capacity",e.target.value)} placeholder="예) 300명"/></FG>
             <FG label="주소"><input className="form-input" value={ve.address||""} onChange={e=>updateDoc("venue","address",e.target.value)} placeholder="도로명 주소"/></FG>
             <FG label="층/홀"><input className="form-input" value={ve.floor||""} onChange={e=>updateDoc("venue","floor",e.target.value)} placeholder="예) B1층 그랜드볼룸"/></FG>
           </div>
@@ -7362,50 +7416,173 @@ tr:nth-child(even) td{background:#f8fafc}
     }
 
     if (activeSection === "design") {
+      /* ── 디자인 아이템 CRUD 헬퍼 ── */
+      const getDesignItems = () => sd("design").designItems || [];
+      const addDesignItem = () => {
+        updateDoc("design","designItems",[...getDesignItems(),{
+          _id:Date.now(), checklistId:null, category:"디자인", division:"기획",
+          itemName:"새 디자인 항목", specs:"", qty:1, unitPrice:0, notes:"", images:[]
+        }]);
+      };
+      const removeDesignItem = (id) => {
+        updateDoc("design","designItems", getDesignItems().filter(d=>d._id!==id));
+        if (activeDesignItem===id) setActiveDesignItem(null);
+      };
+      const updateDesignItem = (id, field, value) => {
+        updateDoc("design","designItems", getDesignItems().map(d=>d._id===id?{...d,[field]:value}:d));
+      };
+      const importDesignFromChecklist = () => {
+        const cl = proj?.checklist || [];
+        const custom = proj?.customItems || [];
+        const all = [...cl, ...custom];
+        const designCl = all.filter(c=>DESIGN_ITEM_CATS.includes(c.category));
+        if (!designCl.length) { toast("체크리스트에 디자인 관련 항목이 없습니다","warn"); return; }
+        const existing = getDesignItems();
+        const existingIds = new Set(existing.map(d=>d.checklistId));
+        const newItems = designCl.filter(c=>!existingIds.has(c.id)).map(c=>({
+          _id: Date.now()+Math.random(),
+          checklistId: c.id,
+          category: c.category,
+          division: c.division||"기타",
+          itemName: c.item,
+          specs: "",
+          qty: c.qty||1,
+          unitPrice: c.unitPrice||0,
+          notes: c.note||"",
+          images: [],
+        }));
+        if (!newItems.length) { toast("모든 디자인 항목이 이미 불러와져 있습니다","info"); return; }
+        updateDoc("design","designItems",[...existing,...newItems]);
+        toast(`${newItems.length}개 디자인 항목을 체크리스트에서 가져왔습니다`,"success");
+      };
+
+      const designItemsList = getDesignItems();
       const bnList = getList("design","bannerList",{name:"",size:"",qty:""});
+      const activeItemObj = designItemsList.find(d=>d._id===activeDesignItem);
+
       return (
         <div>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-            <label className="form-label" style={{margin:0}}>현수막/배너 목록</label>
-            <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("design","bannerList",{name:"",size:"",qty:""})}>+ 항목 추가</button>
+          {/* ── 상단 버튼바 ── */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:8}}>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <label className="form-label" style={{margin:0}}>디자인 항목</label>
+              {designItemsList.length > 0 && (
+                <span style={{fontSize:11,color:"#10b981",background:"rgba(16,185,129,.1)",border:"1px solid rgba(16,185,129,.2)",borderRadius:4,padding:"2px 7px"}}>
+                  {designItemsList.length}개 아이템
+                </span>
+              )}
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              <button className="btn btn-ghost" style={{padding:"5px 12px",fontSize:12,borderColor:"rgba(16,185,129,.3)",color:"#34d399"}}
+                onClick={importDesignFromChecklist}>
+                📋 체크리스트에서 가져오기
+              </button>
+              <button className="btn btn-ghost" style={{padding:"5px 12px",fontSize:12}}
+                onClick={addDesignItem}>
+                + 직접 추가
+              </button>
+            </div>
           </div>
-          <div style={{overflowX:"auto",marginBottom:16}}>
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-              <thead><tr style={{background:"rgba(99,102,241,.1)"}}>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:30}}>#</th>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)"}}>품목명</th>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)"}}>규격 (mm)</th>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:60}}>수량</th>
-                <th style={{width:36,border:"1px solid rgba(255,255,255,.07)"}}></th>
-              </tr></thead>
-              <tbody>
-                {bnList.map((item,idx)=>(
-                  <tr key={idx}>
-                    <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.name||""} onChange={e=>updateListItem("design","bannerList",idx,"name",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="현수막명/용도"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.size||""} onChange={e=>updateListItem("design","bannerList",idx,"size",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="예) 3000*2000"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.qty||""} onChange={e=>updateListItem("design","bannerList",idx,"qty",e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="0"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("design","bannerList",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+
+          {/* ── 서브탭 네비게이션 ── */}
+          <div style={{display:"flex",gap:4,overflowX:"auto",marginBottom:16,paddingBottom:8,borderBottom:"1px solid var(--border)"}}>
+            <button onClick={()=>setActiveDesignItem(null)}
+              style={{padding:"6px 14px",borderRadius:6,border:"1px solid",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",
+                background:!activeDesignItem?"rgba(99,102,241,.15)":"transparent",
+                borderColor:!activeDesignItem?"rgba(99,102,241,.4)":"rgba(255,255,255,.1)",
+                color:!activeDesignItem?"#818cf8":"var(--txt3)"}}>
+              개요
+            </button>
+            {designItemsList.map(item=>(
+              <button key={item._id} onClick={()=>setActiveDesignItem(item._id)}
+                style={{padding:"6px 14px",borderRadius:6,border:"1px solid",fontSize:12,cursor:"pointer",whiteSpace:"nowrap",display:"flex",flexDirection:"column",alignItems:"center",gap:2,
+                  background:activeDesignItem===item._id?"rgba(99,102,241,.15)":"transparent",
+                  borderColor:activeDesignItem===item._id?"rgba(99,102,241,.4)":"rgba(255,255,255,.1)",
+                  color:activeDesignItem===item._id?"#818cf8":"var(--txt3)"}}>
+                <span style={{fontSize:9,opacity:.7}}>{item.category}</span>
+                <span style={{fontWeight:activeDesignItem===item._id?700:500}}>{item.itemName}</span>
+              </button>
+            ))}
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <FG label="디지털/영상 계획">
-              <textarea className="form-input" rows={4} value={de.videoNotes||""} onChange={e=>updateDoc("design","videoNotes",e.target.value)} placeholder="예) DIDID(7대), 영상 계획&#10;- 오프닝 영상 (1분 30초)&#10;- 시상 영상 (각 30초)" style={{resize:"vertical"}}/>
-            </FG>
-            <FG label="인쇄물">
-              <textarea className="form-input" rows={4} value={de.printNotes||""} onChange={e=>updateDoc("design","printNotes",e.target.value)} placeholder="예) 팸플릿 A3&#10;좌석 안내판&#10;명패 등" style={{resize:"vertical"}}/>
-            </FG>
-          </div>
-          <FG label="LED/스크린 계획">
-            <textarea className="form-input" rows={3} value={de.ledNotes||""} onChange={e=>updateDoc("design","ledNotes",e.target.value)} placeholder="예) LED 스크린 4853x960 / 메인 프로젝터 12,000 DLP" style={{resize:"vertical"}}/>
-          </FG>
-          {!isPlan && (
-            <FG label="결과 메모">
-              <textarea className="form-input" rows={2} value={de.resultNotes||""} onChange={e=>updateDoc("design","resultNotes",e.target.value)} placeholder="디자인 실제 적용 결과 메모" style={{resize:"vertical"}}/>
-            </FG>
+
+          {/* ── 개요 탭 (기존 내용) ── */}
+          {!activeItemObj && (
+            <div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                <label className="form-label" style={{margin:0}}>현수막/배너 목록</label>
+                <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("design","bannerList",{name:"",size:"",qty:""})}>+ 항목 추가</button>
+              </div>
+              <div style={{overflowX:"auto",marginBottom:16}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead><tr style={{background:"rgba(99,102,241,.1)"}}>
+                    <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:30}}>#</th>
+                    <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)"}}>품목명</th>
+                    <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)"}}>규격 (mm)</th>
+                    <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:60}}>수량</th>
+                    <th style={{width:36,border:"1px solid rgba(255,255,255,.07)"}}></th>
+                  </tr></thead>
+                  <tbody>
+                    {bnList.map((item,idx)=>(
+                      <tr key={idx}>
+                        <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.name||""} onChange={e=>updateListItem("design","bannerList",idx,"name",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="현수막명/용도"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.size||""} onChange={e=>updateListItem("design","bannerList",idx,"size",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="예) 3000*2000"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.qty||""} onChange={e=>updateListItem("design","bannerList",idx,"qty",e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="0"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("design","bannerList",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <FG label="디지털/영상 계획">
+                  <textarea className="form-input" rows={4} value={de.videoNotes||""} onChange={e=>updateDoc("design","videoNotes",e.target.value)} placeholder="예) DIDID(7대), 영상 계획&#10;- 오프닝 영상 (1분 30초)&#10;- 시상 영상 (각 30초)" style={{resize:"vertical"}}/>
+                </FG>
+                <FG label="인쇄물">
+                  <textarea className="form-input" rows={4} value={de.printNotes||""} onChange={e=>updateDoc("design","printNotes",e.target.value)} placeholder="예) 팸플릿 A3&#10;좌석 안내판&#10;명패 등" style={{resize:"vertical"}}/>
+                </FG>
+              </div>
+              <FG label="LED/스크린 계획">
+                <textarea className="form-input" rows={3} value={de.ledNotes||""} onChange={e=>updateDoc("design","ledNotes",e.target.value)} placeholder="예) LED 스크린 4853x960 / 메인 프로젝터 12,000 DLP" style={{resize:"vertical"}}/>
+              </FG>
+              {!isPlan && (
+                <FG label="결과 메모">
+                  <textarea className="form-input" rows={2} value={de.resultNotes||""} onChange={e=>updateDoc("design","resultNotes",e.target.value)} placeholder="디자인 실제 적용 결과 메모" style={{resize:"vertical"}}/>
+                </FG>
+              )}
+            </div>
+          )}
+
+          {/* ── 개별 디자인 아이템 편집 ── */}
+          {activeItemObj && (
+            <div>
+              <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+                <span style={{fontSize:11,padding:"3px 10px",borderRadius:4,background:"rgba(99,102,241,.12)",color:"#818cf8",fontWeight:700}}>{activeItemObj.category}</span>
+                <span style={{fontSize:16,fontWeight:800,color:"var(--txt)"}}>{activeItemObj.itemName}</span>
+                <button onClick={()=>{removeDesignItem(activeItemObj._id)}} style={{marginLeft:"auto",background:"rgba(239,68,68,.12)",border:"1px solid rgba(239,68,68,.25)",color:"#fca5a5",borderRadius:6,padding:"5px 12px",cursor:"pointer",fontSize:12,fontWeight:600}}>삭제</button>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <FG label="아이템명">
+                  <input className="form-input" value={activeItemObj.itemName||""} onChange={e=>updateDesignItem(activeItemObj._id,"itemName",e.target.value)} placeholder="아이템명"/>
+                </FG>
+                <FG label="카테고리">
+                  <input className="form-input" value={activeItemObj.category||""} readOnly style={{opacity:.7}}/>
+                </FG>
+                <FG label="규격 / 사이즈">
+                  <input className="form-input" value={activeItemObj.specs||""} onChange={e=>updateDesignItem(activeItemObj._id,"specs",e.target.value)} placeholder="예) 5000 x 3000mm"/>
+                </FG>
+                <FG label="수량">
+                  <input className="form-input" type="number" value={activeItemObj.qty||""} onChange={e=>updateDesignItem(activeItemObj._id,"qty",parseInt(e.target.value)||0)}/>
+                </FG>
+              </div>
+              <FG label="메모">
+                <textarea className="form-input" rows={3} value={activeItemObj.notes||""} onChange={e=>updateDesignItem(activeItemObj._id,"notes",e.target.value)} placeholder="제작 시방, 소재, 특이사항 등" style={{resize:"vertical"}}/>
+              </FG>
+              <div style={{marginTop:12}}>
+                <label className="form-label">제작 이미지</label>
+                <SectionImages sectionId={`designItem_${activeItemObj._id}`} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)}/>
+              </div>
+            </div>
           )}
         </div>
       );
@@ -7708,7 +7885,9 @@ tr:nth-child(even) td{background:#f8fafc}
               <div style={{marginLeft:"auto",fontSize:11,color:"var(--txt4)"}}>수정 내용은 자동 저장됩니다</div>
             </div>
             {renderSection()}
-            <SectionImages sectionId={activeSection} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)}/>
+            {(activeSection !== "design" || !activeDesignItem) && (
+              <SectionImages sectionId={activeSection} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)}/>
+            )}
           </div>
         </div>
       </div>
