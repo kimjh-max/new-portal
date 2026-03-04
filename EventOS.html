@@ -5173,10 +5173,11 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
       <div class="label">총 견적금액 (VAT 포함)</div>
       <div class="amount">₩ ${adjTotalFinal.toLocaleString()}<span class="won">원</span></div>
     </div>
-    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+    <div style="display:flex;align-items:center;gap:5px;white-space:nowrap">
       <div class="badge">${quoteType}</div>
-      ${hasBudgetAdj ? `<div class="badge" style="background:rgba(255,255,255,.12)">절사 적용</div>` : ""}
-      <div class="badge" style="background:rgba(255,255,255,.10)">${itemCount}개 항목</div>
+      <span style="opacity:.4;font-size:9px">·</span>
+      ${hasBudgetAdj ? `<div class="badge" style="background:rgba(255,255,255,.12);font-size:9px;padding:2px 8px">절사</div><span style="opacity:.4;font-size:9px">·</span>` : ""}
+      <div class="badge" style="background:rgba(255,255,255,.10);font-size:9px;padding:2px 8px">${itemCount}항목</div>
     </div>
   </div>
 
@@ -5355,10 +5356,11 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
       <div class="label">총 견적금액 (VAT 포함)</div>
       <div class="amount">₩ ${snapAdjTotalFinal.toLocaleString()}<span class="won">원</span></div>
     </div>
-    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+    <div style="display:flex;align-items:center;gap:5px;white-space:nowrap">
       <div class="badge">${snap.quoteType}</div>
-      ${snapHasBudgetAdj ? `<div class="badge" style="background:rgba(255,255,255,.12)">절사 적용</div>` : ""}
-      <div class="badge" style="background:rgba(255,255,255,.10)">${itemCount}개 항목</div>
+      <span style="opacity:.4;font-size:9px">·</span>
+      ${snapHasBudgetAdj ? `<div class="badge" style="background:rgba(255,255,255,.12);font-size:9px;padding:2px 8px">절사</div><span style="opacity:.4;font-size:9px">·</span>` : ""}
+      <div class="badge" style="background:rgba(255,255,255,.10);font-size:9px;padding:2px 8px">${itemCount}항목</div>
     </div>
   </div>
 
