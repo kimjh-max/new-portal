@@ -6,7 +6,7 @@ compatibility_date = "2024-12-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "eventos-db"
-database_id = "" # ← wrangler d1 create 후 자동 생성된 ID 입력
+database_id = "220bc04e-cf97-4a82-b263-7f863761ee2a"
 
 # ── Cloudflare R2 Storage ──
 [[r2_buckets]]
