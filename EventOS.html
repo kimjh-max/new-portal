@@ -4399,6 +4399,8 @@ function GanttChart({project, onUpdate}) {
   const [newSub,  setNewSub]  = useState({task:"", startDate:"", endDate:"", done:false, note:""});
   const [memoText, setMemoText] = useState("");
   const [taskMemoTarget, setTaskMemoTarget] = useState(null); // {taskId, taskName, date}
+  const [editTask, setEditTask] = useState(null); // 과업 편집용
+  const [editSubTarget, setEditSubTarget] = useState(null); // {parentId, sub} 세부항목 편집
 
   const eventDate = project.eventDate || today;
   const COL_W = 28;
@@ -4469,6 +4471,38 @@ function GanttChart({project, onUpdate}) {
   const toggleSub = (pid,sid) => {
     const updated=tasks.map(t=>t.id===pid?{...t,subtasks:(t.subtasks||[]).map(s=>s.id===sid?{...s,done:!s.done}:s)}:t);
     setTasks(updated); save(updated,dateMemos);
+  };
+
+  // 과업 수정
+  const updateTask = () => {
+    if(!editTask) return;
+    if(!editTask.task||!editTask.startDate||!editTask.endDate){toast("과업명, 시작일, 종료일은 필수입니다","error");return;}
+    const updated=tasks.map(t=>t.id===editTask.id?{...t,...editTask}:t);
+    setTasks(updated); save(updated,dateMemos);
+    setEditTask(null); toast("✏️ 과업 수정됨","success");
+  };
+  // 과업 삭제
+  const deleteTask = (id) => {
+    if(!confirm("이 과업을 삭제하시겠습니까? 세부항목도 함께 삭제됩니다.")) return;
+    const updated=tasks.filter(t=>t.id!==id);
+    setTasks(updated); save(updated,dateMemos);
+    toast("🗑️ 과업 삭제됨");
+  };
+  // 세부항목 수정
+  const updateSub = () => {
+    if(!editSubTarget) return;
+    const {parentId, sub} = editSubTarget;
+    if(!sub.task){toast("세부항목명은 필수입니다","error");return;}
+    const updated=tasks.map(t=>t.id===parentId?{...t,subtasks:(t.subtasks||[]).map(s=>s.id===sub.id?{...s,...sub}:s)}:t);
+    setTasks(updated); save(updated,dateMemos);
+    setEditSubTarget(null); toast("✏️ 세부항목 수정됨","success");
+  };
+  // 세부항목 삭제
+  const deleteSub = (pid,sid) => {
+    if(!confirm("이 세부항목을 삭제하시겠습니까?")) return;
+    const updated=tasks.map(t=>t.id===pid?{...t,subtasks:(t.subtasks||[]).filter(s=>s.id!==sid)}:t);
+    setTasks(updated); save(updated,dateMemos);
+    toast("🗑️ 세부항목 삭제됨");
   };
 
   const saveMemo = () => {
@@ -4634,6 +4668,10 @@ function GanttChart({project, onUpdate}) {
                     )}
                     <span style={{fontSize:12,color:"var(--txt)",fontWeight:600,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{task.task}</span>
                     <span style={{fontSize:10,color:"var(--txt4)",flexShrink:0}}>{task.progress||0}%</span>
+                    <button onClick={()=>setEditTask({...task})} title="과업 편집"
+                      style={{background:"none",border:"none",color:"var(--txt4)",fontSize:10,padding:0,flexShrink:0,lineHeight:1,cursor:"pointer"}}>✏️</button>
+                    <button onClick={()=>deleteTask(task.id)} title="과업 삭제"
+                      style={{background:"none",border:"none",color:"var(--txt4)",fontSize:10,padding:0,flexShrink:0,lineHeight:1,cursor:"pointer"}}>🗑</button>
                     <button onClick={()=>setShowAddSubtask(task.id)} title="세부항목 추가"
                       style={{background:"none",border:"none",color:"var(--txt4)",fontSize:12,padding:0,flexShrink:0,lineHeight:1}}>＋</button>
                   </div>
@@ -4664,8 +4702,12 @@ function GanttChart({project, onUpdate}) {
                         onChange={()=>toggleSub(task.id,sub.id)}
                         style={{width:11,height:11,cursor:"pointer",flexShrink:0,accentColor:taskColor}}/>
                       <span style={{fontSize:11,color:sub.done?"var(--txt4)":"var(--txt2)",
-                        textDecoration:sub.done?"line-through":"none",
+                        textDecoration:sub.done?"line-through":"none",flex:1,
                         overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sub.task}</span>
+                      <button onClick={()=>setEditSubTarget({parentId:task.id,sub:{...sub}})} title="세부항목 편집"
+                        style={{background:"none",border:"none",color:"var(--txt4)",fontSize:9,padding:0,flexShrink:0,cursor:"pointer"}}>✏️</button>
+                      <button onClick={()=>deleteSub(task.id,sub.id)} title="세부항목 삭제"
+                        style={{background:"none",border:"none",color:"var(--txt4)",fontSize:9,padding:0,flexShrink:0,cursor:"pointer"}}>🗑</button>
                     </div>
                     <div style={{position:"relative",width:totalW,flexShrink:0,height:26}}>
                       {dates.map((d,i)=>{
@@ -4824,6 +4866,85 @@ function GanttChart({project, onUpdate}) {
                   style={{background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.3)",color:"#ef4444",borderRadius:6,padding:"6px 14px",fontSize:13}}>삭제</button>
               )}
               <button className="btn-primary" onClick={saveTaskMemo}>저장</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 과업 편집 모달 */}
+      {editTask&&(
+        <div className="modal-overlay" onClick={e=>e.target.classList.contains("modal-overlay")&&setEditTask(null)}>
+          <div className="modal-box">
+            <div className="modal-title">✏️ 과업 편집</div>
+            {[
+              {label:"과업명 *",key:"task",type:"text"},
+              {label:"시작일 *",key:"startDate",type:"date"},
+              {label:"종료일 *",key:"endDate",type:"date"},
+            ].map(f=>(
+              <div key={f.key} className="form-group">
+                <label className="form-label">{f.label}</label>
+                <input className="form-input" type={f.type}
+                  value={editTask[f.key]||""} onChange={e=>setEditTask(t=>({...t,[f.key]:e.target.value}))}/>
+              </div>
+            ))}
+            <div className="form-group">
+              <label className="form-label">구분</label>
+              <select className="form-input" value={editTask.division}
+                onChange={e=>setEditTask(t=>({...t,division:e.target.value,color:DIV_COLORS[e.target.value]||t.color}))}>
+                {DIVISIONS.map(d=><option key={d} value={d}>{d}</option>)}
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">진행률 ({editTask.progress||0}%)</label>
+              <input type="range" min={0} max={100} value={editTask.progress||0}
+                onChange={e=>setEditTask(t=>({...t,progress:+e.target.value}))} style={{width:"100%"}}/>
+            </div>
+            <div className="form-group">
+              <label className="form-label">색상</label>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {["#6366f1","#06b6d4","#f59e0b","#10b981","#ef4444","#ec4899","#8b5cf6","#84cc16"].map(c=>(
+                  <button key={c} onClick={()=>setEditTask(t=>({...t,color:c}))}
+                    style={{width:24,height:24,borderRadius:"50%",background:c,
+                      border:editTask.color===c?"3px solid #fff":"2px solid transparent",cursor:"pointer"}}/>
+                ))}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}}>
+              <button onClick={()=>deleteTask(editTask.id)}
+                style={{background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.3)",color:"#ef4444",borderRadius:6,padding:"6px 14px",fontSize:13,marginRight:"auto"}}>삭제</button>
+              <button className="btn-ghost" onClick={()=>setEditTask(null)}>취소</button>
+              <button className="btn-primary" onClick={updateTask}>저장</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 세부항목 편집 모달 */}
+      {editSubTarget&&(
+        <div className="modal-overlay" onClick={e=>e.target.classList.contains("modal-overlay")&&setEditSubTarget(null)}>
+          <div className="modal-box" style={{maxWidth:420}}>
+            <div className="modal-title">✏️ 세부항목 편집</div>
+            {[
+              {label:"세부항목명 *",key:"task",type:"text"},
+              {label:"시작일",key:"startDate",type:"date"},
+              {label:"종료일",key:"endDate",type:"date"},
+            ].map(f=>(
+              <div key={f.key} className="form-group">
+                <label className="form-label">{f.label}</label>
+                <input className="form-input" type={f.type}
+                  value={editSubTarget.sub[f.key]||""} onChange={e=>setEditSubTarget(p=>({...p,sub:{...p.sub,[f.key]:e.target.value}}))}/>
+              </div>
+            ))}
+            <div className="form-group">
+              <label className="form-label">비고</label>
+              <input className="form-input" type="text" placeholder="참고 메모"
+                value={editSubTarget.sub.note||""} onChange={e=>setEditSubTarget(p=>({...p,sub:{...p.sub,note:e.target.value}}))}/>
+            </div>
+            <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}}>
+              <button onClick={()=>{deleteSub(editSubTarget.parentId,editSubTarget.sub.id);setEditSubTarget(null);}}
+                style={{background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.3)",color:"#ef4444",borderRadius:6,padding:"6px 14px",fontSize:13,marginRight:"auto"}}>삭제</button>
+              <button className="btn-ghost" onClick={()=>setEditSubTarget(null)}>취소</button>
+              <button className="btn-primary" onClick={updateSub}>저장</button>
             </div>
           </div>
         </div>
@@ -5771,6 +5892,9 @@ function TaskOrderPanel({project, onUpdate}) {
   const to = project.taskOrder || {};
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({});
+  const [showHistory, setShowHistory] = useState(false);
+  const [viewingVersion, setViewingVersion] = useState(null);
+  const history = project.taskOrderHistory || [];
 
   const EMPTY_TO = {sender:"",receivedDate:"",purpose:"",venue:"",attendance:"",tasks:"",requirements:"",notes:""};
 
@@ -5780,9 +5904,15 @@ function TaskOrderPanel({project, onUpdate}) {
   };
   const cancel = () => setEditing(false);
   const save = () => {
+    // 기존 내용이 있으면 이력에 저장
+    const prevHistory = [...history];
+    if(to.purpose || to.tasks || to.sender) {
+      prevHistory.push({...to, savedAt: new Date().toISOString().slice(0,19).replace("T"," "), version: prevHistory.length+1});
+    }
     onUpdate({...project,
       taskOrder: {...form},
-      logs:[...project.logs,{id:Date.now(),date:today,author:"사용자",type:"auto",content:"과업지시서 내용이 업데이트되었습니다."}]
+      taskOrderHistory: prevHistory,
+      logs:[...project.logs,{id:Date.now(),date:today,author:"사용자",type:"auto",content:`과업지시서 v${prevHistory.length+1} 업데이트됨`}]
     });
     setEditing(false);
     toast("📋 과업지시서가 저장되었습니다","success");
@@ -5821,16 +5951,26 @@ function TaskOrderPanel({project, onUpdate}) {
             </div>
           </div>
         </div>
-        {!editing ? (
-          <button onClick={startEdit} className="btn btn-ghost" style={{fontSize:12,padding:"5px 14px",borderColor:"rgba(99,102,241,.3)",color:"#a5b4fc"}}>
-            ✏️ {isEmpty ? "과업지시서 등록" : "수정"}
-          </button>
-        ) : (
-          <div style={{display:"flex",gap:8}}>
-            <button onClick={save} className="btn btn-primary" style={{fontSize:12,padding:"5px 14px"}}>💾 저장</button>
-            <button onClick={cancel} className="btn btn-ghost" style={{fontSize:12,padding:"5px 12px"}}>취소</button>
-          </div>
-        )}
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          {!editing ? (
+            <>
+              {history.length>0&&(
+                <button onClick={()=>setShowHistory(!showHistory)} className="btn btn-ghost"
+                  style={{fontSize:11,padding:"4px 10px",borderColor:"rgba(255,255,255,.1)",color:"var(--txt3)"}}>
+                  📚 이력 ({history.length})
+                </button>
+              )}
+              <button onClick={startEdit} className="btn btn-ghost" style={{fontSize:12,padding:"5px 14px",borderColor:"rgba(99,102,241,.3)",color:"#a5b4fc"}}>
+                ✏️ {isEmpty ? "과업지시서 등록" : "수정"}
+              </button>
+            </>
+          ) : (
+            <>
+              <button onClick={save} className="btn btn-primary" style={{fontSize:12,padding:"5px 14px"}}>💾 저장</button>
+              <button onClick={cancel} className="btn btn-ghost" style={{fontSize:12,padding:"5px 12px"}}>취소</button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* 내용 */}
@@ -5907,6 +6047,57 @@ function TaskOrderPanel({project, onUpdate}) {
               }}>{to[s.key]}</div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* 이력 패널 */}
+      {showHistory&&history.length>0&&(
+        <div style={{borderTop:"1px solid rgba(99,102,241,.15)",padding:"14px 18px",background:"rgba(0,0,0,.15)"}}>
+          <div style={{color:"var(--txt3)",fontSize:12,fontWeight:700,marginBottom:10}}>📚 과업지시서 변경 이력</div>
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {history.slice().reverse().map((ver,i)=>(
+              <div key={i} onClick={()=>setViewingVersion(ver)}
+                style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                  background:"rgba(255,255,255,.03)",border:"1px solid var(--border)",borderRadius:8,
+                  padding:"8px 14px",cursor:"pointer",transition:"background .15s"}}>
+                <div>
+                  <span style={{color:"#a5b4fc",fontSize:12,fontWeight:700}}>v{ver.version}</span>
+                  <span style={{color:"var(--txt4)",fontSize:11,marginLeft:8}}>{ver.savedAt}</span>
+                </div>
+                <div style={{color:"var(--txt4)",fontSize:11}}>
+                  {ver.sender&&`발신: ${ver.sender}`}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 이전 버전 조회 모달 */}
+      {viewingVersion&&(
+        <div className="modal-overlay" onClick={e=>e.target.classList.contains("modal-overlay")&&setViewingVersion(null)}>
+          <div className="modal-box" style={{maxWidth:600,maxHeight:"80vh",overflow:"auto"}}>
+            <div className="modal-title">📋 과업지시서 v{viewingVersion.version} <span style={{color:"var(--txt4)",fontSize:12,fontWeight:400}}>({viewingVersion.savedAt})</span></div>
+            {[
+              {icon:"👤",label:"발신인",key:"sender"},{icon:"📅",label:"수신일",key:"receivedDate"},
+              {icon:"📍",label:"행사 장소",key:"venue"},{icon:"👥",label:"참석 규모",key:"attendance"},
+              {icon:"🎯",label:"행사 목적",key:"purpose"},{icon:"📌",label:"주요 과업",key:"tasks"},
+              {icon:"⚠️",label:"요구사항",key:"requirements"},{icon:"📝",label:"참고사항",key:"notes"},
+            ].filter(f=>viewingVersion[f.key]).map(f=>(
+              <div key={f.key} style={{marginBottom:10}}>
+                <div style={{color:"#a5b4fc",fontSize:11,fontWeight:700,marginBottom:4}}>{f.icon} {f.label}</div>
+                <div style={{color:"var(--txt2)",fontSize:13,lineHeight:1.7,whiteSpace:"pre-wrap",
+                  background:"rgba(255,255,255,.02)",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)"}}>{viewingVersion[f.key]}</div>
+              </div>
+            ))}
+            <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}}>
+              <button onClick={()=>{setForm({...EMPTY_TO,...viewingVersion});setEditing(true);setViewingVersion(null);setShowHistory(false);}}
+                className="btn btn-ghost" style={{fontSize:12,color:"#f59e0b",borderColor:"rgba(245,158,11,.3)"}}>
+                🔄 이 버전으로 복원
+              </button>
+              <button className="btn-ghost" onClick={()=>setViewingVersion(null)}>닫기</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -6514,19 +6705,32 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
 
           <AISummaryPanel project={project}/>
           <div className="grid-2">
+            {/* 일정 현황 — 인라인 편집 */}
             <div className="card-sm">
-              <div style={{color:"var(--txt3)",fontSize:12,marginBottom:10}}>📅 일정 현황</div>
-              {[["시작일",project.startDate],["행사일",project.eventDate],["종료일",project.endDate]].map(([l,v])=>(
-                <div key={l} className="flex-between" style={{marginBottom:8}}>
-                  <span style={{color:"var(--txt3)",fontSize:13}}>{l}</span>
-                  <span style={{color:"var(--txt)",fontSize:13,fontWeight:600}}>{v}</span>
+              <div style={{color:"var(--txt3)",fontSize:12,marginBottom:10}}>📅 일정 현황 <span style={{color:"var(--txt4)",fontSize:10}}>(클릭하여 수정)</span></div>
+              {[["시작일","startDate"],["행사일","eventDate"],["종료일","endDate"]].map(([label,key])=>(
+                <div key={label} className="flex-between" style={{marginBottom:8}}>
+                  <span style={{color:"var(--txt3)",fontSize:13}}>{label}</span>
+                  <input type="date" value={project[key]||""}
+                    onChange={e=>{onUpdate({...project,[key]:e.target.value});}}
+                    style={{background:"transparent",border:"1px solid var(--border)",borderRadius:4,padding:"2px 6px",
+                      color:"var(--txt)",fontSize:13,fontWeight:600,textAlign:"right",cursor:"pointer",
+                      outline:"none",maxWidth:150}}/>
                 </div>
               ))}
             </div>
+            {/* 예산 현황 — 인라인 편집 */}
             <div className="card-sm">
-              <div style={{color:"var(--txt3)",fontSize:12,marginBottom:10}}>💵 예산 현황</div>
+              <div style={{color:"var(--txt3)",fontSize:12,marginBottom:10}}>💵 예산 현황 <span style={{color:"var(--txt4)",fontSize:10}}>(클릭하여 수정)</span></div>
+              <div className="flex-between" style={{marginBottom:8}}>
+                <span style={{color:"var(--txt3)",fontSize:13}}>계약금액</span>
+                <input type="text" value={(project.budget||0).toLocaleString()}
+                  onChange={e=>{const v=parseInt(e.target.value.replace(/[^0-9]/g,""))||0;onUpdate({...project,budget:v});}}
+                  style={{background:"transparent",border:"1px solid var(--border)",borderRadius:4,padding:"2px 6px",
+                    color:"#a5b4fc",fontSize:13,fontWeight:700,textAlign:"right",cursor:"pointer",
+                    outline:"none",maxWidth:150}}/>
+              </div>
               {[
-                ["계약금액",fmt(project.budget),"#a5b4fc"],
                 ["예상원가",fmt(project.cost),"var(--txt)"],
                 ["예상수익",fmt(project.budget-project.cost),profit>0?"#10b981":"#ef4444"],
               ].map(([l,v,c])=>(
