@@ -6031,19 +6031,16 @@ function UrgentTasksPanel({project}) {
   const todayStr = new Date().toISOString().slice(0,10);
   const d3 = new Date(Date.now()+3*86400000).toISOString().slice(0,10);
   const gantt = project.gantt||[];
+  // 세부 과업(subtask)만 노출 — 구분 항목(main task) 제외
   const urgents = [];
   gantt.forEach(t=>{
-    if(t.endDate && t.endDate>=todayStr && t.endDate<=d3 && (t.progress||0)<100)
-      urgents.push({name:t.task, assignee:t.assignee||"", endDate:t.endDate, progress:t.progress||0, color:t.color||"#6366f1", type:"task"});
     (t.subtasks||[]).forEach(s=>{
       if(s.endDate && s.endDate>=todayStr && s.endDate<=d3 && !s.done)
         urgents.push({name:`${t.task} › ${s.task}`, assignee:s.assignee||t.assignee||"", endDate:s.endDate, progress:s.done?100:0, color:t.color||"#6366f1", type:"sub"});
     });
   });
-  // 이미 지난 과업(endDate < today)도 미완료이면 추가
+  // 이미 지난 과업(endDate < today)도 미완료이면 추가 — subtask만
   gantt.forEach(t=>{
-    if(t.endDate && t.endDate<todayStr && (t.progress||0)<100)
-      urgents.push({name:t.task, assignee:t.assignee||"", endDate:t.endDate, progress:t.progress||0, color:t.color||"#ef4444", type:"overdue"});
     (t.subtasks||[]).forEach(s=>{
       if(s.endDate && s.endDate<todayStr && !s.done)
         urgents.push({name:`${t.task} › ${s.task}`, assignee:s.assignee||t.assignee||"", endDate:s.endDate, progress:0, color:t.color||"#ef4444", type:"overdue"});
@@ -7553,9 +7550,30 @@ function MyWork({projects, user, users, setDetail, setPage, expenses=[], laborCo
   const myProjects = user?.producer
     ? projects.filter(p=>p.producer===user.producer)
     : projects; // 관리자는 전체 보기
+  // 간트차트 subtask 기준 미완료 과업 (데드라인 정렬)
+  const todayStr = new Date().toISOString().slice(0,10);
   const myTasks = myProjects.flatMap(p=>
-    p.checklist.filter(c=>!c.done).map(c=>({...c,projectName:p.name,projectId:p.id}))
-  ).slice(0,10);
+    (p.gantt||[]).flatMap(g=>
+      (g.subtasks||[]).filter(s=>!s.done).map(s=>({
+        ...s,
+        parentTask: g.task,
+        division: g.division,
+        color: g.color || "#6366f1",
+        projectName: p.name,
+        projectId: p.id,
+      }))
+    )
+  ).sort((a,b)=>(a.endDate||"9999").localeCompare(b.endDate||"9999")).slice(0,20);
+  const getDday = (d) => {
+    if(!d) return null;
+    const diff = Math.ceil((new Date(d)-new Date(todayStr))/(86400000));
+    return diff===0 ? "오늘" : diff<0 ? `D+${Math.abs(diff)}` : `D-${diff}`;
+  };
+  const getDdayColor = (d) => {
+    if(!d) return "var(--txt4)";
+    const diff = Math.ceil((new Date(d)-new Date(todayStr))/(86400000));
+    return diff<0 ? "#ef4444" : diff<=3 ? "#f59e0b" : "var(--txt3)";
+  };
 
   // 나에게 위임된 과업: 모든 프로젝트의 logs에서 delegation + delegateToId === user.id
   const delegatedToMe = projects.flatMap(p=>
@@ -7719,22 +7737,39 @@ function MyWork({projects, user, users, setDetail, setPage, expenses=[], laborCo
         </div>
       </div>
 
-      {/* 미완료 과업 */}
+      {/* 미완료 과업 — 간트차트 기준 데드라인 */}
       <div>
-        <div style={{color:"var(--txt2)",fontSize:13,fontWeight:700,marginBottom:14}}>⚠️ 미완료 과업 (전체 담당 프로젝트)</div>
-        {myTasks.map((t,i)=>(
-          <div key={i} style={{
-            display:"flex",alignItems:"center",gap:12,padding:"11px 14px",
-            background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.05)",
-            borderRadius:8,marginBottom:5,
-          }}>
-            <div style={{width:16,height:16,borderRadius:4,border:"1.5px solid #334155",background:"transparent"}}/>
-            <span style={{flex:1,color:"var(--txt)",fontSize:13}}>{t.item}</span>
-            <span style={{background:"rgba(99,102,241,.1)",color:"#818cf8",padding:"2px 8px",borderRadius:4,fontSize:11}}>{t.category}</span>
-            <span style={{color:"var(--txt3)",fontSize:12}}>{t.projectName}</span>
-            {(t.unitPrice||0)>0&&<span style={{color:"var(--txt4)",fontSize:11}}>{Math.round((t.unitPrice||0)*(t.qty||1)*(t.days||1)/10000).toLocaleString()}만원</span>}
-          </div>
-        ))}
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+          <span style={{color:"var(--txt2)",fontSize:13,fontWeight:700}}>📅 미완료 과업 · 데드라인</span>
+          {myTasks.length>0&&<span style={{background:"rgba(239,68,68,.15)",color:"#ef4444",fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:10}}>{myTasks.length}건</span>}
+        </div>
+        {myTasks.map((t,i)=>{
+          const dday = getDday(t.endDate);
+          const ddayCol = getDdayColor(t.endDate);
+          const isOverdue = t.endDate && t.endDate < todayStr;
+          return (
+            <div key={t.id||i} style={{
+              display:"flex",alignItems:"center",gap:8,padding:"8px 12px",
+              background: isOverdue ? "rgba(239,68,68,.06)" : "rgba(255,255,255,.02)",
+              border: `1px solid ${isOverdue ? "rgba(239,68,68,.2)" : "rgba(255,255,255,.05)"}`,
+              borderRadius:8,marginBottom:5,
+            }}>
+              <span style={{width:4,height:28,borderRadius:2,background:t.color,flexShrink:0}}/>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{color:"var(--txt)",fontSize:13,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  {t.parentTask} › {t.task}
+                </div>
+                <div style={{color:"var(--txt4)",fontSize:10,marginTop:1}}>
+                  {t.projectName}
+                  {t.assignee && <span> · 👤 {t.assignee}</span>}
+                </div>
+              </div>
+              <span style={{background:`rgba(99,102,241,.1)`,color:t.color,padding:"2px 8px",borderRadius:4,fontSize:10,flexShrink:0}}>{t.division}</span>
+              {dday && <span style={{fontSize:12,fontWeight:700,color:ddayCol,flexShrink:0}}>{dday}</span>}
+              {t.endDate && <span style={{fontSize:10,color:"var(--txt4)",flexShrink:0}}>{t.endDate.slice(5)}</span>}
+            </div>
+          );
+        })}
         {myTasks.length===0&&<div style={{color:"var(--txt4)",fontSize:13,padding:20,textAlign:"center",border:"1px dashed rgba(255,255,255,.07)",borderRadius:10}}>🎉 모든 과업이 완료되었습니다!</div>}
       </div>
     </div>
