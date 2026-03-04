@@ -1508,6 +1508,20 @@ const ALL_CATS = Object.values(DIV_CATS).flat();
 const DIV_COLORS = { "기획":"#6366f1", "테크니컬":"#06b6d4", "제작":"#f59e0b", "기타":"#10b981" };
 const DESIGN_ITEM_CATS = ["디자인","사이니지","연출물","디지털"];
 
+// 체크리스트 정렬: 구분(Division) → 카테고리(Category) → sortOrder
+const sortChecklist = (items) => {
+  const divOrder = {}; DIVISIONS.forEach((d,i)=>divOrder[d]=i);
+  const catOrder = {};
+  Object.entries(DIV_CATS).forEach(([div,cats])=>{ cats.forEach((c,i)=>{ catOrder[div+"_"+c]=i; }); });
+  return [...items].sort((a,b) => {
+    const da=divOrder[a.division||"기타"]??99, db=divOrder[b.division||"기타"]??99;
+    if(da!==db) return da-db;
+    const ca=catOrder[(a.division||"기타")+"_"+a.category]??99, cb=catOrder[(b.division||"기타")+"_"+b.category]??99;
+    if(ca!==cb) return ca-cb;
+    return (a.sortOrder||0)-(b.sortOrder||0);
+  });
+};
+
 // admin이 관리하는 기준 단가 목록 (단가 × 수량 × 일자 = 금액)
 const INIT_PRICE_LIST = [
   {
@@ -4387,7 +4401,7 @@ function ProjectCard({project, onClick}) {
 }
 
 // ─ Gantt ─
-function GanttChart({project, onUpdate}) {
+function GanttChart({project, onUpdate, users}) {
   const [tasks, setTasks]           = useState(project.gantt || []);
   const [dateMemos, setDateMemos]   = useState(project.dateMemos || {});
   const [taskMemos, setTaskMemos]   = useState(project.taskMemos || {});
@@ -4395,8 +4409,8 @@ function GanttChart({project, onUpdate}) {
   const [showAddTask, setShowAddTask]       = useState(false);
   const [showAddSubtask, setShowAddSubtask] = useState(null);
   const [showMemoModal, setShowMemoModal]   = useState(null);
-  const [newTask, setNewTask] = useState({division:"기획", task:"", startDate:"", endDate:"", color:"#6366f1", progress:0});
-  const [newSub,  setNewSub]  = useState({task:"", startDate:"", endDate:"", done:false, note:""});
+  const [newTask, setNewTask] = useState({division:"기획", task:"", startDate:"", endDate:"", color:"#6366f1", progress:0, assignee:""});
+  const [newSub,  setNewSub]  = useState({task:"", startDate:"", endDate:"", done:false, note:"", assignee:""});
   const [memoText, setMemoText] = useState("");
   const [taskMemoTarget, setTaskMemoTarget] = useState(null); // {taskId, taskName, date}
   const [editTask, setEditTask] = useState(null); // 과업 편집용
@@ -4456,7 +4470,7 @@ function GanttChart({project, onUpdate}) {
     if(!newTask.task||!newTask.startDate||!newTask.endDate){toast("과업명, 시작일, 종료일은 필수입니다","error");return;}
     const updated=[...tasks,{...newTask,id:Date.now(),subtasks:[]}];
     setTasks(updated); save(updated,dateMemos);
-    setNewTask({division:"기획",task:"",startDate:"",endDate:"",color:"#6366f1",progress:0});
+    setNewTask({division:"기획",task:"",startDate:"",endDate:"",color:"#6366f1",progress:0,assignee:""});
     setShowAddTask(false); toast("✅ 과업 추가됨","success");
   };
 
@@ -4464,7 +4478,7 @@ function GanttChart({project, onUpdate}) {
     if(!newSub.task){toast("세부항목명은 필수입니다","error");return;}
     const updated=tasks.map(t=>t.id===pid?{...t,subtasks:[...(t.subtasks||[]),{...newSub,id:Date.now()}]}:t);
     setTasks(updated); save(updated,dateMemos);
-    setNewSub({task:"",startDate:"",endDate:"",done:false,note:""});
+    setNewSub({task:"",startDate:"",endDate:"",done:false,note:"",assignee:""});
     setShowAddSubtask(null); toast("✅ 세부항목 추가됨","success");
   };
 
@@ -4666,7 +4680,10 @@ function GanttChart({project, onUpdate}) {
                         {isExp?"▼":"▶"}
                       </button>
                     )}
-                    <span style={{fontSize:12,color:"var(--txt)",fontWeight:600,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{task.task}</span>
+                    <span style={{fontSize:12,color:"var(--txt)",fontWeight:600,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                      {task.task}
+                      {task.assignee&&<span style={{fontSize:9,color:"var(--txt4)",marginLeft:4,fontWeight:400}}>👤{task.assignee}</span>}
+                    </span>
                     <span style={{fontSize:10,color:"var(--txt4)",flexShrink:0}}>{task.progress||0}%</span>
                     <button onClick={()=>setEditTask({...task})} title="과업 편집"
                       style={{background:"none",border:"none",color:"var(--txt4)",fontSize:10,padding:0,flexShrink:0,lineHeight:1,cursor:"pointer"}}>✏️</button>
@@ -4703,7 +4720,10 @@ function GanttChart({project, onUpdate}) {
                         style={{width:11,height:11,cursor:"pointer",flexShrink:0,accentColor:taskColor}}/>
                       <span style={{fontSize:11,color:sub.done?"var(--txt4)":"var(--txt2)",
                         textDecoration:sub.done?"line-through":"none",flex:1,
-                        overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sub.task}</span>
+                        overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {sub.task}
+                        {sub.assignee&&<span style={{fontSize:8,color:"var(--txt4)",marginLeft:3}}>👤{sub.assignee}</span>}
+                      </span>
                       <button onClick={()=>setEditSubTarget({parentId:task.id,sub:{...sub}})} title="세부항목 편집"
                         style={{background:"none",border:"none",color:"var(--txt4)",fontSize:9,padding:0,flexShrink:0,cursor:"pointer"}}>✏️</button>
                       <button onClick={()=>deleteSub(task.id,sub.id)} title="세부항목 삭제"
@@ -4756,6 +4776,11 @@ function GanttChart({project, onUpdate}) {
                       <input type="date" value={newSub.endDate}
                         onChange={e=>setNewSub(s=>({...s,endDate:e.target.value}))}
                         style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:4,padding:"3px 6px",color:"var(--txt)",fontSize:11}}/>
+                      <select value={newSub.assignee||""} onChange={e=>setNewSub(s=>({...s,assignee:e.target.value}))}
+                        style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:4,padding:"3px 6px",color:"var(--txt)",fontSize:11,maxWidth:90}}>
+                        <option value="">담당자</option>
+                        {(users||[]).filter(u=>u.approved||u.id==="admin").map(u=><option key={u.id} value={u.name}>{u.name}</option>)}
+                      </select>
                       <button onClick={()=>addSub(task.id)}
                         style={{background:"var(--primary)",border:"none",color:"#fff",borderRadius:4,padding:"4px 12px",fontSize:11}}>추가</button>
                       <button onClick={()=>setShowAddSubtask(null)}
@@ -4790,6 +4815,14 @@ function GanttChart({project, onUpdate}) {
               <select className="form-input" value={newTask.division}
                 onChange={e=>setNewTask(t=>({...t,division:e.target.value,color:DIV_COLORS[e.target.value]||"#6366f1"}))}>
                 {DIVISIONS.map(d=><option key={d} value={d}>{d}</option>)}
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">담당자</label>
+              <select className="form-input" value={newTask.assignee}
+                onChange={e=>setNewTask(t=>({...t,assignee:e.target.value}))}>
+                <option value="">담당자 선택</option>
+                {(users||[]).filter(u=>u.approved||u.id==="admin").map(u=><option key={u.id} value={u.name}>{u.name}</option>)}
               </select>
             </div>
             <div className="form-group">
@@ -4895,6 +4928,14 @@ function GanttChart({project, onUpdate}) {
               </select>
             </div>
             <div className="form-group">
+              <label className="form-label">담당자</label>
+              <select className="form-input" value={editTask.assignee||""}
+                onChange={e=>setEditTask(t=>({...t,assignee:e.target.value}))}>
+                <option value="">담당자 선택</option>
+                {(users||[]).filter(u=>u.approved||u.id==="admin").map(u=><option key={u.id} value={u.name}>{u.name}</option>)}
+              </select>
+            </div>
+            <div className="form-group">
               <label className="form-label">진행률 ({editTask.progress||0}%)</label>
               <input type="range" min={0} max={100} value={editTask.progress||0}
                 onChange={e=>setEditTask(t=>({...t,progress:+e.target.value}))} style={{width:"100%"}}/>
@@ -4936,6 +4977,14 @@ function GanttChart({project, onUpdate}) {
               </div>
             ))}
             <div className="form-group">
+              <label className="form-label">담당자</label>
+              <select className="form-input" value={editSubTarget.sub.assignee||""}
+                onChange={e=>setEditSubTarget(p=>({...p,sub:{...p.sub,assignee:e.target.value}}))}>
+                <option value="">담당자 선택</option>
+                {(users||[]).filter(u=>u.approved||u.id==="admin").map(u=><option key={u.id} value={u.name}>{u.name}</option>)}
+              </select>
+            </div>
+            <div className="form-group">
               <label className="form-label">비고</label>
               <input className="form-input" type="text" placeholder="참고 메모"
                 value={editSubTarget.sub.note||""} onChange={e=>setEditSubTarget(p=>({...p,sub:{...p.sub,note:e.target.value}}))}/>
@@ -4973,9 +5022,10 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
   // 금액 계산: 단가 × 수량 × 일자 (일반기업이면 단가 ×1.15)
   const calcAmt = (item) => Math.round((item.unitPrice||0) * priceMult * (item.qty||1) * (item.days||1));
 
-  // 구분별 견적 데이터
+  // 구분별 견적 데이터 (정렬 적용)
+  const sortedForQuote = sortChecklist(project.checklist);
   const quoteByDiv = DIVISIONS.map(div => {
-    const clItems  = project.checklist.filter(c => (c.division||"기타")===div && (c.unitPrice||0) > 0);
+    const clItems  = sortedForQuote.filter(c => (c.division||"기타")===div && (c.unitPrice||0) > 0);
     const custItems= customItems.filter(c => (c.division||"기타")===div);
     const subtotal = [...clItems,...custItems].reduce((s,c) => s + calcAmt(c), 0);
     return { div, clItems, custItems, subtotal };
@@ -5024,13 +5074,35 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
   };
 
   // 체크리스트 항목 추가
+  // 체크리스트 항목 순서 이동
+  const moveItem = (id, dir) => {
+    const sorted = sortChecklist(project.checklist);
+    const item = sorted.find(c=>c.id===id);
+    if (!item) return;
+    const group = sorted.filter(c=>c.division===item.division && c.category===item.category);
+    const idx = group.findIndex(c=>c.id===id);
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= group.length) return;
+    const swapItem = group[swapIdx];
+    const myOrder = item.sortOrder||0, theirOrder = swapItem.sortOrder||0;
+    const updated = project.checklist.map(c => {
+      if (c.id === item.id) return {...c, sortOrder: theirOrder};
+      if (c.id === swapItem.id) return {...c, sortOrder: myOrder};
+      return c;
+    });
+    onUpdate({...project, checklist: updated});
+  };
+
   const addCLItem = () => {
     if (!newCL.item.trim()) return;
+    const sameGroup = project.checklist.filter(c=>c.division===newCL.division && c.category===newCL.category);
+    const maxOrder = sameGroup.reduce((m,c)=>Math.max(m,c.sortOrder||0),0);
     const item = {
       id:Date.now(), division:newCL.division, category:newCL.category,
       item:newCL.item, done:false,
       unitPrice:parseInt(newCL.unitPrice)||0,
       qty:parseInt(newCL.qty)||1, days:parseInt(newCL.days)||1, note:newCL.note||"",
+      sortOrder: maxOrder+1,
     };
     onUpdate({...project, checklist:[...project.checklist, item],
       logs:[...project.logs,{id:Date.now()+1,date:today,author:currentUser?.name||"사용자",type:"auto",
@@ -5588,9 +5660,12 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
         <div>
           <div style={{color:"var(--txt)",fontWeight:700,marginBottom:14,fontSize:14}}>📋 프로젝트 체크리스트</div>
           {DIVISIONS.map(div => {
-            const divItems = project.checklist.filter(c=>(c.division||"기타")===div);
+            const sortedCL = sortChecklist(project.checklist);
+            const divItems = sortedCL.filter(c=>(c.division||"기타")===div);
             if (!divItems.length) return null;
-            const cats = [...new Set(divItems.map(c=>c.category))];
+            const orderedCats = (DIV_CATS[div]||[]).filter(cat=>divItems.some(c=>c.category===cat));
+            const extraCats = [...new Set(divItems.map(c=>c.category))].filter(c=>!orderedCats.includes(c));
+            const cats = [...orderedCats, ...extraCats];
             return (
               <div key={div} style={{marginBottom:14}}>
                 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:7,paddingBottom:4,borderBottom:`1px solid ${DIV_COLORS[div]}44`}}>
@@ -5643,6 +5718,8 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
                             </div>
                             <span style={{flex:1,color:item.done?"var(--txt3)":"var(--txt)",fontSize:13,textDecoration:item.done?"line-through":"none"}}>{item.item}</span>
                             {(item.unitPrice||0)>0 && <span style={{color:"var(--txt3)",fontSize:11,flexShrink:0}}>{Math.round((item.unitPrice||0)*(item.qty||1)*(item.days||1)/10000)}만</span>}
+                            <button onClick={e=>{e.stopPropagation();moveItem(item.id,-1);}} style={{background:"transparent",border:"none",color:"var(--txt4)",fontSize:9,cursor:"pointer",padding:"0 1px",flexShrink:0,lineHeight:1}} title="위로">▲</button>
+                            <button onClick={e=>{e.stopPropagation();moveItem(item.id,+1);}} style={{background:"transparent",border:"none",color:"var(--txt4)",fontSize:9,cursor:"pointer",padding:"0 1px",flexShrink:0,lineHeight:1}} title="아래로">▼</button>
                             <button onClick={e=>{e.stopPropagation();startEdit(item);}} style={{background:"transparent",border:"none",color:"var(--txt4)",fontSize:11,cursor:"pointer",padding:"0 2px",flexShrink:0}} title="수정">✏️</button>
                             <button onClick={e=>{e.stopPropagation();deleteCLItem(item.id);}} style={{background:"transparent",border:"none",color:"var(--txt4)",fontSize:13,cursor:"pointer",padding:"0 2px",flexShrink:0}} title="삭제">×</button>
                           </div>
@@ -5882,6 +5959,149 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─ Urgent Tasks Panel (긴급건 알림) ─
+function UrgentTasksPanel({project}) {
+  const todayStr = new Date().toISOString().slice(0,10);
+  const d3 = new Date(Date.now()+3*86400000).toISOString().slice(0,10);
+  const gantt = project.gantt||[];
+  const urgents = [];
+  gantt.forEach(t=>{
+    if(t.endDate && t.endDate>=todayStr && t.endDate<=d3 && (t.progress||0)<100)
+      urgents.push({name:t.task, assignee:t.assignee||"", endDate:t.endDate, progress:t.progress||0, color:t.color||"#6366f1", type:"task"});
+    (t.subtasks||[]).forEach(s=>{
+      if(s.endDate && s.endDate>=todayStr && s.endDate<=d3 && !s.done)
+        urgents.push({name:`${t.task} › ${s.task}`, assignee:s.assignee||t.assignee||"", endDate:s.endDate, progress:s.done?100:0, color:t.color||"#6366f1", type:"sub"});
+    });
+  });
+  // 이미 지난 과업(endDate < today)도 미완료이면 추가
+  gantt.forEach(t=>{
+    if(t.endDate && t.endDate<todayStr && (t.progress||0)<100)
+      urgents.push({name:t.task, assignee:t.assignee||"", endDate:t.endDate, progress:t.progress||0, color:t.color||"#ef4444", type:"overdue"});
+    (t.subtasks||[]).forEach(s=>{
+      if(s.endDate && s.endDate<todayStr && !s.done)
+        urgents.push({name:`${t.task} › ${s.task}`, assignee:s.assignee||t.assignee||"", endDate:s.endDate, progress:0, color:t.color||"#ef4444", type:"overdue"});
+    });
+  });
+  urgents.sort((a,b)=>a.endDate.localeCompare(b.endDate));
+  if(!urgents.length) return null;
+  const getDday = (d) => { const diff=Math.ceil((new Date(d)-new Date(todayStr))/(86400000)); return diff===0?"오늘":diff<0?`D+${Math.abs(diff)}`:`D-${diff}`; };
+  return (
+    <div style={{background:"linear-gradient(135deg,rgba(239,68,68,.08),rgba(249,115,22,.06))",
+      border:"1px solid rgba(239,68,68,.25)",borderRadius:12,padding:"14px 18px",marginBottom:0}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+        <span style={{fontSize:16}}>🚨</span>
+        <span style={{color:"#ef4444",fontWeight:700,fontSize:14}}>긴급 과업</span>
+        <span style={{background:"rgba(239,68,68,.15)",color:"#ef4444",fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:10}}>{urgents.length}건</span>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {urgents.map((u,i)=>(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",
+            background:u.type==="overdue"?"rgba(239,68,68,.08)":"rgba(249,115,22,.06)",
+            borderRadius:8,border:`1px solid ${u.type==="overdue"?"rgba(239,68,68,.2)":"rgba(249,115,22,.15)"}`}}>
+            <span style={{width:4,height:24,borderRadius:2,background:u.color,flexShrink:0}}/>
+            <span style={{flex:1,fontSize:12,color:"var(--txt)",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</span>
+            {u.assignee&&<span style={{fontSize:10,color:"var(--txt3)",flexShrink:0}}>👤 {u.assignee}</span>}
+            <span style={{fontSize:11,fontWeight:700,flexShrink:0,
+              color:u.type==="overdue"?"#ef4444":getDday(u.endDate)==="오늘"?"#f59e0b":"#fb923c"}}>{getDday(u.endDate)}</span>
+            <span style={{fontSize:10,color:"var(--txt4)",flexShrink:0}}>{u.endDate.slice(5)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─ Overview Calendar (월별 달력) ─
+function OverviewCalendar({project}) {
+  const now = new Date();
+  const [viewYear, setViewYear] = useState(now.getFullYear());
+  const [viewMonth, setViewMonth] = useState(now.getMonth());
+  const todayStr = now.toISOString().slice(0,10);
+  const daysInMonth = new Date(viewYear, viewMonth+1, 0).getDate();
+  const firstDow = new Date(viewYear, viewMonth, 1).getDay();
+  const gantt = project.gantt||[];
+  const DOW = ["일","월","화","수","목","금","토"];
+
+  const pad = n=>String(n).padStart(2,"0");
+  const getDateStr = d=>`${viewYear}-${pad(viewMonth+1)}-${pad(d)}`;
+
+  const getTasksForDate = (dateStr) => {
+    const res=[];
+    gantt.forEach(t=>{
+      if(t.startDate&&t.endDate&&t.startDate<=dateStr&&t.endDate>=dateStr)
+        res.push({name:t.task, assignee:t.assignee, color:t.color||DIV_COLORS[t.division]||"#6366f1", endDate:t.endDate, progress:t.progress||0, type:"task"});
+      (t.subtasks||[]).forEach(s=>{
+        if(s.startDate&&s.endDate&&s.startDate<=dateStr&&s.endDate>=dateStr)
+          res.push({name:s.task, assignee:s.assignee||t.assignee, color:t.color||"#6366f1", endDate:s.endDate, progress:s.done?100:0, type:"sub"});
+      });
+    });
+    return res;
+  };
+
+  const d3 = new Date(Date.now()+3*86400000).toISOString().slice(0,10);
+  const isUrgent = (t) => t.endDate>=todayStr && t.endDate<=d3 && t.progress<100;
+
+  const prevMonth = () => { if(viewMonth===0){setViewYear(y=>y-1);setViewMonth(11);} else setViewMonth(m=>m-1); };
+  const nextMonth = () => { if(viewMonth===11){setViewYear(y=>y+1);setViewMonth(0);} else setViewMonth(m=>m+1); };
+  const goToday = () => { setViewYear(now.getFullYear()); setViewMonth(now.getMonth()); };
+
+  const cells = [];
+  for(let i=0;i<firstDow;i++) cells.push(null);
+  for(let d=1;d<=daysInMonth;d++) cells.push(d);
+  while(cells.length%7!==0) cells.push(null);
+
+  return (
+    <div className="card-sm" style={{padding:16}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:15}}>📆</span>
+          <span style={{color:"var(--txt)",fontWeight:700,fontSize:14}}>{viewYear}년 {viewMonth+1}월 업무 달력</span>
+        </div>
+        <div style={{display:"flex",gap:4}}>
+          <button onClick={prevMonth} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--txt3)",borderRadius:4,padding:"2px 8px",fontSize:12,cursor:"pointer"}}>◀</button>
+          <button onClick={goToday} style={{background:"rgba(99,102,241,.1)",border:"1px solid rgba(99,102,241,.3)",color:"#a5b4fc",borderRadius:4,padding:"2px 10px",fontSize:11,cursor:"pointer",fontWeight:600}}>오늘</button>
+          <button onClick={nextMonth} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--txt3)",borderRadius:4,padding:"2px 8px",fontSize:12,cursor:"pointer"}}>▶</button>
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,background:"var(--border)",borderRadius:8,overflow:"hidden"}}>
+        {DOW.map((d,i)=>(
+          <div key={d} style={{background:"rgba(99,102,241,.08)",padding:"6px 0",textAlign:"center",
+            fontSize:11,fontWeight:700,color:i===0?"#ef4444":i===6?"#3b82f6":"var(--txt3)"}}>{d}</div>
+        ))}
+        {cells.map((day,i)=>{
+          if(day===null) return <div key={`e${i}`} style={{background:"var(--bg)",minHeight:72}}/>;
+          const dateStr=getDateStr(day);
+          const isToday=dateStr===todayStr;
+          const dayTasks=getTasksForDate(dateStr);
+          const dow=i%7;
+          return (
+            <div key={day} style={{background:isToday?"rgba(59,130,246,.08)":"var(--bg)",minHeight:72,padding:3,position:"relative",
+              borderLeft:isToday?"2px solid #3b82f6":"none"}}>
+              <div style={{fontSize:11,fontWeight:isToday?800:500,
+                color:isToday?"#60a5fa":dow===0?"#ef4444":dow===6?"#3b82f6":"var(--txt3)",
+                marginBottom:2,textAlign:"right",paddingRight:2}}>
+                {day}
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:1}}>
+                {dayTasks.slice(0,3).map((t,ti)=>(
+                  <div key={ti} style={{fontSize:9,padding:"1px 4px",borderRadius:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
+                    background:isUrgent(t)?`rgba(239,68,68,.15)`:`${t.color}22`,
+                    color:isUrgent(t)?"#ef4444":"var(--txt2)",
+                    border:isUrgent(t)?"1px solid rgba(239,68,68,.3)":`1px solid ${t.color}33`,
+                    fontWeight:isUrgent(t)?700:400}}>
+                    {t.name}{t.assignee?` · ${t.assignee}`:""}
+                  </div>
+                ))}
+                {dayTasks.length>3&&<div style={{fontSize:8,color:"var(--txt4)",textAlign:"center"}}>+{dayTasks.length-3}</div>}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -6700,6 +6920,10 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
       {/* 탭 콘텐츠 */}
       {tab==="overview"&&(
         <div style={{display:"flex",flexDirection:"column",gap:20}}>
+          {/* 긴급건 알림 */}
+          <UrgentTasksPanel project={project}/>
+          {/* 월별 달력 — 간트 일정 표시 */}
+          <OverviewCalendar project={project}/>
           {/* 과업지시서 — 상단 배치 */}
           <TaskOrderPanel project={project} onUpdate={onUpdate}/>
 
@@ -6745,7 +6969,7 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
         </div>
       )}
       {tab==="checklist"&&<ChecklistPanel project={project} onUpdate={onUpdate} currentUser={currentUser}/>}
-      {tab==="gantt"&&<GanttChart project={project} onUpdate={onUpdate}/>}
+      {tab==="gantt"&&<GanttChart project={project} onUpdate={onUpdate} users={users}/>}
       {tab==="logs"&&<WorkLog project={project} onUpdate={onUpdate} users={users} currentUser={currentUser}/>}
       {tab==="reports"&&<ReportsTabWrapper project={project}/>}
       {tab==="files"&&(
