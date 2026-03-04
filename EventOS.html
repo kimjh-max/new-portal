@@ -5173,10 +5173,10 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
       <div class="label">총 견적금액 (VAT 포함)</div>
       <div class="amount">₩ ${adjTotalFinal.toLocaleString()}<span class="won">원</span></div>
     </div>
-    <div style="text-align:right">
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end">
       <div class="badge">${quoteType}</div>
-      ${hasBudgetAdj ? `<div style="font-size:9px;opacity:.8;margin-top:3px;background:rgba(255,255,255,.15);padding:2px 8px;border-radius:10px">예산절사</div>` : ""}
-      <div style="font-size:10px;opacity:.6;margin-top:4px">${itemCount}개 항목</div>
+      ${hasBudgetAdj ? `<div class="badge" style="background:rgba(255,255,255,.12)">절사 적용</div>` : ""}
+      <div class="badge" style="background:rgba(255,255,255,.10)">${itemCount}개 항목</div>
     </div>
   </div>
 
@@ -5355,10 +5355,10 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
       <div class="label">총 견적금액 (VAT 포함)</div>
       <div class="amount">₩ ${snapAdjTotalFinal.toLocaleString()}<span class="won">원</span></div>
     </div>
-    <div style="text-align:right">
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end">
       <div class="badge">${snap.quoteType}</div>
-      ${snapHasBudgetAdj ? `<div style="font-size:9px;opacity:.8;margin-top:3px;background:rgba(255,255,255,.15);padding:2px 8px;border-radius:10px">예산절사</div>` : ""}
-      <div style="font-size:10px;opacity:.6;margin-top:4px">${itemCount}개 항목</div>
+      ${snapHasBudgetAdj ? `<div class="badge" style="background:rgba(255,255,255,.12)">절사 적용</div>` : ""}
+      <div class="badge" style="background:rgba(255,255,255,.10)">${itemCount}개 항목</div>
     </div>
   </div>
 
