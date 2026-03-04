@@ -6584,6 +6584,9 @@ function ReportsTabWrapper({project}) {
 // helper to use CSS vars in inline styles
 function var_(name) { return `var(--${name})`; }
 
+// 유효한 참조값인지 확인 (NONE, null, undefined, 빈값 필터링)
+const isValidRef = (val) => !!val && val !== "NONE" && val !== "null" && val !== "undefined";
+
 // ─ File Manager (Google Drive 연동 파일 관리) ─
 function FileManager({project, onUpdate}) {
   const [uploading, setUploading] = useState(false);
@@ -6591,6 +6594,8 @@ function FileManager({project, onUpdate}) {
   const [driveFiles, setDriveFiles] = useState([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const fileInputRef = useRef(null);
+  const reuploadInputRef = useRef(null);
+  const [reuploadTarget, setReuploadTarget] = useState(null); // 재업로드 대상 파일명
 
   // Drive에서 파일 목록 로드
   useEffect(() => {
@@ -6673,18 +6678,19 @@ function FileManager({project, onUpdate}) {
 
   // 파일 다운로드 (Google Drive 우선 → R2 폴백 → base64 로컬 폴백)
   const handleDownload = async (file) => {
-    // 1) Google Drive 우선 (사용자 요청)
-    if (file.driveFileId && DRIVE_CONFIG.ENABLED) {
+    // 1) Google Drive 우선 (사용자 요청) — "NONE" 등 무효값 필터
+    if (isValidRef(file.driveFileId) && DRIVE_CONFIG.ENABLED) {
       try {
         const res = await fetch(`${DRIVE_CONFIG.GAS_URL}?action=downloadFile&fileId=${file.driveFileId}`, {redirect:"follow"});
         const data = await res.json();
         if (data.webViewLink) { window.open(data.webViewLink, "_blank"); return; }
+        if (data.downloadUrl) { window.open(data.downloadUrl, "_blank"); return; }
       } catch (err) { console.error("[DriveSync] download error:", err); }
     }
-    // 2) Cloudflare R2 URL 폴백
-    if (file.url) { window.open(file.url, "_blank"); return; }
-    // 3) 로컬 base64 폴백 (파일 유실 방지)
-    if (file.base64) {
+    // 2) Cloudflare R2 URL 폴백 — "NONE" 등 무효값 필터
+    if (isValidRef(file.url)) { window.open(file.url, "_blank"); return; }
+    // 3) 로컬 base64 폴백 (파일 유실 방지) — "NONE" 등 무효값 필터
+    if (isValidRef(file.base64)) {
       try {
         const byteChars = atob(file.base64);
         const byteArr = new Uint8Array(byteChars.length);
@@ -6698,8 +6704,57 @@ function FileManager({project, onUpdate}) {
         return;
       } catch (err) { console.error("[Local] download error:", err); }
     }
-    // 4) 최종 실패
-    toast("파일 저장소에 연결할 수 없습니다. 네트워크를 확인해주세요.", "error");
+    // 4) 클라우드에 파일이 없음 → 재업로드 안내
+    toast(`⚠️ "${file.name}" 클라우드 저장소에 없습니다. '재업로드' 버튼으로 다시 업로드해주세요.`, "warn");
+  };
+
+  // 레거시 파일 재업로드: 사용자가 파일을 다시 선택하면 듀얼 업로드 후 fileEntry 업데이트
+  const handleReupload = async (fileList) => {
+    if (!fileList || !fileList.length || !reuploadTarget) return;
+    const file = fileList[0];
+    const targetName = reuploadTarget;
+    setReuploadTarget(null);
+
+    setUploading(true);
+    setUploadProgress(`"${targetName}" 재업로드 중... (${(file.size/1024/1024).toFixed(1)}MB)`);
+
+    const base64 = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(",")[1]);
+      reader.readAsDataURL(file);
+    });
+
+    if (DRIVE_CONFIG.ENABLED || CLOUD_CONFIG.ENABLED) {
+      const result = await SyncManager.uploadFile(project.name, targetName, base64, file.type);
+      if (result && (result.ok || result.success)) {
+        const fileEntry = {
+          name: targetName,
+          driveFileId: result.fileId || result.id || "",
+          mimeType: file.type,
+          size: file.size,
+          uploadedAt: new Date().toISOString(),
+          url: result.r2Url || result.url || "",
+          r2Key: result.r2Key || result.key || "",
+        };
+        const updatedFiles = [...(project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== targetName), fileEntry];
+        onUpdate({...project, files: updatedFiles});
+        setDriveFiles(prev => [...prev.filter(f=>f.name!==targetName), { fileId: fileEntry.driveFileId, name: targetName, mimeType: file.type, size: file.size, url: fileEntry.url, lastUpdated: new Date().toISOString() }]);
+        toast(`✅ "${targetName}" 재업로드 완료 (듀얼 백업)`, "success");
+      } else {
+        // 클라우드 실패 → base64 로컬 보관
+        const fileEntry = {
+          name: targetName, mimeType: file.type, size: file.size,
+          uploadedAt: new Date().toISOString(),
+          base64: base64, pendingUpload: true,
+        };
+        const updatedFiles = [...(project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== targetName), fileEntry];
+        onUpdate({...project, files: updatedFiles});
+        toast(`⚠️ "${targetName}" 로컬 저장됨 (클라우드 재시도 예정)`, "warn");
+      }
+    }
+    setUploading(false);
+    setUploadProgress("");
+    if (reuploadInputRef.current) reuploadInputRef.current.value = "";
   };
 
   // 파일 삭제 (양쪽 저장소 모두 삭제)
@@ -6708,8 +6763,8 @@ function FileManager({project, onUpdate}) {
     // 1. localStorage에서 제거
     const updatedFiles = (project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== fileName);
     onUpdate({...project, files: updatedFiles});
-    // 2. Google Drive에서 삭제
-    if (file.driveFileId && DRIVE_CONFIG.ENABLED) {
+    // 2. Google Drive에서 삭제 — "NONE" 등 무효값 필터
+    if (isValidRef(file.driveFileId) && DRIVE_CONFIG.ENABLED) {
       try {
         await fetch(DRIVE_CONFIG.GAS_URL, {
           method:"POST", headers:{"Content-Type":"text/plain"},
@@ -6718,8 +6773,8 @@ function FileManager({project, onUpdate}) {
         console.log("[DriveSync] 🗑️ deleted:", fileName);
       } catch (err) { console.error("[DriveSync] delete error:", err); }
     }
-    // 3. Cloudflare R2에서 삭제 (추가)
-    if (file.r2Key && CLOUD_CONFIG.ENABLED) {
+    // 3. Cloudflare R2에서 삭제 — "NONE" 등 무효값 필터
+    if (isValidRef(file.r2Key) && CLOUD_CONFIG.ENABLED) {
       try {
         await CloudSync.deleteFile(file.r2Key);
         console.log("[CloudSync] 🗑️ deleted:", fileName);
@@ -6744,6 +6799,8 @@ function FileManager({project, onUpdate}) {
     <div>
       <div style={{color:"var(--txt)",fontWeight:700,marginBottom:14,fontSize:14}}>📁 파일 & 공유 드라이브</div>
 
+      {/* 재업로드용 숨겨진 파일 인풋 */}
+      <input ref={reuploadInputRef} type="file" style={{display:"none"}} onChange={e=>handleReupload(e.target.files)}/>
       {/* 업로드 드롭존 */}
       <input ref={fileInputRef} type="file" multiple style={{display:"none"}} onChange={e=>handleFiles(e.target.files)}/>
       <div className="drop-zone" onClick={()=>fileInputRef.current?.click()} onDrop={handleDrop} onDragOver={handleDragOver}
@@ -6801,11 +6858,21 @@ function FileManager({project, onUpdate}) {
               </div>
             </div>
             <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
-              {(f.driveFileId || f.url) && <span style={{color:"#10b981",fontSize:11}}>Drive ✓</span>}
-              {f.legacy && !f.driveFileId && <span style={{color:"var(--txt4)",fontSize:10}}>로컬</span>}
+              {(isValidRef(f.driveFileId) || isValidRef(f.url)) && <span style={{color:"#10b981",fontSize:11}}>Drive ✓</span>}
+              {f.pendingUpload && <span style={{color:"#f59e0b",fontSize:10}}>⏳ 대기</span>}
+              {!isValidRef(f.driveFileId) && !isValidRef(f.url) && !isValidRef(f.base64) && !f.pendingUpload && (
+                <span style={{color:"#ef4444",fontSize:10}}>⚠️ 미연결</span>
+              )}
+              {/* 클라우드에 없는 파일: 재업로드 버튼 표시 */}
+              {!isValidRef(f.driveFileId) && !isValidRef(f.url) && !isValidRef(f.base64) && (
+                <button className="btn btn-ghost" style={{padding:"3px 10px",fontSize:11,color:"#f59e0b",borderColor:"rgba(245,158,11,.3)"}}
+                  onClick={()=>{setReuploadTarget(f.name);reuploadInputRef.current?.click();}}>
+                  🔄 재업로드
+                </button>
+              )}
               <button className="btn btn-ghost" style={{padding:"3px 10px",fontSize:11}}
                 onClick={()=>handleDownload(f)}>
-                {f.driveFileId || f.url ? "열기" : "다운로드"}
+                {isValidRef(f.driveFileId) || isValidRef(f.url) ? "열기" : "다운로드"}
               </button>
               <button className="btn btn-ghost" style={{padding:"3px 8px",fontSize:11,color:"#fca5a5",borderColor:"rgba(239,68,68,.2)"}}
                 onClick={()=>handleDelete(f)}>삭제</button>
