@@ -10180,11 +10180,12 @@ function App() {
     return <LoginPage onLogin={handleLogin} users={users}/>;
   }
 
+  // ProjectDetail은 renderPage 밖에서 display:none으로 유지
+  // → 사이드바로 다른 페이지 이동해도 업로드 끊기지 않음
+  const liveDetail = detail ? (projects.find(p=>p.id===detail.id)||detail) : null;
+
   const renderPage = () => {
-    if (page==="detail"&&detail) {
-      const live = projects.find(p=>p.id===detail.id)||detail;
-      return <ProjectDetail project={live} onBack={()=>setPage("projects")} onUpdate={updateProject} currentUser={authedUser} users={users}/>;
-    }
+    if (page==="detail"&&detail) return null; // ProjectDetail은 아래에서 별도 렌더링
     if (page==="dashboard") return <Dashboard projects={projects} setPage={setPage} setDetail={setDetail}/>;
     if (page==="projects") return <ProjectsPage projects={projects} setDetail={setDetail} setPage={setPage} onAddProject={addProject} onDeleteProject={deleteProject} priceList={priceList} currentUser={authedUser}/>;
     if (page==="mywork") return <MyWork projects={projects} user={authedUser} users={users} setDetail={setDetail} setPage={setPage} expenses={expenses} laborCosts={laborCosts} purchases={purchases}/>;
@@ -10235,7 +10236,15 @@ function App() {
       <Topbar page={page} setPage={setPage} user={authedUser} onLogout={handleLogout}
         onExport={exportData} onImport={importData}/>
       <BottomNav page={page} setPage={setPage} user={authedUser}/>
-      <div id="main">{renderPage()}</div>
+      <div id="main">
+        {renderPage()}
+        {/* ProjectDetail: 업로드 중 페이지 이동해도 끊기지 않도록 display:none으로 유지 */}
+        {liveDetail && (
+          <div style={{display: page==="detail" ? "block" : "none"}}>
+            <ProjectDetail project={liveDetail} onBack={()=>setPage("projects")} onUpdate={updateProject} currentUser={authedUser} users={users}/>
+          </div>
+        )}
+      </div>
     </>
   );
 }
