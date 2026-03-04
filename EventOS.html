@@ -268,7 +268,7 @@ const USER_COLORS = ["#6366f1","#ec4899","#10b981","#f59e0b","#06b6d4","#a855f7"
 ═══════════════════════════════════════════════════════════════════════════ */
 const DRIVE_CONFIG = {
   GAS_URL: "https://script.google.com/macros/s/AKfycbxV6A4oEtkrBN6RIguTiQN44d6MOQlpoZOUZn2tI-pXQFlyw-QEfWA0S-b_RqgzQs20OA/exec",
-  ROOT_FOLDER_ID: "0ACU1M-ct4JPoUk9PVA",
+  ROOT_FOLDER_ID: "1je4PUeHfL1CMhapq8G_id7zgM0aElaaQ",
   SYNC_DEBOUNCE_MS: 3000,
   AUTO_BACKUP_INTERVAL_MS: 30 * 60 * 1000, // 30분 자동 백업
   MAX_LOCAL_BACKUPS: 3,  // localStorage에 최근 3개 백업 보관
@@ -561,44 +561,55 @@ const SyncManager = {
     return null;
   },
 
-  // 파일 업로드 (Cloudflare R2 우선 → GAS 폴백)
+  // 파일 업로드 (Google Drive + Cloudflare R2 동시 듀얼 업로드)
   async uploadFile(projectName, fileName, base64Data, mimeType) {
     const target = this._getTarget();
     if (target === "none") { toast("클라우드 스토리지가 연결되지 않았습니다.", "error"); return null; }
     this.setStatus("syncing");
 
-    // 1) Cloudflare R2 우선
-    if (CLOUD_CONFIG.ENABLED) {
-      try {
-        const result = await CloudSync.uploadFile(null, fileName, base64Data, mimeType);
-        if (result && result.success) {
-          this._lastSyncTime = new Date();
-          this.setStatus("success");
-          return result;
-        }
-      } catch (err) {
-        console.error("[CloudSync] uploadFile fallback:", err);
-      }
-    }
+    let driveResult = null, cloudResult = null;
+    const promises = [];
 
-    // 2) GAS 폴백
+    // 1) Google Drive 업로드
     if (DRIVE_CONFIG.ENABLED) {
-      try {
-        const res = await fetch(DRIVE_CONFIG.GAS_URL, {
+      promises.push(
+        fetch(DRIVE_CONFIG.GAS_URL, {
           method: "POST",
           headers: { "Content-Type": "text/plain" },
           body: JSON.stringify({ action: "uploadFile", projectName, fileName, base64Data, mimeType }),
           redirect: "follow",
-        });
-        const text = await res.text();
-        const result = JSON.parse(text);
-        if (result.error) throw new Error(result.error);
-        this._lastSyncTime = new Date();
-        this.setStatus("success");
-        return result;
-      } catch (err) {
-        console.error("[DriveSync] uploadFile error:", err);
+        }).then(r => r.text()).then(t => { driveResult = JSON.parse(t); console.log("[DriveSync] ✅ uploadFile:", fileName); })
+          .catch(err => { console.error("[DriveSync] uploadFile:", err); })
+      );
+    }
+
+    // 2) Cloudflare R2 업로드
+    if (CLOUD_CONFIG.ENABLED) {
+      promises.push(
+        CloudSync.uploadFile(null, fileName, base64Data, mimeType)
+          .then(r => { cloudResult = r; console.log("[CloudSync] ✅ uploadFile:", fileName); })
+          .catch(err => { console.error("[CloudSync] uploadFile:", err); })
+      );
+    }
+
+    // 동시 실행 → 모두 완료될 때까지 대기
+    await Promise.allSettled(promises);
+
+    // 3) Google Drive 결과 우선 반환 (다운로드가 Drive 기반)
+    if (driveResult && !driveResult.error) {
+      this._lastSyncTime = new Date();
+      this.setStatus("success");
+      if (cloudResult && cloudResult.success) {
+        driveResult.r2Url = cloudResult.url;
+        driveResult.r2Key = cloudResult.key;
       }
+      return driveResult;
+    }
+    // 4) R2만 성공 시 폴백
+    if (cloudResult && cloudResult.success) {
+      this._lastSyncTime = new Date();
+      this.setStatus("success");
+      return cloudResult;
     }
 
     this.setStatus("error");
@@ -6612,25 +6623,44 @@ function FileManager({project, onUpdate}) {
         reader.readAsDataURL(file);
       });
 
-      if (DRIVE_CONFIG.ENABLED) {
-        // Google Drive에 업로드
+      // 듀얼 업로드: Google Drive + Cloudflare R2 동시
+      if (DRIVE_CONFIG.ENABLED || CLOUD_CONFIG.ENABLED) {
         const result = await SyncManager.uploadFile(project.name, file.name, base64, file.type);
-        if (result && result.ok) {
-          // 프로젝트 files 배열 업데이트
-          const fileEntry = { name: file.name, driveFileId: result.fileId, mimeType: file.type, size: file.size, uploadedAt: new Date().toISOString(), url: result.url };
+        if (result && (result.ok || result.success)) {
+          const fileEntry = {
+            name: file.name,
+            driveFileId: result.fileId || result.id || "",
+            mimeType: file.type,
+            size: file.size,
+            uploadedAt: new Date().toISOString(),
+            url: result.r2Url || result.url || "",
+            r2Key: result.r2Key || result.key || "",
+          };
           const updatedFiles = [...(project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== file.name), fileEntry];
           onUpdate({...project, files: updatedFiles});
-          setDriveFiles(prev => [...prev.filter(f=>f.name!==file.name), { fileId: result.fileId, name: file.name, mimeType: file.type, size: file.size, url: result.url, lastUpdated: new Date().toISOString() }]);
-          toast(`✅ "${file.name}" 업로드 완료`, "success");
+          setDriveFiles(prev => [...prev.filter(f=>f.name!==file.name), { fileId: fileEntry.driveFileId, name: file.name, mimeType: file.type, size: file.size, url: fileEntry.url, lastUpdated: new Date().toISOString() }]);
+          toast(`✅ "${file.name}" 업로드 완료 (듀얼 백업)`, "success");
         } else {
-          toast(`❌ "${file.name}" 업로드 실패`, "error");
+          // 클라우드 실패 → base64 로컬 보관 (파일 유실 방지)
+          const fileEntry = {
+            name: file.name, mimeType: file.type, size: file.size,
+            uploadedAt: new Date().toISOString(),
+            base64: base64, pendingUpload: true,
+          };
+          const updatedFiles = [...(project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== file.name), fileEntry];
+          onUpdate({...project, files: updatedFiles});
+          toast(`⚠️ "${file.name}" 로컬 저장됨 (클라우드 재시도 예정)`, "warn");
         }
       } else {
-        // Drive 미연결: 파일명만 저장
-        const fileEntry = { name: file.name, mimeType: file.type, size: file.size, uploadedAt: new Date().toISOString() };
+        // 클라우드 전혀 미연결: base64 로컬 보관
+        const fileEntry = {
+          name: file.name, mimeType: file.type, size: file.size,
+          uploadedAt: new Date().toISOString(),
+          base64: base64, pendingUpload: true,
+        };
         const updatedFiles = [...(project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== file.name), fileEntry];
         onUpdate({...project, files: updatedFiles});
-        toast(`📁 "${file.name}" 등록됨 (Drive 연결 시 자동 업로드)`, "warn");
+        toast(`📁 "${file.name}" 로컬 저장 (클라우드 연결 시 자동 업로드)`, "warn");
       }
     }
     setUploading(false);
@@ -6641,38 +6671,62 @@ function FileManager({project, onUpdate}) {
   const handleDrop = (e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); };
   const handleDragOver = (e) => { e.preventDefault(); };
 
-  // 파일 다운로드
+  // 파일 다운로드 (Google Drive 우선 → R2 폴백 → base64 로컬 폴백)
   const handleDownload = async (file) => {
-    if (file.url) {
-      window.open(file.url, "_blank");
-    } else if (file.driveFileId && DRIVE_CONFIG.ENABLED) {
+    // 1) Google Drive 우선 (사용자 요청)
+    if (file.driveFileId && DRIVE_CONFIG.ENABLED) {
       try {
         const res = await fetch(`${DRIVE_CONFIG.GAS_URL}?action=downloadFile&fileId=${file.driveFileId}`, {redirect:"follow"});
         const data = await res.json();
-        if (data.webViewLink) window.open(data.webViewLink, "_blank");
-      } catch { toast("다운로드 링크를 가져올 수 없습니다", "error"); }
-    } else {
-      toast("Google Drive 연결 후 다운로드 가능합니다", "warn");
+        if (data.webViewLink) { window.open(data.webViewLink, "_blank"); return; }
+      } catch (err) { console.error("[DriveSync] download error:", err); }
     }
+    // 2) Cloudflare R2 URL 폴백
+    if (file.url) { window.open(file.url, "_blank"); return; }
+    // 3) 로컬 base64 폴백 (파일 유실 방지)
+    if (file.base64) {
+      try {
+        const byteChars = atob(file.base64);
+        const byteArr = new Uint8Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
+        const blob = new Blob([byteArr], {type: file.mimeType || "application/octet-stream"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = file.name; document.body.appendChild(a); a.click();
+        document.body.removeChild(a); URL.revokeObjectURL(url);
+        toast(`📥 "${file.name}" 로컬 다운로드`, "success");
+        return;
+      } catch (err) { console.error("[Local] download error:", err); }
+    }
+    // 4) 최종 실패
+    toast("파일 저장소에 연결할 수 없습니다. 네트워크를 확인해주세요.", "error");
   };
 
-  // 파일 삭제
+  // 파일 삭제 (양쪽 저장소 모두 삭제)
   const handleDelete = async (file) => {
     const fileName = typeof file === "string" ? file : file.name;
-    // 프로젝트에서 제거
+    // 1. localStorage에서 제거
     const updatedFiles = (project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== fileName);
     onUpdate({...project, files: updatedFiles});
-    // Drive에서도 삭제
+    // 2. Google Drive에서 삭제
     if (file.driveFileId && DRIVE_CONFIG.ENABLED) {
       try {
         await fetch(DRIVE_CONFIG.GAS_URL, {
           method:"POST", headers:{"Content-Type":"text/plain"},
           body: JSON.stringify({action:"deleteFile", fileId: file.driveFileId}), redirect:"follow",
         });
-      } catch {}
+        console.log("[DriveSync] 🗑️ deleted:", fileName);
+      } catch (err) { console.error("[DriveSync] delete error:", err); }
+    }
+    // 3. Cloudflare R2에서 삭제 (추가)
+    if (file.r2Key && CLOUD_CONFIG.ENABLED) {
+      try {
+        await CloudSync.deleteFile(file.r2Key);
+        console.log("[CloudSync] 🗑️ deleted:", fileName);
+      } catch (err) { console.error("[CloudSync] delete error:", err); }
     }
     setDriveFiles(prev => prev.filter(f=>f.name!==fileName));
-    toast(`🗑️ "${fileName}" 삭제됨`);
+    toast(`🗑️ "${fileName}" 삭제됨 (모든 저장소에서 제거)`);
   };
 
   // files 배열 통합 (기존 string[] + 새 object[])
