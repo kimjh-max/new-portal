@@ -6588,7 +6588,7 @@ function var_(name) { return `var(--${name})`; }
 const isValidRef = (val) => !!val && val !== "NONE" && val !== "null" && val !== "undefined";
 
 // ─ File Manager (Google Drive 연동 파일 관리) ─
-function FileManager({project, onUpdate}) {
+function FileManager({project, onUpdate, onUploadStateChange}) {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
   const [driveFiles, setDriveFiles] = useState([]);
@@ -6596,6 +6596,9 @@ function FileManager({project, onUpdate}) {
   const fileInputRef = useRef(null);
   const reuploadInputRef = useRef(null);
   const [reuploadTarget, setReuploadTarget] = useState(null); // 재업로드 대상 파일명
+  const [deleteTarget, setDeleteTarget] = useState(null);     // 단건 삭제 확인 대상
+  const [selectedFiles, setSelectedFiles] = useState(new Set()); // 체크박스 선택
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false); // 일괄 삭제 확인
 
   // Drive에서 파일 목록 로드
   useEffect(() => {
@@ -6610,6 +6613,7 @@ function FileManager({project, onUpdate}) {
   // 파일 선택/드롭 핸들러
   const handleFiles = async (fileList) => {
     if (!fileList || !fileList.length) return;
+    onUploadStateChange?.(true); // 업로드 시작 알림 (탭 이동 시에도 표시)
 
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
@@ -6670,6 +6674,7 @@ function FileManager({project, onUpdate}) {
     }
     setUploading(false);
     setUploadProgress("");
+    onUploadStateChange?.(false); // 업로드 완료 알림
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -6780,8 +6785,16 @@ function FileManager({project, onUpdate}) {
         console.log("[CloudSync] 🗑️ deleted:", fileName);
       } catch (err) { console.error("[CloudSync] delete error:", err); }
     }
+    // 즉시 UI 반영 (optimistic)
     setDriveFiles(prev => prev.filter(f=>f.name!==fileName));
     toast(`🗑️ "${fileName}" 삭제됨 (모든 저장소에서 제거)`);
+    // 서버에서 최신 파일 목록 재로드 (auto-refresh)
+    if (DRIVE_CONFIG.ENABLED || CLOUD_CONFIG.ENABLED) {
+      try {
+        const freshFiles = await SyncManager.listFiles(project.name);
+        setDriveFiles(freshFiles);
+      } catch (err) { console.error("[FileManager] post-delete refresh:", err); }
+    }
   };
 
   // files 배열 통합 (기존 string[] + 새 object[])
@@ -6794,6 +6807,30 @@ function FileManager({project, onUpdate}) {
   }, [project.files, driveFiles]);
 
   const fmtSize = (s) => s ? (s > 1048576 ? (s/1048576).toFixed(1)+"MB" : (s/1024).toFixed(0)+"KB") : "";
+
+  // 체크박스 선택 헬퍼
+  const toggleSelect = (name) => setSelectedFiles(prev => {
+    const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n;
+  });
+  const toggleSelectAll = () => setSelectedFiles(
+    selectedFiles.size === allFiles.length ? new Set() : new Set(allFiles.map(f=>f.name))
+  );
+  const isAllSelected = allFiles.length > 0 && selectedFiles.size === allFiles.length;
+
+  // 일괄 다운로드
+  const handleBulkDownload = async () => {
+    const sel = allFiles.filter(f => selectedFiles.has(f.name));
+    for (const f of sel) await handleDownload(f);
+    toast(`📥 ${sel.length}개 파일 다운로드 시작`, "success");
+  };
+  // 일괄 삭제
+  const handleBulkDelete = async () => {
+    const sel = allFiles.filter(f => selectedFiles.has(f.name));
+    setBulkDeleteConfirm(false);
+    for (const f of sel) await handleDelete(f);
+    setSelectedFiles(new Set());
+    toast(`🗑️ ${sel.length}개 파일 삭제 완료`, "success");
+  };
 
   return (
     <div>
@@ -6823,15 +6860,32 @@ function FileManager({project, onUpdate}) {
 
       {/* 파일 목록 */}
       <div className="card-sm" style={{marginTop:14}}>
-        <div className="flex-between" style={{marginBottom:10}}>
-          <span style={{color:"var(--txt3)",fontSize:12}}>📂 Google Drive: /{project.name}</span>
-          {loadingFiles && <span style={{color:"var(--txt4)",fontSize:11}}>로딩 중...</span>}
-          {DRIVE_CONFIG.ENABLED && !loadingFiles && (
-            <button className="btn btn-ghost" style={{padding:"2px 8px",fontSize:10}}
-              onClick={()=>{setLoadingFiles(true);SyncManager.listFiles(project.name).then(f=>{setDriveFiles(f);setLoadingFiles(false)})}}>
-              🔄 새로고침
-            </button>
-          )}
+        <div className="flex-between" style={{marginBottom:10,flexWrap:"wrap",gap:6}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            {allFiles.length > 0 && (
+              <input type="checkbox" checked={isAllSelected} onChange={toggleSelectAll}
+                style={{width:16,height:16,cursor:"pointer",accentColor:"#6366f1"}}/>
+            )}
+            <span style={{color:"var(--txt3)",fontSize:12}}>📂 Google Drive: /{project.name}</span>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+            {selectedFiles.size > 0 && (
+              <>
+                <span style={{color:"#a5b4fc",fontSize:11,fontWeight:600}}>{selectedFiles.size}개 선택</span>
+                <button className="btn btn-ghost" style={{padding:"2px 8px",fontSize:10}}
+                  onClick={handleBulkDownload}>📥 일괄 다운로드</button>
+                <button className="btn btn-ghost" style={{padding:"2px 8px",fontSize:10,color:"#fca5a5",borderColor:"rgba(239,68,68,.2)"}}
+                  onClick={()=>setBulkDeleteConfirm(true)}>🗑️ 일괄 삭제</button>
+              </>
+            )}
+            {loadingFiles && <span style={{color:"var(--txt4)",fontSize:11}}>로딩 중...</span>}
+            {DRIVE_CONFIG.ENABLED && !loadingFiles && (
+              <button className="btn btn-ghost" style={{padding:"2px 8px",fontSize:10}}
+                onClick={()=>{setLoadingFiles(true);SyncManager.listFiles(project.name).then(f=>{setDriveFiles(f);setLoadingFiles(false)})}}>
+                🔄 새로고침
+              </button>
+            )}
+          </div>
         </div>
 
         {allFiles.length === 0 && (
@@ -6841,6 +6895,8 @@ function FileManager({project, onUpdate}) {
         {allFiles.map((f, i) => (
           <div key={f.name+i} className="flex-between" style={{padding:"8px 0",borderBottom:"1px solid rgba(255,255,255,.04)",flexWrap:"wrap",gap:6}}>
             <div style={{display:"flex",alignItems:"center",gap:8,flex:1,minWidth:0}}>
+              <input type="checkbox" checked={selectedFiles.has(f.name)} onChange={()=>toggleSelect(f.name)}
+                style={{width:16,height:16,cursor:"pointer",accentColor:"#6366f1",flexShrink:0}}/>
               <span style={{fontSize:16,flexShrink:0}}>{
                 f.mimeType?.includes("pdf") ? "📄" :
                 f.mimeType?.includes("image") ? "🖼️" :
@@ -6863,7 +6919,6 @@ function FileManager({project, onUpdate}) {
               {!isValidRef(f.driveFileId) && !isValidRef(f.url) && !isValidRef(f.base64) && !f.pendingUpload && (
                 <span style={{color:"#ef4444",fontSize:10}}>⚠️ 미연결</span>
               )}
-              {/* 클라우드에 없는 파일: 재업로드 버튼 표시 */}
               {!isValidRef(f.driveFileId) && !isValidRef(f.url) && !isValidRef(f.base64) && (
                 <button className="btn btn-ghost" style={{padding:"3px 10px",fontSize:11,color:"#f59e0b",borderColor:"rgba(245,158,11,.3)"}}
                   onClick={()=>{setReuploadTarget(f.name);reuploadInputRef.current?.click();}}>
@@ -6875,11 +6930,47 @@ function FileManager({project, onUpdate}) {
                 {isValidRef(f.driveFileId) || isValidRef(f.url) ? "열기" : "다운로드"}
               </button>
               <button className="btn btn-ghost" style={{padding:"3px 8px",fontSize:11,color:"#fca5a5",borderColor:"rgba(239,68,68,.2)"}}
-                onClick={()=>handleDelete(f)}>삭제</button>
+                onClick={()=>setDeleteTarget(f)}>삭제</button>
             </div>
           </div>
         ))}
       </div>
+
+      {/* 단건 삭제 확인 모달 */}
+      {deleteTarget && (
+        <div className="modal-overlay" onClick={e=>e.target.classList.contains("modal-overlay")&&setDeleteTarget(null)}>
+          <div className="modal-box" style={{maxWidth:400}}>
+            <div className="modal-title">🗑️ 파일 삭제 확인</div>
+            <div style={{color:"var(--txt2)",fontSize:14,marginBottom:18,lineHeight:1.6}}>
+              <strong style={{color:"#fca5a5"}}>{deleteTarget.name}</strong> 파일을 삭제하시겠습니까?<br/>
+              <span style={{color:"var(--txt4)",fontSize:12}}>모든 저장소(Google Drive, Cloudflare R2)에서 완전히 삭제됩니다.</span>
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={()=>setDeleteTarget(null)}>취소</button>
+              <button className="btn" style={{background:"linear-gradient(135deg,#ef4444,#dc2626)",color:"#fff"}}
+                onClick={async()=>{const f=deleteTarget;setDeleteTarget(null);await handleDelete(f);}}>삭제 확인</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 일괄 삭제 확인 모달 */}
+      {bulkDeleteConfirm && (
+        <div className="modal-overlay" onClick={e=>e.target.classList.contains("modal-overlay")&&setBulkDeleteConfirm(false)}>
+          <div className="modal-box" style={{maxWidth:400}}>
+            <div className="modal-title">🗑️ 일괄 삭제 확인</div>
+            <div style={{color:"var(--txt2)",fontSize:14,marginBottom:18,lineHeight:1.6}}>
+              선택된 <strong style={{color:"#fca5a5"}}>{selectedFiles.size}개</strong> 파일을 삭제하시겠습니까?<br/>
+              <span style={{color:"var(--txt4)",fontSize:12}}>모든 저장소에서 완전히 삭제되며 복구할 수 없습니다.</span>
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={()=>setBulkDeleteConfirm(false)}>취소</button>
+              <button className="btn" style={{background:"linear-gradient(135deg,#ef4444,#dc2626)",color:"#fff"}}
+                onClick={handleBulkDelete}>삭제 확인</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -6995,6 +7086,7 @@ function QuoteHistoryCard({snap, snapNum, snapDivs, snapCalc, onPrintSnapshot}) 
 // ─ Project Detail ─
 function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
   const [tab, setTab] = useState("overview");
+  const [fileUploading, setFileUploading] = useState(false); // 파일 업로드 진행 상태
   const sc = STATUS_COLORS[project.status]||"#6b7280";
   const profit = profitRate(project.budget, project.cost);
   const tabs = [
@@ -7003,7 +7095,7 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
     {id:"gantt",label:"간트차트"},
     {id:"logs",label:"업무 로그"},
     {id:"reports",label:"보고서"},
-    {id:"files",label:"파일"},
+    {id:"files",label: fileUploading ? "파일 ⏳" : "파일"},
   ];
 
   return (
@@ -7093,9 +7185,10 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
       {tab==="gantt"&&<GanttChart project={project} onUpdate={onUpdate} users={users}/>}
       {tab==="logs"&&<WorkLog project={project} onUpdate={onUpdate} users={users} currentUser={currentUser}/>}
       {tab==="reports"&&<ReportsTabWrapper project={project}/>}
-      {tab==="files"&&(
-        <FileManager project={project} onUpdate={onUpdate}/>
-      )}
+      {/* FileManager는 항상 마운트 — 업로드 중 탭 이동해도 끊기지 않도록 display:none으로 숨김 */}
+      <div style={{display: tab==="files" ? "block" : "none"}}>
+        <FileManager project={project} onUpdate={onUpdate} onUploadStateChange={setFileUploading}/>
+      </div>
     </div>
   );
 }
