@@ -9369,6 +9369,13 @@ function App() {
     }
   }, [users]);
 
+  // 페이지 title 동적 업데이트
+  useEffect(() => {
+    const PAGE_TITLES = {dashboard:"대시보드",projects:"프로젝트",mywork:"내 업무",expense:"지출결의",labor:"인건비",purchase:"구매요청",files:"자료실",admin:"관리자 설정"};
+    const suffix = authedUser ? (page === "detail" && detail ? detail.name : (PAGE_TITLES[page] || "")) : "로그인";
+    document.title = `EpicStage EventOS – ${suffix}`;
+  }, [page, detail, authedUser]);
+
   const updateProject = useCallback((updated) => {
     setProjects(prev => prev.map(p=>p.id===updated.id?updated:p));
     if (detail?.id===updated.id) setDetail(updated);
