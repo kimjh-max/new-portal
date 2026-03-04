@@ -616,6 +616,57 @@ const SyncManager = {
     return null;
   },
 
+  // ⚡ R2-first 고속 업로드: R2 즉시 완료 → Drive 백그라운드 동기화
+  async uploadFileR2First(projectName, fileName, base64Data, mimeType) {
+    this.setStatus("syncing");
+    let r2Result = null;
+
+    // 1) R2 먼저 (빠른 Cloudflare Edge 네트워크)
+    if (CLOUD_CONFIG.ENABLED) {
+      try {
+        r2Result = await CloudSync.uploadFile(null, fileName, base64Data, mimeType);
+        if (r2Result && r2Result.success) console.log("[CloudSync] ⚡ fast upload:", fileName);
+      } catch (err) { console.error("[CloudSync] uploadFile:", err); }
+    }
+
+    // 2) Drive 업로드 Promise (기다리지 않고 반환)
+    let drivePromise = null;
+    if (DRIVE_CONFIG.ENABLED) {
+      drivePromise = fetch(DRIVE_CONFIG.GAS_URL, {
+        method: "POST", headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ action: "uploadFile", projectName, fileName, base64Data, mimeType }),
+        redirect: "follow",
+      }).then(r => r.text()).then(t => {
+        try { const d = JSON.parse(t); return (d && !d.error) ? d : null; } catch { return null; }
+      }).catch(err => { console.error("[DriveSync] bg:", err); return null; });
+    }
+
+    // 3) R2 성공 → 즉시 반환 (Drive는 드라이브Promise로 전달)
+    if (r2Result && r2Result.success) {
+      this._lastSyncTime = new Date();
+      this.setStatus("success");
+      return {
+        success: true,
+        r2Url: r2Result.url || "", r2Key: r2Result.key || "",
+        url: r2Result.url || "", key: r2Result.key || "",
+        drivePromise, // 호출자가 bg 완료 핸들링
+      };
+    }
+
+    // 4) R2 실패 → Drive 결과 기다림 (폴백)
+    if (drivePromise) {
+      const driveResult = await drivePromise;
+      if (driveResult) {
+        this._lastSyncTime = new Date();
+        this.setStatus("success");
+        return { ok: true, ...driveResult };
+      }
+    }
+
+    this.setStatus("error");
+    return null;
+  },
+
   // 파일 목록 조회 (Cloudflare 우선)
   async listFiles(projectName) {
     // Cloudflare R2 우선
@@ -6599,6 +6650,8 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
   const [deleteTarget, setDeleteTarget] = useState(null);     // 단건 삭제 확인 대상
   const [selectedFiles, setSelectedFiles] = useState(new Set()); // 체크박스 선택
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false); // 일괄 삭제 확인
+  const [drivePending, setDrivePending] = useState(new Set()); // Drive 백그라운드 동기화 중인 파일명
+  const [uploadStats, setUploadStats] = useState({current:0, total:0}); // 업로드 진행 통계
 
   // Drive에서 파일 목록 로드
   useEffect(() => {
@@ -6610,20 +6663,25 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
     });
   }, [project.name]);
 
-  // 파일 선택/드롭 핸들러
+  // ⚡ R2-first 병렬 업로드 핸들러 (속도 최적화)
   const handleFiles = async (fileList) => {
     if (!fileList || !fileList.length) return;
-    onUploadStateChange?.(true); // 업로드 시작 알림 (탭 이동 시에도 표시)
+    onUploadStateChange?.(true);
+    setUploading(true);
 
-    for (let i = 0; i < fileList.length; i++) {
-      const file = fileList[i];
-      // 대용량 파일 경고 (제한 없음 — 디자인 파일 등 큰 파일 허용)
+    const files = Array.from(fileList);
+    const total = files.length;
+    setUploadStats({current: 0, total});
+    setUploadProgress(`파일 준비 중... (0/${total})`);
+
+    // 단일 파일 업로드 함수
+    const uploadOne = async (file, idx) => {
+      setUploadStats(prev => ({...prev, current: idx + 1}));
+      setUploadProgress(`"${file.name}" 업로드 중... (${idx+1}/${total}, ${(file.size/1024/1024).toFixed(1)}MB)`);
+
       if (file.size > 100 * 1024 * 1024) {
-        toast(`⏳ "${file.name}" 대용량 파일(${(file.size/1024/1024).toFixed(0)}MB) 업로드 중... 시간이 걸릴 수 있습니다.`, "warn");
+        toast(`⏳ "${file.name}" 대용량(${(file.size/1024/1024).toFixed(0)}MB) 업로드 시작`, "warn");
       }
-
-      setUploading(true);
-      setUploadProgress(`"${file.name}" 업로드 중... (${(file.size/1024/1024).toFixed(1)}MB)`);
 
       // base64 변환
       const base64 = await new Promise((resolve) => {
@@ -6632,9 +6690,9 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
         reader.readAsDataURL(file);
       });
 
-      // 듀얼 업로드: Google Drive + Cloudflare R2 동시
-      if (DRIVE_CONFIG.ENABLED || CLOUD_CONFIG.ENABLED) {
-        const result = await SyncManager.uploadFile(project.name, file.name, base64, file.type);
+      // ⚡ R2-first 업로드 (빠른 R2 → 느린 Drive 백그라운드)
+      if (CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED) {
+        const result = await SyncManager.uploadFileR2First(project.name, file.name, base64, file.type);
         if (result && (result.ok || result.success)) {
           const fileEntry = {
             name: file.name,
@@ -6648,7 +6706,32 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
           const updatedFiles = [...(project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== file.name), fileEntry];
           onUpdate({...project, files: updatedFiles});
           setDriveFiles(prev => [...prev.filter(f=>f.name!==file.name), { fileId: fileEntry.driveFileId, name: file.name, mimeType: file.type, size: file.size, url: fileEntry.url, lastUpdated: new Date().toISOString() }]);
-          toast(`✅ "${file.name}" 업로드 완료 (듀얼 백업)`, "success");
+          toast(`⚡ "${file.name}" 업로드 완료`, "success");
+
+          // Drive 백그라운드 동기화 처리
+          if (result.drivePromise) {
+            setDrivePending(prev => new Set(prev).add(file.name));
+            result.drivePromise.then(driveResult => {
+              if (driveResult && (driveResult.fileId || driveResult.id)) {
+                const driveId = driveResult.fileId || driveResult.id;
+                // localStorage에서 최신 프로젝트 읽기 (stale closure 방지)
+                try {
+                  const allProjects = JSON.parse(localStorage.getItem("eventos_projects") || "[]");
+                  const curProj = allProjects.find(p => p.id === project.id);
+                  if (curProj) {
+                    const updFiles = (curProj.files||[]).map(f =>
+                      (typeof f === "object" && f.name === file.name) ? {...f, driveFileId: driveId} : f
+                    );
+                    onUpdate({...curProj, files: updFiles});
+                  }
+                } catch(e) { console.error("[Drive] bg update err:", e); }
+                console.log(`[Drive] ✅ bg sync done: ${file.name} → ${driveId}`);
+              }
+              setDrivePending(prev => { const n = new Set(prev); n.delete(file.name); return n; });
+            }).catch(() => {
+              setDrivePending(prev => { const n = new Set(prev); n.delete(file.name); return n; });
+            });
+          }
         } else {
           // 클라우드 실패 → base64 로컬 보관 (파일 유실 방지)
           const fileEntry = {
@@ -6671,11 +6754,21 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
         onUpdate({...project, files: updatedFiles});
         toast(`📁 "${file.name}" 로컬 저장 (클라우드 연결 시 자동 업로드)`, "warn");
       }
+    };
+
+    // 🔥 병렬 업로드 (최대 3개 동시 — 네트워크 과부하 방지)
+    const CONCURRENCY = 3;
+    for (let i = 0; i < files.length; i += CONCURRENCY) {
+      const batch = files.slice(i, i + CONCURRENCY);
+      await Promise.allSettled(batch.map((file, j) => uploadOne(file, i + j)));
     }
+
     setUploading(false);
     setUploadProgress("");
-    onUploadStateChange?.(false); // 업로드 완료 알림
+    setUploadStats({current: 0, total: 0});
+    onUploadStateChange?.(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    toast(`✅ 총 ${total}개 파일 업로드 완료`, "success");
   };
 
   const handleDrop = (e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); };
@@ -6729,8 +6822,8 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
       reader.readAsDataURL(file);
     });
 
-    if (DRIVE_CONFIG.ENABLED || CLOUD_CONFIG.ENABLED) {
-      const result = await SyncManager.uploadFile(project.name, targetName, base64, file.type);
+    if (CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED) {
+      const result = await SyncManager.uploadFileR2First(project.name, targetName, base64, file.type);
       if (result && (result.ok || result.success)) {
         const fileEntry = {
           name: targetName,
@@ -6744,7 +6837,31 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
         const updatedFiles = [...(project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== targetName), fileEntry];
         onUpdate({...project, files: updatedFiles});
         setDriveFiles(prev => [...prev.filter(f=>f.name!==targetName), { fileId: fileEntry.driveFileId, name: targetName, mimeType: file.type, size: file.size, url: fileEntry.url, lastUpdated: new Date().toISOString() }]);
-        toast(`✅ "${targetName}" 재업로드 완료 (듀얼 백업)`, "success");
+        toast(`⚡ "${targetName}" 재업로드 완료`, "success");
+
+        // Drive 백그라운드 동기화 처리
+        if (result.drivePromise) {
+          setDrivePending(prev => new Set(prev).add(targetName));
+          result.drivePromise.then(driveResult => {
+            if (driveResult && (driveResult.fileId || driveResult.id)) {
+              const driveId = driveResult.fileId || driveResult.id;
+              try {
+                const allProjects = JSON.parse(localStorage.getItem("eventos_projects") || "[]");
+                const curProj = allProjects.find(p => p.id === project.id);
+                if (curProj) {
+                  const updFiles = (curProj.files||[]).map(f =>
+                    (typeof f === "object" && f.name === targetName) ? {...f, driveFileId: driveId} : f
+                  );
+                  onUpdate({...curProj, files: updFiles});
+                }
+              } catch(e) { console.error("[Drive] bg update err:", e); }
+              console.log(`[Drive] ✅ bg sync done: ${targetName} → ${driveId}`);
+            }
+            setDrivePending(prev => { const n = new Set(prev); n.delete(targetName); return n; });
+          }).catch(() => {
+            setDrivePending(prev => { const n = new Set(prev); n.delete(targetName); return n; });
+          });
+        }
       } else {
         // 클라우드 실패 → base64 로컬 보관
         const fileEntry = {
@@ -6844,15 +6961,30 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
         style={uploading?{borderColor:"#6366f1",background:"rgba(99,102,241,.06)"}:{}}>
         {uploading ? (
           <>
-            <div style={{fontSize:32,marginBottom:10,animation:"spin 1s linear infinite"}}>🔄</div>
-            <div style={{color:"#a5b4fc",marginBottom:6}}>{uploadProgress}</div>
+            <div style={{fontSize:32,marginBottom:10,animation:"spin 1s linear infinite"}}>⚡</div>
+            <div style={{color:"#a5b4fc",marginBottom:6,fontWeight:600}}>{uploadProgress}</div>
+            {/* 프로그레스 바 */}
+            {uploadStats.total > 0 && (
+              <div style={{width:"80%",maxWidth:300,margin:"8px auto 0"}}>
+                <div style={{background:"rgba(255,255,255,.08)",borderRadius:6,height:8,overflow:"hidden"}}>
+                  <div style={{
+                    width:`${Math.round((uploadStats.current / uploadStats.total) * 100)}%`,
+                    height:"100%",borderRadius:6,transition:"width .3s",
+                    background:"linear-gradient(90deg,#6366f1,#a855f7)",
+                  }}/>
+                </div>
+                <div style={{color:"var(--txt4)",fontSize:10,marginTop:4,textAlign:"center"}}>
+                  {uploadStats.current}/{uploadStats.total} 파일 · R2 고속 업로드
+                </div>
+              </div>
+            )}
           </>
         ) : (
           <>
             <div style={{fontSize:32,marginBottom:10}}>☁️</div>
             <div style={{color:"#94a3b8",marginBottom:6}}>파일 드래그 또는 클릭하여 업로드</div>
             <div style={{color:"var(--txt4)",fontSize:12}}>
-              {DRIVE_CONFIG.ENABLED ? "업로드 파일은 Google Drive에 자동 저장됩니다" : "Google Drive 연결 후 클라우드 동기화 가능"}
+              {DRIVE_CONFIG.ENABLED ? "⚡ R2 고속 업로드 + Google Drive 자동 백업" : "Google Drive 연결 후 클라우드 동기화 가능"}
             </div>
           </>
         )}
@@ -6877,6 +7009,12 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
                 <button className="btn btn-ghost" style={{padding:"2px 8px",fontSize:10,color:"#fca5a5",borderColor:"rgba(239,68,68,.2)"}}
                   onClick={()=>setBulkDeleteConfirm(true)}>🗑️ 일괄 삭제</button>
               </>
+            )}
+            {drivePending.size > 0 && (
+              <span style={{color:"#a5b4fc",fontSize:10,background:"rgba(99,102,241,.1)",padding:"2px 8px",borderRadius:10,display:"flex",alignItems:"center",gap:3}}>
+                <span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>🔄</span>
+                Drive 백그라운드 동기화 {drivePending.size}개
+              </span>
             )}
             {loadingFiles && <span style={{color:"var(--txt4)",fontSize:11}}>로딩 중...</span>}
             {DRIVE_CONFIG.ENABLED && !loadingFiles && (
@@ -6914,7 +7052,12 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
               </div>
             </div>
             <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
-              {(isValidRef(f.driveFileId) || isValidRef(f.url)) && <span style={{color:"#10b981",fontSize:11}}>Drive ✓</span>}
+              {(isValidRef(f.driveFileId) || isValidRef(f.url)) && !drivePending.has(f.name) && <span style={{color:"#10b981",fontSize:11}}>☁️ 완료</span>}
+              {(isValidRef(f.driveFileId) || isValidRef(f.url)) && drivePending.has(f.name) && (
+                <span style={{color:"#a5b4fc",fontSize:10,display:"flex",alignItems:"center",gap:3}}>
+                  <span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>🔄</span> Drive 동기화 중
+                </span>
+              )}
               {f.pendingUpload && <span style={{color:"#f59e0b",fontSize:10}}>⏳ 대기</span>}
               {!isValidRef(f.driveFileId) && !isValidRef(f.url) && !isValidRef(f.base64) && !f.pendingUpload && (
                 <span style={{color:"#ef4444",fontSize:10}}>⚠️ 미연결</span>
