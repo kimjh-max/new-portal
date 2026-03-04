@@ -1,0 +1,14 @@
+name = "eventos-worker"
+main = "src/index.js"
+compatibility_date = "2024-12-01"
+
+# ── Cloudflare D1 Database ──
+[[d1_databases]]
+binding = "DB"
+database_name = "eventos-db"
+database_id = "" # ← wrangler d1 create 후 자동 생성된 ID 입력
+
+# ── Cloudflare R2 Storage ──
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "eventos-files"

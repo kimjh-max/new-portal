@@ -277,14 +277,172 @@ const DRIVE_CONFIG = {
 // GAS_URL이 있으면 자동 활성화
 if (DRIVE_CONFIG.GAS_URL) DRIVE_CONFIG.ENABLED = true;
 
+/* ══ Cloudflare D1 + R2 클라우드 설정 ══════════════════════════════════════════
+   Cloudflare Worker 배포 후 URL을 아래에 입력하세요.
+   배포 방법: cd worker && wrangler deploy → URL 복사
+═══════════════════════════════════════════════════════════════════════════ */
+const CLOUD_CONFIG = {
+  WORKER_URL: "",  // ← Cloudflare Worker 배포 URL (예: https://eventos-worker.xxx.workers.dev)
+  SYNC_DEBOUNCE_MS: 3000,
+  ENABLED: false,
+};
+if (CLOUD_CONFIG.WORKER_URL) CLOUD_CONFIG.ENABLED = true;
+
+// CloudSync: Cloudflare Workers API 호출 모듈
+const CloudSync = {
+  _baseUrl: () => CLOUD_CONFIG.WORKER_URL.replace(/\/$/, ""),
+
+  // 전체 데이터 로드 (앱 시작 시)
+  async loadAll() {
+    if (!CLOUD_CONFIG.ENABLED) return null;
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/data`);
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Load failed");
+      return data;
+    } catch (err) {
+      console.error("[CloudSync] loadAll:", err);
+      return null;
+    }
+  },
+
+  // 시스템 데이터 저장 (users, priceList 등)
+  async saveAppData(payload) {
+    if (!CLOUD_CONFIG.ENABLED) return null;
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/data`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: payload }),
+      });
+      return await res.json();
+    } catch (err) {
+      console.error("[CloudSync] saveAppData:", err);
+      return null;
+    }
+  },
+
+  // 프로젝트 개별 저장
+  async saveProject(project) {
+    if (!CLOUD_CONFIG.ENABLED) return null;
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/project`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project }),
+      });
+      return await res.json();
+    } catch (err) {
+      console.error("[CloudSync] saveProject:", err);
+      return null;
+    }
+  },
+
+  // 자동 백업 생성
+  async createBackup(snapshot) {
+    if (!CLOUD_CONFIG.ENABLED) return null;
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/backup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: snapshot, type: "auto" }),
+      });
+      return await res.json();
+    } catch (err) {
+      console.error("[CloudSync] createBackup:", err);
+      return null;
+    }
+  },
+
+  // 백업 이력 조회
+  async listBackups() {
+    if (!CLOUD_CONFIG.ENABLED) return [];
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/backups`);
+      const data = await res.json();
+      return data.success ? data.backups : [];
+    } catch (err) {
+      console.error("[CloudSync] listBackups:", err);
+      return [];
+    }
+  },
+
+  // 백업 복원
+  async restoreBackup(id) {
+    if (!CLOUD_CONFIG.ENABLED) return null;
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/backup/${id}/restore`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      return data.success ? data.data : null;
+    } catch (err) {
+      console.error("[CloudSync] restoreBackup:", err);
+      return null;
+    }
+  },
+
+  // R2 파일 업로드 (base64)
+  async uploadFile(projectId, fileName, base64Data, mimeType, uploadedBy) {
+    if (!CLOUD_CONFIG.ENABLED) return null;
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/files/upload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, fileName, base64Data, mimeType, uploadedBy }),
+      });
+      return await res.json();
+    } catch (err) {
+      console.error("[CloudSync] uploadFile:", err);
+      return null;
+    }
+  },
+
+  // R2 파일 다운로드 URL
+  getFileUrl(key) {
+    return `${this._baseUrl()}/api/files/${encodeURIComponent(key)}`;
+  },
+
+  // R2 파일 삭제
+  async deleteFile(key) {
+    if (!CLOUD_CONFIG.ENABLED) return null;
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/files/${encodeURIComponent(key)}`, {
+        method: "DELETE",
+      });
+      return await res.json();
+    } catch (err) {
+      console.error("[CloudSync] deleteFile:", err);
+      return null;
+    }
+  },
+
+  // R2 파일 목록
+  async listFiles(projectId) {
+    if (!CLOUD_CONFIG.ENABLED) return [];
+    try {
+      const url = projectId
+        ? `${this._baseUrl()}/api/files?projectId=${projectId}`
+        : `${this._baseUrl()}/api/files`;
+      const res = await fetch(url);
+      const data = await res.json();
+      return data.success ? data.files : [];
+    } catch (err) {
+      console.error("[CloudSync] listFiles:", err);
+      return [];
+    }
+  },
+};
+
 /* ── localStorage 영속화 + Google Drive 동기화 모듈 ────────────────────────── */
 
-// SyncManager: 디바운스된 Google Drive 동기화 큐
+// SyncManager: 디바운스 동기화 큐 (Cloudflare 우선 → Google Drive 폴백)
 const SyncManager = {
   _timers: {},
   _status: "idle", // "idle" | "syncing" | "success" | "error" | "offline"
   _listeners: new Set(),
   _lastSyncTime: null,
+  _syncTarget: "none", // "cloudflare" | "drive" | "both" | "none"
 
   subscribe(fn) { this._listeners.add(fn); return () => this._listeners.delete(fn); },
   _notify() { this._listeners.forEach(fn => fn(this._status, this._lastSyncTime)); },
@@ -292,90 +450,182 @@ const SyncManager = {
   setStatus(s) { this._status = s; this._notify(); },
   getStatus() { return this._status; },
 
-  // GAS에 데이터 저장 (디바운스)
+  // 현재 동기화 대상 결정
+  _getTarget() {
+    const cf = CLOUD_CONFIG.ENABLED;
+    const dr = DRIVE_CONFIG.ENABLED;
+    if (cf && dr) return "both";
+    if (cf) return "cloudflare";
+    if (dr) return "drive";
+    return "none";
+  },
+
+  // 통합 동기화 (디바운스) — Cloudflare 우선, Drive 폴백
   queueSync(action, data) {
-    if (!DRIVE_CONFIG.ENABLED) return;
+    const target = this._getTarget();
+    if (target === "none") return;
     if (!navigator.onLine) { this.setStatus("offline"); return; }
+
+    const debounceMs = CLOUD_CONFIG.ENABLED ? CLOUD_CONFIG.SYNC_DEBOUNCE_MS : DRIVE_CONFIG.SYNC_DEBOUNCE_MS;
 
     clearTimeout(this._timers[action]);
     this._timers[action] = setTimeout(async () => {
       this.setStatus("syncing");
+      let success = false;
+
+      // 1) Cloudflare D1 (우선)
+      if (CLOUD_CONFIG.ENABLED) {
+        try {
+          if (action === "saveAppData") {
+            await CloudSync.saveAppData(data.data);
+          } else if (action.startsWith("saveProject_")) {
+            await CloudSync.saveProject(data.project);
+          } else if (action === "saveBackup") {
+            await CloudSync.createBackup(data.data);
+          }
+          success = true;
+          console.log("[CloudSync] ✅", action);
+        } catch (err) {
+          console.error("[CloudSync]", action, err);
+        }
+      }
+
+      // 2) Google Drive GAS (폴백 또는 동시 백업)
+      if (DRIVE_CONFIG.ENABLED) {
+        try {
+          const res = await fetch(DRIVE_CONFIG.GAS_URL, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({ action, ...data }),
+            redirect: "follow",
+          });
+          const text = await res.text();
+          let result;
+          try { result = JSON.parse(text); } catch { result = { ok: true }; }
+          if (result.error) throw new Error(result.error);
+          success = true;
+          console.log("[DriveSync] ✅", action);
+        } catch (err) {
+          console.error("[DriveSync]", action, err);
+        }
+      }
+
+      if (success) {
+        this._lastSyncTime = new Date();
+        this.setStatus("success");
+      } else {
+        this.setStatus("error");
+      }
+    }, debounceMs);
+  },
+
+  // 전체 데이터 로드 (Cloudflare 우선 → GAS 폴백)
+  async loadFromCloud() {
+    const target = this._getTarget();
+    if (target === "none") return null;
+    if (!navigator.onLine) { this.setStatus("offline"); return null; }
+    this.setStatus("syncing");
+
+    // 1) Cloudflare D1 우선 시도
+    if (CLOUD_CONFIG.ENABLED) {
+      try {
+        const data = await CloudSync.loadAll();
+        if (data && data.success) {
+          this._lastSyncTime = new Date();
+          this.setStatus("success");
+          console.log("[CloudSync] ✅ loadAll from Cloudflare D1");
+          return data;
+        }
+      } catch (err) {
+        console.error("[CloudSync] loadAll fallback to Drive:", err);
+      }
+    }
+
+    // 2) Google Drive GAS 폴백
+    if (DRIVE_CONFIG.ENABLED) {
+      try {
+        const res = await fetch(`${DRIVE_CONFIG.GAS_URL}?action=loadAll`, { redirect: "follow" });
+        const text = await res.text();
+        const data = JSON.parse(text);
+        if (data.error) throw new Error(data.error);
+        this._lastSyncTime = new Date();
+        this.setStatus("success");
+        console.log("[DriveSync] ✅ loadAll from Google Drive");
+        return data;
+      } catch (err) {
+        console.error("[DriveSync] loadAll error:", err);
+      }
+    }
+
+    this.setStatus("error");
+    return null;
+  },
+
+  // 파일 업로드 (Cloudflare R2 우선 → GAS 폴백)
+  async uploadFile(projectName, fileName, base64Data, mimeType) {
+    const target = this._getTarget();
+    if (target === "none") { toast("클라우드 스토리지가 연결되지 않았습니다.", "error"); return null; }
+    this.setStatus("syncing");
+
+    // 1) Cloudflare R2 우선
+    if (CLOUD_CONFIG.ENABLED) {
+      try {
+        const result = await CloudSync.uploadFile(null, fileName, base64Data, mimeType);
+        if (result && result.success) {
+          this._lastSyncTime = new Date();
+          this.setStatus("success");
+          return result;
+        }
+      } catch (err) {
+        console.error("[CloudSync] uploadFile fallback:", err);
+      }
+    }
+
+    // 2) GAS 폴백
+    if (DRIVE_CONFIG.ENABLED) {
       try {
         const res = await fetch(DRIVE_CONFIG.GAS_URL, {
           method: "POST",
           headers: { "Content-Type": "text/plain" },
-          body: JSON.stringify({ action, ...data }),
+          body: JSON.stringify({ action: "uploadFile", projectName, fileName, base64Data, mimeType }),
           redirect: "follow",
         });
         const text = await res.text();
-        let result;
-        try { result = JSON.parse(text); } catch { result = { ok: true }; }
+        const result = JSON.parse(text);
         if (result.error) throw new Error(result.error);
         this._lastSyncTime = new Date();
         this.setStatus("success");
+        return result;
       } catch (err) {
-        console.error("[DriveSync]", action, err);
-        this.setStatus("error");
+        console.error("[DriveSync] uploadFile error:", err);
       }
-    }, DRIVE_CONFIG.SYNC_DEBOUNCE_MS);
-  },
-
-  // GAS에서 전체 데이터 로드
-  async loadFromCloud() {
-    if (!DRIVE_CONFIG.ENABLED) return null;
-    if (!navigator.onLine) { this.setStatus("offline"); return null; }
-    this.setStatus("syncing");
-    try {
-      const res = await fetch(`${DRIVE_CONFIG.GAS_URL}?action=loadAll`, { redirect: "follow" });
-      const text = await res.text();
-      const data = JSON.parse(text);
-      if (data.error) throw new Error(data.error);
-      this._lastSyncTime = new Date();
-      this.setStatus("success");
-      return data;
-    } catch (err) {
-      console.error("[DriveSync] loadAll error:", err);
-      this.setStatus("error");
-      return null;
     }
+
+    this.setStatus("error");
+    return null;
   },
 
-  // 파일 업로드
-  async uploadFile(projectName, fileName, base64Data, mimeType) {
-    if (!DRIVE_CONFIG.ENABLED) { toast("Google Drive가 연결되지 않았습니다.", "error"); return null; }
-    this.setStatus("syncing");
-    try {
-      const res = await fetch(DRIVE_CONFIG.GAS_URL, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain" },
-        body: JSON.stringify({ action: "uploadFile", projectName, fileName, base64Data, mimeType }),
-        redirect: "follow",
-      });
-      const text = await res.text();
-      const result = JSON.parse(text);
-      if (result.error) throw new Error(result.error);
-      this._lastSyncTime = new Date();
-      this.setStatus("success");
-      return result;
-    } catch (err) {
-      console.error("[DriveSync] uploadFile error:", err);
-      this.setStatus("error");
-      return null;
-    }
-  },
-
-  // 파일 목록 조회
+  // 파일 목록 조회 (Cloudflare 우선)
   async listFiles(projectName) {
-    if (!DRIVE_CONFIG.ENABLED) return [];
-    try {
-      const res = await fetch(`${DRIVE_CONFIG.GAS_URL}?action=listFiles&projectName=${encodeURIComponent(projectName)}`, { redirect: "follow" });
-      const text = await res.text();
-      const result = JSON.parse(text);
-      return result.files || [];
-    } catch (err) {
-      console.error("[DriveSync] listFiles error:", err);
-      return [];
+    // Cloudflare R2 우선
+    if (CLOUD_CONFIG.ENABLED) {
+      try {
+        const files = await CloudSync.listFiles();
+        if (files.length) return files;
+      } catch {}
     }
+    // GAS 폴백
+    if (DRIVE_CONFIG.ENABLED) {
+      try {
+        const res = await fetch(`${DRIVE_CONFIG.GAS_URL}?action=listFiles&projectName=${encodeURIComponent(projectName)}`, { redirect: "follow" });
+        const text = await res.text();
+        const result = JSON.parse(text);
+        return result.files || [];
+      } catch (err) {
+        console.error("[DriveSync] listFiles error:", err);
+      }
+    }
+    return [];
   },
 };
 
@@ -438,8 +688,12 @@ function SyncStatusBar() {
     ? lastBackup.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})
     : null;
 
-  // Drive 미연결 시 localStorage 저장 + 백업 상태 표시
-  if (!DRIVE_CONFIG.ENABLED) {
+  // 클라우드 미연결 시 localStorage 저장 + 백업 상태 표시
+  const cloudLabel = CLOUD_CONFIG.ENABLED && DRIVE_CONFIG.ENABLED ? "D1+Drive"
+    : CLOUD_CONFIG.ENABLED ? "Cloudflare"
+    : DRIVE_CONFIG.ENABLED ? "Drive" : null;
+
+  if (!DRIVE_CONFIG.ENABLED && !CLOUD_CONFIG.ENABLED) {
     return (
       <div style={{position:"relative"}}>
         <div onClick={()=>setShowBackupPanel(!showBackupPanel)}
@@ -455,7 +709,7 @@ function SyncStatusBar() {
   const configs = {
     idle:    { icon:"☁️", text:"대기", bg:"rgba(255,255,255,.04)", border:"var(--border)", color:"var(--txt4)" },
     syncing: { icon:"🔄", text:"저장 중...", bg:"rgba(99,102,241,.1)", border:"rgba(99,102,241,.2)", color:"#a5b4fc" },
-    success: { icon:"✅", text: lastSync ? `${lastSync.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})} 동기화` : "동기화됨", bg:"rgba(16,185,129,.08)", border:"rgba(16,185,129,.2)", color:"#34d399" },
+    success: { icon:"✅", text: lastSync ? `${lastSync.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})} ${cloudLabel || ""} 동기화` : "동기화됨", bg:"rgba(16,185,129,.08)", border:"rgba(16,185,129,.2)", color:"#34d399" },
     error:   { icon:"⚠️", text:"동기화 실패", bg:"rgba(239,68,68,.08)", border:"rgba(239,68,68,.2)", color:"#fca5a5" },
     offline: { icon:"📴", text:"오프라인", bg:"rgba(107,114,128,.1)", border:"rgba(107,114,128,.2)", color:"#9ca3af" },
   };
@@ -8872,7 +9126,7 @@ function App() {
   const [purchases, setPurchases] = usePersistedState("eventos_purchases", []);
   const [driveLoaded, setDriveLoaded] = useState(false);
 
-  // ── Google Drive 동기화: 시스템 데이터 변경 시 Drive에 저장 ──
+  // ── 클라우드 동기화: 시스템 데이터 변경 시 저장 (Cloudflare D1 + Drive) ──
   const appDataRef = useRef(null);
   useEffect(() => {
     if (!driveLoaded) return; // 초기 로드 완료 전에는 싱크하지 않음
@@ -8884,7 +9138,7 @@ function App() {
     SyncManager.queueSync("saveAppData", { data: payload });
   }, [users, priceList, expenses, laborCosts, purchases, driveLoaded]);
 
-  // ── Google Drive 동기화: 프로젝트 변경 시 각 프로젝트 개별 저장 ──
+  // ── 클라우드 동기화: 프로젝트 변경 시 각 프로젝트 개별 저장 ──
   const projectsRef = useRef(null);
   useEffect(() => {
     if (!driveLoaded) return;
@@ -8896,7 +9150,7 @@ function App() {
     });
   }, [projects, driveLoaded]);
 
-  // ── Google Drive 초기 로드 (앱 시작 시) + 데이터 무결성 검증 ──
+  // ── 클라우드 초기 로드 (Cloudflare D1 우선 → Drive 폴백) + 데이터 무결성 검증 ──
   useEffect(() => {
     (async () => {
       // 1) 데이터 무결성 검증
@@ -8924,8 +9178,9 @@ function App() {
       };
       validateData();
 
-      // 2) Google Drive 로드
-      if (!DRIVE_CONFIG.ENABLED) { setDriveLoaded(true); return; }
+      // 2) 클라우드 로드 (Cloudflare D1 우선 → Google Drive 폴백)
+      const anyCloudEnabled = CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED;
+      if (!anyCloudEnabled) { setDriveLoaded(true); return; }
       const cloud = await SyncManager.loadFromCloud();
       if (cloud && !cloud.error) {
         if (cloud.users?.length) setUsers(cloud.users);
@@ -8934,13 +9189,14 @@ function App() {
         if (cloud.laborCosts) setLaborCosts(cloud.laborCosts);
         if (cloud.purchases) setPurchases(cloud.purchases);
         if (cloud.projects?.length) setProjects(cloud.projects);
-        toast("☁️ Google Drive에서 데이터를 불러왔습니다.", "success");
+        const source = CLOUD_CONFIG.ENABLED ? "Cloudflare D1" : "Google Drive";
+        toast(`☁️ ${source}에서 데이터를 불러왔습니다.`, "success");
       }
       setDriveLoaded(true);
     })();
   }, []);
 
-  // ── 30분 자동 백업 시스템 ──
+  // ── 30분 자동 백업 시스템 (localStorage + Cloudflare + Drive) ──
   const lastBackupRef = useRef(null);
   useEffect(() => {
     const createAutoBackup = () => {
@@ -8962,8 +9218,8 @@ function App() {
         localStorage.setItem("eventos_autoBackups", JSON.stringify(backups));
       } catch (e) { console.error("[EventOS] 자동 백업 저장 실패:", e); }
 
-      // Drive 백업 (GAS 활성 시)
-      if (DRIVE_CONFIG.ENABLED) {
+      // 클라우드 백업 (Cloudflare D1 + Drive, 둘 다 활성 시 모두 저장)
+      if (CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED) {
         SyncManager.queueSync("saveBackup", { data: snapshot });
       }
       console.log("[EventOS] 자동 백업 완료:", new Date().toLocaleTimeString("ko-KR"));
