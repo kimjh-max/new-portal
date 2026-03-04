@@ -5679,9 +5679,6 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
                   : ["수익 (C = (A+B) × 10%)", C.toLocaleString()+"원", "#10b981"],
               ] : []),
               ["부가세 (D = A × 10%)", D.toLocaleString()+"원", "var(--txt2)"],
-              ...(hasBudgetAdj && quoteType==="일반기업" ? [
-                ["수익 감액", "-"+profitReduction.toLocaleString()+"원", "#f59e0b"],
-              ] : []),
             ].map(([l,v,c])=>(
               <div key={l} className="flex-between" style={{marginBottom:6}}>
                 <span style={{color:"var(--txt3)",fontSize:13}}>{l}</span>
@@ -5690,7 +5687,7 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
             ))}
             {hasBudgetAdj && (
               <div className="flex-between" style={{marginBottom:6,padding:"4px 8px",background:"rgba(245,158,11,.08)",borderRadius:6}}>
-                <span style={{color:"#fbbf24",fontSize:12,fontWeight:700}}>🎯 기준 예산 절사 ({budgetTarget.toLocaleString()}원)</span>
+                <span style={{color:"#fbbf24",fontSize:12,fontWeight:700}}>절사금액</span>
                 <span style={{color:"#f59e0b",fontSize:12,fontWeight:700}}>-{profitReduction.toLocaleString()}원</span>
               </div>
             )}
