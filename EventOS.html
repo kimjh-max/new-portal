@@ -9188,9 +9188,27 @@ function PurchasePanel({purchases, setPurchases, projects, users, currentUser}) 
 function App() {
   // ── localStorage 영속화 (새로고침해도 데이터 유지) ──
   const [users, setUsers] = usePersistedState("eventos_users", INIT_USERS);
-  const [authedUser, setAuthedUser] = useState(null);
-  const [page, setPage] = useState("dashboard");
-  const [detail, setDetail] = useState(null);
+  const [authedUser, setAuthedUser] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem("eventos_session");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return null;
+  });
+  const [page, setPage] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem("eventos_page");
+      if (saved) return saved;
+    } catch {}
+    return "dashboard";
+  });
+  const [detail, setDetail] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem("eventos_detail");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return null;
+  });
   const [projects, setProjects] = usePersistedState("eventos_projects", INIT_PROJECTS);
   const [priceList, setPriceList] = usePersistedState("eventos_priceList", INIT_PRICE_LIST);
   const [expenses, setExpenses] = usePersistedState("eventos_expenses", []);
@@ -9308,7 +9326,9 @@ function App() {
   const handleLogin = (user) => {
     // lastLogin 갱신
     setUsers(prev => prev.map(u => u.id===user.id ? {...u, lastLogin: today} : u));
-    setAuthedUser({...user, lastLogin: today});
+    const sessionUser = {...user, lastLogin: today};
+    setAuthedUser(sessionUser);
+    try { sessionStorage.setItem("eventos_session", JSON.stringify(sessionUser)); } catch {}
     toast(`👋 환영합니다, ${user.name}!`, "success");
   };
 
@@ -9317,8 +9337,26 @@ function App() {
     setAuthedUser(null);
     setPage("dashboard");
     setDetail(null);
+    try {
+      sessionStorage.removeItem("eventos_session");
+      sessionStorage.removeItem("eventos_page");
+      sessionStorage.removeItem("eventos_detail");
+    } catch {}
     toast("로그아웃되었습니다.");
   };
+
+  // page/detail 변경 시 sessionStorage 동기화
+  useEffect(() => {
+    if (!authedUser) return;
+    try { sessionStorage.setItem("eventos_page", page); } catch {}
+  }, [page, authedUser]);
+  useEffect(() => {
+    if (!authedUser) return;
+    try {
+      if (detail) sessionStorage.setItem("eventos_detail", JSON.stringify(detail));
+      else sessionStorage.removeItem("eventos_detail");
+    } catch {}
+  }, [detail, authedUser]);
 
   // users 변경 시 authedUser도 동기화 (자기 자신이 차단된 경우 로그아웃)
   useEffect(() => {
