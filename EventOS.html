@@ -200,6 +200,7 @@ const INIT_USERS = [
     "color": "#a855f7",
     "initial": "관",
     "producer": null,
+    "email": "",
     "isAdmin": true,
     "approved": true,
     "createdAt": "2026-01-01",
@@ -213,6 +214,7 @@ const INIT_USERS = [
     "color": "#6366f1",
     "initial": "김",
     "producer": "김지현",
+    "email": "",
     "isAdmin": true,
     "approved": false,
     "createdAt": "2026-01-10",
@@ -226,6 +228,7 @@ const INIT_USERS = [
     "color": "#ec4899",
     "initial": "이",
     "producer": "이서연",
+    "email": "",
     "isAdmin": false,
     "approved": false,
     "createdAt": "2026-01-10",
@@ -239,6 +242,7 @@ const INIT_USERS = [
     "color": "#10b981",
     "initial": "박",
     "producer": "박민준",
+    "email": "",
     "isAdmin": false,
     "approved": false,
     "createdAt": "2026-01-10",
@@ -252,6 +256,7 @@ const INIT_USERS = [
     "color": "#f59e0b",
     "initial": "최",
     "producer": "최다은",
+    "email": "",
     "isAdmin": false,
     "approved": false,
     "createdAt": "2026-01-10",
@@ -1076,10 +1081,10 @@ function LoginPage({ onLogin, users }) {
 }
 
 /* ── 관리자 패널 ─────────────────────────────────────────────────────────── */
-function AdminPanel({ users, onUsersChange, priceList, onPriceListChange }) {
-  const [adminTab, setAdminTab] = useState("users"); // "users" | "prices"
+function AdminPanel({ users, onUsersChange, priceList, onPriceListChange, onSendUrgentEmails, findUrgentTasksByUser }) {
+  const [adminTab, setAdminTab] = useState("users"); // "users" | "prices" | "email"
   const [showAdd, setShowAdd] = useState(false);
-  const [newUser, setNewUser] = useState({ id:"", pw:"", name:"", role:"", producer:"", isAdmin:false });
+  const [newUser, setNewUser] = useState({ id:"", pw:"", name:"", role:"", producer:"", email:"", isAdmin:false });
   const [confirmRevoke, setConfirmRevoke] = useState(null);
   const [editingUser, setEditingUser] = useState(null); // { id, name, role, pw, producer, isAdmin }
   const [search, setSearch] = useState("");
@@ -1132,13 +1137,14 @@ function AdminPanel({ users, onUsersChange, priceList, onPriceListChange }) {
       color: USER_COLORS[idx],
       initial: newUser.name.charAt(0),
       producer: newUser.producer || null,
+      email: newUser.email || "",
       isAdmin: newUser.isAdmin || false,
       approved: newUser.isAdmin ? true : false, // 관리자는 자동 승인
       createdAt: today,
       lastLogin: null,
     };
     onUsersChange([...users, u]);
-    setNewUser({ id:"", pw:"", name:"", role:"", producer:"", isAdmin:false });
+    setNewUser({ id:"", pw:"", name:"", role:"", producer:"", email:"", isAdmin:false });
     setShowAdd(false);
     const msg = u.isAdmin
       ? `✅ 관리자 계정 "${u.name}"이 생성되었습니다.`
@@ -1155,6 +1161,7 @@ function AdminPanel({ users, onUsersChange, priceList, onPriceListChange }) {
       role:     editingUser.role,
       pw:       editingUser.pw || u.pw,
       producer: editingUser.producer || null,
+      email:    editingUser.email || u.email || "",
       isAdmin:  editingUser.isAdmin,
       initial:  editingUser.name.charAt(0),
       // 관리자 권한 부여 시 자동 승인 처리
@@ -1232,6 +1239,7 @@ function AdminPanel({ users, onUsersChange, priceList, onPriceListChange }) {
       <div className="tab-bar" style={{marginBottom:20}}>
         <button className={`tab-btn${adminTab==="users"?" active":""}`} onClick={()=>setAdminTab("users")}>👥 접근 권한 관리</button>
         <button className={`tab-btn${adminTab==="prices"?" active":""}`} onClick={()=>setAdminTab("prices")}>💰 기준 금액 관리</button>
+        <button className={`tab-btn${adminTab==="email"?" active":""}`} onClick={()=>setAdminTab("email")}>📧 이메일 알림</button>
       </div>
 
       {/* ══ 기준 금액 탭 ══ */}
@@ -1443,6 +1451,7 @@ function AdminPanel({ users, onUsersChange, priceList, onPriceListChange }) {
               {label:"이름 *",key:"name",placeholder:"실명"},
               {label:"직책 *",key:"role",placeholder:"예: 기획 PM"},
               {label:"프로듀서명 (프로젝트 연동)",key:"producer",placeholder:"이름과 동일하게 입력"},
+              {label:"이메일 (알림 발송용)",key:"email",placeholder:"예: hong@company.com",type:"email"},
             ].map(f=>(
               <div key={f.key} className="form-group" style={{marginBottom:10}}>
                 <label className="form-label">{f.label}</label>
@@ -1524,7 +1533,7 @@ function AdminPanel({ users, onUsersChange, priceList, onPriceListChange }) {
                   {u.id !== "admin" && (
                     <button className="admin-action-btn"
                       style={{background:"rgba(99,102,241,.1)",color:"#a5b4fc",border:"1px solid rgba(99,102,241,.25)"}}
-                      onClick={()=>setEditingUser({id:u.id,name:u.name,role:u.role,pw:"",producer:u.producer||"",isAdmin:u.isAdmin||false})}>
+                      onClick={()=>setEditingUser({id:u.id,name:u.name,role:u.role,pw:"",producer:u.producer||"",email:u.email||"",isAdmin:u.isAdmin||false})}>
                       ✏️ 편집
                     </button>
                   )}
@@ -1568,6 +1577,120 @@ function AdminPanel({ users, onUsersChange, priceList, onPriceListChange }) {
         </div>
       )}
 
+      {/* ══ 이메일 알림 탭 ══ */}
+      {adminTab==="email" && (() => {
+        const tasksByUser = findUrgentTasksByUser ? findUrgentTasksByUser() : {};
+        const userNames = Object.keys(tasksByUser);
+        const totalTasks = userNames.reduce((s,n)=>s+tasksByUser[n].length, 0);
+        const lastNotify = (() => { try { return JSON.parse(localStorage.getItem("eventos_lastEmailNotify")||"{}"); } catch { return {}; } })();
+        const todayStr = new Date().toISOString().slice(0,10);
+
+        return (
+          <div>
+            {/* 상단 요약 */}
+            <div className="grid-2" style={{marginBottom:20,gap:12}}>
+              <div className="card" style={{textAlign:"center",padding:20}}>
+                <div style={{fontSize:28,fontWeight:800,color:"#f59e0b"}}>{totalTasks}</div>
+                <div style={{fontSize:12,color:"var(--txt3)",marginTop:4}}>3일 이내 긴급 과업</div>
+              </div>
+              <div className="card" style={{textAlign:"center",padding:20}}>
+                <div style={{fontSize:28,fontWeight:800,color:"#6366f1"}}>{userNames.length}</div>
+                <div style={{fontSize:12,color:"var(--txt3)",marginTop:4}}>알림 대상 담당자</div>
+              </div>
+            </div>
+
+            {/* 발송 상태 */}
+            <div className="card" style={{marginBottom:20}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+                <div>
+                  <div style={{fontWeight:700,fontSize:15,color:"var(--txt)"}}>📧 긴급 업무 이메일 알림</div>
+                  <div style={{fontSize:12,color:"var(--txt4)",marginTop:4}}>
+                    3일 이내 마감 과업이 있는 담당자에게 이메일을 발송합니다.
+                    {lastNotify.date === todayStr && (
+                      <span style={{color:"#10b981",fontWeight:600}}> ✅ 오늘 발송 완료 ({lastNotify.sent}건 성공)</span>
+                    )}
+                  </div>
+                </div>
+                <button className="btn-primary" style={{flexShrink:0,padding:"10px 20px",fontSize:13,gap:6}}
+                  onClick={async () => {
+                    if (!DRIVE_CONFIG.ENABLED) { toast("Google Drive 연결이 필요합니다","error"); return; }
+                    if (!onSendUrgentEmails) return;
+                    toast("📧 이메일 발송 중...", "info");
+                    await onSendUrgentEmails();
+                  }}>
+                  📧 긴급 알림 발송
+                </button>
+              </div>
+
+              {/* 자동 발송 설정 안내 */}
+              <div style={{background:"rgba(99,102,241,.08)",border:"1px solid rgba(99,102,241,.2)",borderRadius:8,padding:"12px 14px",marginBottom:16}}>
+                <div style={{fontSize:12,color:"#a5b4fc",fontWeight:600,marginBottom:4}}>⚡ 자동 발송</div>
+                <div style={{fontSize:11,color:"var(--txt3)"}}>
+                  매일 첫 접속 시 자동으로 긴급 알림을 발송합니다. 수동 발송 버튼으로 추가 발송도 가능합니다.
+                </div>
+              </div>
+
+              {/* 이메일 미등록 경고 */}
+              {(() => {
+                const noEmailUsers = userNames.filter(name => {
+                  const u = users.find(x => x.name === name || x.producer === name);
+                  return !u || !u.email;
+                });
+                return noEmailUsers.length > 0 && (
+                  <div style={{background:"rgba(245,158,11,.08)",border:"1px solid rgba(245,158,11,.2)",borderRadius:8,padding:"12px 14px",marginBottom:16}}>
+                    <div style={{fontSize:12,color:"#fbbf24",fontWeight:600,marginBottom:4}}>⚠️ 이메일 미등록 담당자</div>
+                    <div style={{fontSize:11,color:"var(--txt3)"}}>
+                      {noEmailUsers.join(", ")} — 접근 권한 관리에서 이메일을 등록해 주세요.
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* 담당자별 긴급 과업 목록 */}
+            {userNames.length === 0 ? (
+              <div className="card" style={{textAlign:"center",padding:40,color:"var(--txt4)"}}>
+                <div style={{fontSize:40,marginBottom:12}}>✅</div>
+                <div style={{fontSize:14}}>3일 이내 긴급 과업이 없습니다.</div>
+              </div>
+            ) : userNames.map(name => {
+              const tasks = tasksByUser[name];
+              const targetUser = users.find(u => u.name === name || u.producer === name);
+              const hasEmail = targetUser && targetUser.email;
+              return (
+                <div key={name} className="card" style={{marginBottom:12}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+                    <div style={{width:32,height:32,borderRadius:"50%",background:targetUser?.color||"#6366f1",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:13,fontWeight:700}}>
+                      {name.charAt(0)}
+                    </div>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:14,color:"var(--txt)"}}>{name} <span style={{fontSize:11,color:"var(--txt4)"}}>{targetUser?.role||""}</span></div>
+                      <div style={{fontSize:11,color: hasEmail ? "#10b981" : "#ef4444"}}>
+                        {hasEmail ? `📧 ${targetUser.email}` : "❌ 이메일 미등록"}
+                      </div>
+                    </div>
+                    <div style={{marginLeft:"auto",background:"rgba(245,158,11,.15)",color:"#f59e0b",padding:"4px 10px",borderRadius:12,fontSize:12,fontWeight:700}}>
+                      {tasks.length}건
+                    </div>
+                  </div>
+                  {tasks.map((t,i) => {
+                    const diff = Math.ceil((new Date(t.endDate) - new Date(todayStr)) / 86400000);
+                    const dday = diff===0?"오늘 마감":diff<0?`${Math.abs(diff)}일 초과`:`D-${diff}`;
+                    return (
+                      <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderTop:i?"1px solid rgba(255,255,255,.06)":"none",fontSize:12}}>
+                        <span style={{color:diff<=0?"#ef4444":"#f59e0b",fontWeight:700,minWidth:60}}>{dday}</span>
+                        <span style={{color:"var(--txt3)",flex:1}}>{t.parentTask} › {t.task}</span>
+                        <span style={{color:"var(--txt4)",fontSize:11}}>{t.projectName}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+
       {/* 계정 편집 모달 */}
       {editingUser && (
         <div className="modal-overlay" onClick={e=>e.target.classList.contains("modal-overlay")&&setEditingUser(null)}>
@@ -1580,10 +1703,11 @@ function AdminPanel({ users, onUsersChange, priceList, onPriceListChange }) {
                 {label:"직책 *",key:"role",placeholder:"예: 기획 PM"},
                 {label:"새 비밀번호",key:"pw",placeholder:"변경 시에만 입력"},
                 {label:"프로듀서명",key:"producer",placeholder:"이름과 동일하게 입력"},
+                {label:"이메일 (알림용)",key:"email",placeholder:"예: hong@company.com",type:"email"},
               ].map(f=>(
                 <div key={f.key} className="form-group" style={{marginBottom:10}}>
                   <label className="form-label">{f.label}</label>
-                  <input className="form-input" type={f.key==="pw"?"password":"text"}
+                  <input className="form-input" type={f.type||( f.key==="pw"?"password":"text")}
                     placeholder={f.placeholder} value={editingUser[f.key]}
                     onChange={e=>setEditingUser({...editingUser,[f.key]:e.target.value})}/>
                 </div>
@@ -10254,6 +10378,145 @@ function App() {
     return () => { clearTimeout(initialTimer); clearInterval(intervalTimer); };
   }, []); // 빈 의존성 → 타이머 한 번만 설정, 리셋 없음
 
+  // ── 📧 긴급 과업 이메일 알림 시스템 ──
+  // GAS를 통한 이메일 발송 함수
+  const sendUrgentTaskEmail = useCallback(async (targetUser, urgentTasks, projectMap) => {
+    if (!DRIVE_CONFIG.ENABLED || !targetUser.email) return { success: false, reason: "no_email" };
+    const taskRows = urgentTasks.map(t => {
+      const diff = Math.ceil((new Date(t.endDate) - new Date(today)) / 86400000);
+      const dday = diff === 0 ? "⚠️ 오늘 마감" : diff < 0 ? `🚨 ${Math.abs(diff)}일 초과` : `D-${diff}`;
+      return `<tr>
+        <td style="padding:8px 12px;border-bottom:1px solid #eee;">${t.projectName||""}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #eee;">${t.parentTask} › ${t.task}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #eee;">${t.endDate}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:700;color:${diff<=0?"#dc2626":"#f59e0b"}">${dday}</td>
+      </tr>`;
+    }).join("");
+
+    const htmlBody = `
+      <div style="font-family:'Apple SD Gothic Neo',sans-serif;max-width:600px;margin:0 auto;">
+        <div style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:24px;border-radius:12px 12px 0 0;">
+          <h2 style="color:#fff;margin:0;">🏰 EventOS 긴급 업무 알림</h2>
+          <p style="color:rgba(255,255,255,.8);margin:8px 0 0;font-size:14px;">${targetUser.name}님, 3일 이내 처리해야 할 긴급 업무가 ${urgentTasks.length}건 있습니다.</p>
+        </div>
+        <div style="background:#fff;padding:20px;border:1px solid #e5e7eb;border-top:none;">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead>
+              <tr style="background:#f8fafc;">
+                <th style="padding:10px 12px;text-align:left;border-bottom:2px solid #e5e7eb;">프로젝트</th>
+                <th style="padding:10px 12px;text-align:left;border-bottom:2px solid #e5e7eb;">과업</th>
+                <th style="padding:10px 12px;text-align:left;border-bottom:2px solid #e5e7eb;">마감일</th>
+                <th style="padding:10px 12px;text-align:left;border-bottom:2px solid #e5e7eb;">상태</th>
+              </tr>
+            </thead>
+            <tbody>${taskRows}</tbody>
+          </table>
+          <div style="margin-top:20px;padding:12px;background:#fef3c7;border-radius:8px;font-size:12px;color:#92400e;">
+            💡 EventOS 포털에서 업무 상세 내용을 확인하고 처리해 주세요.
+          </div>
+        </div>
+        <div style="padding:16px;text-align:center;font-size:11px;color:#9ca3af;">
+          이 메일은 EventOS 자동 알림 시스템에서 발송되었습니다. (${today})
+        </div>
+      </div>`;
+
+    try {
+      const res = await fetch(DRIVE_CONFIG.GAS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({
+          action: "sendEmail",
+          to: targetUser.email,
+          subject: `[EventOS] 🚨 긴급 업무 ${urgentTasks.length}건 - ${targetUser.name}님 확인 필요`,
+          htmlBody,
+        }),
+        redirect: "follow",
+      });
+      const text = await res.text();
+      try { const r = JSON.parse(text); return r.error ? { success:false, reason:r.error } : { success:true }; }
+      catch { return { success: true }; }
+    } catch (err) {
+      console.error("[EmailNotify]", err);
+      return { success: false, reason: err.message };
+    }
+  }, [today]);
+
+  // 긴급 과업 검색: 3일 이내 마감 + 담당자 지정 + 미완료
+  const findUrgentTasksByUser = useCallback(() => {
+    const d3 = new Date(today); d3.setDate(d3.getDate() + 3);
+    const d3Str = d3.toISOString().slice(0,10);
+    const tasksByUser = {}; // { userName: [tasks] }
+
+    projects.forEach(p => {
+      (p.gantt || []).forEach(g => {
+        (g.subtasks || []).forEach(s => {
+          if (s.done) return;
+          if (!s.endDate || s.endDate > d3Str) return;
+          const assignee = s.assignee || g.assignee;
+          if (!assignee) return;
+          if (!tasksByUser[assignee]) tasksByUser[assignee] = [];
+          tasksByUser[assignee].push({
+            task: s.task, parentTask: g.task, endDate: s.endDate,
+            projectName: p.name, projectId: p.id,
+            division: g.division, color: g.color,
+          });
+        });
+      });
+    });
+    return tasksByUser;
+  }, [projects, today]);
+
+  // 전체 긴급 알림 발송 (관리자 수동 or 자동)
+  const sendAllUrgentEmails = useCallback(async () => {
+    const tasksByUser = findUrgentTasksByUser();
+    const userNames = Object.keys(tasksByUser);
+    if (!userNames.length) {
+      toast("📭 3일 이내 긴급 과업이 없습니다.", "info");
+      return { sent: 0, failed: 0, noEmail: 0 };
+    }
+
+    let sent = 0, failed = 0, noEmail = 0;
+    for (const name of userNames) {
+      const targetUser = users.find(u => u.name === name || u.producer === name);
+      if (!targetUser || !targetUser.email) { noEmail++; continue; }
+      const result = await sendUrgentTaskEmail(targetUser, tasksByUser[name]);
+      if (result.success) { sent++; } else { failed++; }
+    }
+
+    const msg = `📧 긴급 알림 발송 완료: 성공 ${sent}건` +
+      (failed ? `, 실패 ${failed}건` : "") +
+      (noEmail ? `, 이메일 미등록 ${noEmail}명` : "");
+    toast(msg, sent > 0 ? "success" : "warn");
+
+    // 발송 기록 저장
+    try {
+      localStorage.setItem("eventos_lastEmailNotify", JSON.stringify({
+        date: today, sent, failed, noEmail, at: new Date().toISOString()
+      }));
+    } catch {}
+
+    console.log(`[EmailNotify] ${msg}`);
+    return { sent, failed, noEmail };
+  }, [findUrgentTasksByUser, users, sendUrgentTaskEmail, today]);
+
+  // 📧 매일 1회 자동 발송 (앱 로드 시 오늘 미발송이면 실행)
+  useEffect(() => {
+    if (!DRIVE_CONFIG.ENABLED) return;
+    const timer = setTimeout(() => {
+      try {
+        const last = JSON.parse(localStorage.getItem("eventos_lastEmailNotify") || "{}");
+        if (last.date === today) return; // 오늘 이미 발송됨
+      } catch {}
+      // 자동 발송 실행
+      const { projects: p, users: u } = backupDataRef.current;
+      if (p?.length && u?.length) {
+        console.log("[EmailNotify] 오늘 첫 접속 → 긴급 과업 자동 알림 발송");
+        sendAllUrgentEmails();
+      }
+    }, 15000); // 앱 로드 15초 후 체크
+    return () => clearTimeout(timer);
+  }, []); // 1회만 실행
+
   // 로그인
   const handleLogin = (user) => {
     // lastLogin 갱신
@@ -10343,7 +10606,8 @@ function App() {
     // 관리자 전용
     if (page==="admin") {
       if (!authedUser.isAdmin) { setPage("dashboard"); return null; }
-      return <AdminPanel users={users} onUsersChange={setUsers} priceList={priceList} onPriceListChange={setPriceList}/>;
+      return <AdminPanel users={users} onUsersChange={setUsers} priceList={priceList} onPriceListChange={setPriceList}
+        onSendUrgentEmails={sendAllUrgentEmails} findUrgentTasksByUser={findUrgentTasksByUser}/>;
     }
     return null;
   };
