@@ -5290,11 +5290,11 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
   const custOther = customItems.filter(c => !DIVISIONS.includes(c.division));
 
   // 견적총액 A (체크리스트 + 추가항목 전체)
-  const A = quoteByDiv.reduce((s,d)=>s+d.subtotal,0) + custOther.reduce((s,c)=>s+calcAmt(c),0);
+  const A = Math.round(quoteByDiv.reduce((s,d)=>s+d.subtotal,0) + custOther.reduce((s,c)=>s+calcAmt(c),0));
   const B = quoteType==="공공기관" ? Math.round(A*0.08) : 0;
   const C = quoteType==="공공기관" ? Math.round((A+B)*0.10) : 0;
   const D = Math.round((A+B+C)*0.10);
-  const total = A + B + C + D;
+  const total = Math.round(A + B + C + D);
   const totalFinal = Math.floor(total/10)*10; // 10원 단위 절사
 
   // ── 기준 예산 절사 ──
@@ -5307,17 +5307,17 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
   if (hasBudgetAdj) {
     const overAmount = totalFinal - budgetTarget;
     if (quoteType === "공공기관") {
-      // 수익(C)에서 감액 후 부가세 재계산
-      profitReduction = Math.min(C, overAmount);
-      adjC = C - profitReduction;
+      // 수익(C)에서 감액 후 부가세 재계산 — 모든 중간값 정수 보장
+      profitReduction = Math.round(Math.min(C, overAmount));
+      adjC = Math.round(C - profitReduction);
       const adjD = Math.round((A + B + adjC) * 0.10);
-      const adjTotal = A + B + adjC + adjD;
+      const adjTotal = Math.round(A + B + adjC + adjD);
       adjTotalFinal = Math.floor(adjTotal / 10) * 10;
     } else {
-      // 일반기업: 마진(15%)에서 감액
-      const maxMargin = A - Math.round(A / 1.15);
-      profitReduction = Math.min(maxMargin, overAmount);
-      const adjTotal = total - profitReduction;
+      // 일반기업: 마진(15%)에서 감액 — 모든 중간값 정수 보장
+      const maxMargin = Math.round(A - Math.round(A / 1.15));
+      profitReduction = Math.round(Math.min(maxMargin, overAmount));
+      const adjTotal = Math.round(total - profitReduction);
       adjTotalFinal = Math.floor(adjTotal / 10) * 10;
     }
   }
@@ -5655,8 +5655,8 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
       <tr><td>수익 (C${hasBudgetAdj?" - 감액":" = (A+B) × 10%"})</td><td>${(hasBudgetAdj ? adjC : C).toLocaleString()} 원</td></tr>
       ` : ""}
       <tr><td>부가세 (D = (A+B+C) × 10%)</td><td>${D.toLocaleString()} 원</td></tr>
-      ${hasBudgetAdj ? `<tr><td>절사금액</td><td style="color:#c0392b">-${profitReduction.toLocaleString()} 원</td></tr>` : ""}
-      <tr class="final"><td>최종 견적금액</td><td>₩ ${adjTotalFinal.toLocaleString()}</td></tr>
+      ${hasBudgetAdj ? `<tr><td>절사금액</td><td style="color:#c0392b">-${Math.round(profitReduction).toLocaleString()} 원</td></tr>` : ""}
+      <tr class="final"><td>최종 견적금액</td><td>₩ ${Math.round(adjTotalFinal).toLocaleString()}</td></tr>
     </table>
   </div>
 
@@ -5707,14 +5707,14 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
       }).join("");
     }).join("");
     const itemCount = rowNum;
-    const sA = snap.A||0, sB = snap.B||0, sC = snap.C||0, sD = snap.D||0;
-    const sTotal = snap.total || (sA+sB+sC+sD);
-    const sTotalFinal = snap.totalFinal||sTotal;
+    const sA = Math.round(snap.A||0), sB = Math.round(snap.B||0), sC = Math.round(snap.C||0), sD = Math.round(snap.D||0);
+    const sTotal = Math.round(snap.total || (sA+sB+sC+sD));
+    const sTotalFinal = Math.round(snap.totalFinal||sTotal);
     // 기준 예산 절사 정보
-    const snapBudgetTarget = snap.budgetTarget || 0;
-    const snapProfitReduction = snap.profitReduction || 0;
-    const snapAdjC = snap.adjC != null ? snap.adjC : sC;
-    const snapAdjTotalFinal = snap.adjTotalFinal || sTotalFinal;
+    const snapBudgetTarget = Math.round(snap.budgetTarget || 0);
+    const snapProfitReduction = Math.round(snap.profitReduction || 0);
+    const snapAdjC = Math.round(snap.adjC != null ? snap.adjC : sC);
+    const snapAdjTotalFinal = Math.round(snap.adjTotalFinal || sTotalFinal);
     const snapHasBudgetAdj = snapBudgetTarget > 0 && snapProfitReduction > 0;
     const adjustment = snapAdjTotalFinal - sTotal + snapProfitReduction;
     const html = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
@@ -5837,7 +5837,7 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
       <tr><td>일반관리비 (B = A × 8%)</td><td>${sB.toLocaleString()} 원</td></tr>
       <tr><td>수익 (C${snapHasBudgetAdj?" - 감액":" = (A+B) × 10%"})</td><td>${snapAdjC.toLocaleString()} 원</td></tr>
       ` : ""}
-      <tr><td>부가세 (D = A × 10%)</td><td>${sD.toLocaleString()} 원</td></tr>
+      <tr><td>부가세 (D = (A+B+C) × 10%)</td><td>${sD.toLocaleString()} 원</td></tr>
       ${snapHasBudgetAdj ? `<tr><td>절사금액</td><td style="color:#c0392b">-${snapProfitReduction.toLocaleString()} 원</td></tr>` : ""}
       <tr class="final"><td>최종 견적금액</td><td>₩ ${snapAdjTotalFinal.toLocaleString()}</td></tr>
     </table>
@@ -6138,7 +6138,7 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
                   ? ["수익 (C) 감액 적용", adjC.toLocaleString()+"원", "#f59e0b"]
                   : ["수익 (C = (A+B) × 10%)", C.toLocaleString()+"원", "#10b981"],
               ] : []),
-              ["부가세 (D = A × 10%)", D.toLocaleString()+"원", "var(--txt2)"],
+              ["부가세 (D = (A+B+C) × 10%)", D.toLocaleString()+"원", "var(--txt2)"],
             ].map(([l,v,c])=>(
               <div key={l} className="flex-between" style={{marginBottom:6}}>
                 <span style={{color:"var(--txt3)",fontSize:13}}>{l}</span>
@@ -6148,7 +6148,7 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
             {hasBudgetAdj && (
               <div className="flex-between" style={{marginBottom:6,padding:"4px 8px",background:"rgba(245,158,11,.08)",borderRadius:6}}>
                 <span style={{color:"#fbbf24",fontSize:12,fontWeight:700}}>절사금액</span>
-                <span style={{color:"#f59e0b",fontSize:12,fontWeight:700}}>-{profitReduction.toLocaleString()}원</span>
+                <span style={{color:"#f59e0b",fontSize:12,fontWeight:700}}>-{Math.round(profitReduction).toLocaleString()}원</span>
               </div>
             )}
             <div className="flex-between" style={{paddingTop:8,borderTop:"2px solid rgba(99,102,241,.3)",marginTop:4}}>
