@@ -382,7 +382,7 @@ const CloudSync = {
     }
   },
 
-  // R2 파일 업로드 (base64)
+  // R2 파일 업로드 (base64 — 폴백용)
   async uploadFile(projectId, fileName, base64Data, mimeType, uploadedBy) {
     if (!CLOUD_CONFIG.ENABLED) return null;
     try {
@@ -394,6 +394,47 @@ const CloudSync = {
       return await res.json();
     } catch (err) {
       console.error("[CloudSync] uploadFile:", err);
+      return null;
+    }
+  },
+
+  // 🚀 R2 파일 업로드 (FormData 바이너리 — base64 변환 불필요, 33% 빠름)
+  _binarySupported: null, // null=미확인, true/false=캐시
+  async uploadFileBinary(projectId, file, uploadedBy, onProgress) {
+    if (!CLOUD_CONFIG.ENABLED) return null;
+    if (this._binarySupported === false) return null; // 바이너리 미지원 확인됨 → 스킵
+    try {
+      const formData = new FormData();
+      formData.append('file', file, file.name);
+      formData.append('fileName', file.name);
+      formData.append('mimeType', file.type || 'application/octet-stream');
+      if (projectId) formData.append('projectId', projectId);
+      if (uploadedBy) formData.append('uploadedBy', uploadedBy);
+
+      return new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `${this._baseUrl()}/api/files/upload`);
+        xhr.timeout = 300000; // 5분
+        if (onProgress) {
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+          };
+        }
+        xhr.onload = () => {
+          try {
+            const result = JSON.parse(xhr.responseText);
+            if (result && result.success) { this._binarySupported = true; }
+            else { this._binarySupported = false; }
+            resolve(result);
+          } catch { this._binarySupported = false; resolve(null); }
+        };
+        xhr.onerror = () => { this._binarySupported = false; resolve(null); };
+        xhr.ontimeout = () => resolve(null);
+        xhr.send(formData);
+      });
+    } catch (err) {
+      console.error("[CloudSync] uploadFileBinary:", err);
+      this._binarySupported = false;
       return null;
     }
   },
@@ -616,32 +657,62 @@ const SyncManager = {
     return null;
   },
 
-  // ⚡ R2-first 고속 업로드: R2 즉시 완료 → Drive 백그라운드 동기화
-  async uploadFileR2First(projectName, fileName, base64Data, mimeType) {
+  // 파일 → base64 변환 유틸리티 (Drive 전용, 지연 변환)
+  _fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(",")[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  },
+
+  // ⚡ R2-first 고속 업로드 v2: 바이너리 우선 → base64 폴백 → Drive 백그라운드
+  async uploadFileR2First(projectName, fileName, fileOrBase64, mimeType, onProgress) {
     this.setStatus("syncing");
     let r2Result = null;
+    const isRawFile = (typeof File !== 'undefined' && fileOrBase64 instanceof File) ||
+                      (typeof Blob !== 'undefined' && fileOrBase64 instanceof Blob);
+    const startTime = Date.now();
 
-    // 1) R2 먼저 (빠른 Cloudflare Edge 네트워크)
+    // 1) R2 먼저 — 바이너리 FormData 시도 (33% 빠름) → base64 폴백
     if (CLOUD_CONFIG.ENABLED) {
       try {
-        r2Result = await CloudSync.uploadFile(null, fileName, base64Data, mimeType);
-        if (r2Result && r2Result.success) console.log("[CloudSync] ⚡ fast upload:", fileName);
-      } catch (err) { console.error("[CloudSync] uploadFile:", err); }
+        if (isRawFile) {
+          // 🚀 바이너리 직접 전송 (base64 변환 없이 33% 데이터 절감)
+          r2Result = await CloudSync.uploadFileBinary(null, fileOrBase64, null, onProgress);
+        }
+        if (!r2Result || !r2Result.success) {
+          // base64 폴백 (Worker가 FormData 미지원 시)
+          if (onProgress) onProgress(0);
+          const base64 = isRawFile ? await this._fileToBase64(fileOrBase64) : fileOrBase64;
+          r2Result = await CloudSync.uploadFile(null, fileName, base64, mimeType);
+          if (onProgress) onProgress(100);
+        }
+        if (r2Result && r2Result.success) {
+          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+          const sizeMB = isRawFile ? (fileOrBase64.size / 1048576).toFixed(1) : "?";
+          console.log(`[CloudSync] ⚡ ${fileName} (${sizeMB}MB) → ${elapsed}s`);
+        }
+      } catch (err) { console.error("[CloudSync] upload:", err); }
     }
 
-    // 2) Drive 업로드 Promise (기다리지 않고 반환)
+    // 2) Drive 백그라운드 (base64 지연 변환 — R2 완료 후 시작)
     let drivePromise = null;
     if (DRIVE_CONFIG.ENABLED) {
-      drivePromise = fetch(DRIVE_CONFIG.GAS_URL, {
-        method: "POST", headers: { "Content-Type": "text/plain" },
-        body: JSON.stringify({ action: "uploadFile", projectName, fileName, base64Data, mimeType }),
-        redirect: "follow",
-      }).then(r => r.text()).then(t => {
-        try { const d = JSON.parse(t); return (d && !d.error) ? d : null; } catch { return null; }
-      }).catch(err => { console.error("[DriveSync] bg:", err); return null; });
+      const getBase64 = isRawFile ? this._fileToBase64(fileOrBase64) : Promise.resolve(fileOrBase64);
+      drivePromise = getBase64.then(base64 =>
+        fetch(DRIVE_CONFIG.GAS_URL, {
+          method: "POST", headers: { "Content-Type": "text/plain" },
+          body: JSON.stringify({ action: "uploadFile", projectName, fileName, base64Data: base64, mimeType }),
+          redirect: "follow",
+        }).then(r => r.text()).then(t => {
+          try { const d = JSON.parse(t); return (d && !d.error) ? d : null; } catch { return null; }
+        })
+      ).catch(err => { console.error("[DriveSync] bg:", err); return null; });
     }
 
-    // 3) R2 성공 → 즉시 반환 (Drive는 드라이브Promise로 전달)
+    // 3) R2 성공 → 즉시 반환 (Drive는 백그라운드)
     if (r2Result && r2Result.success) {
       this._lastSyncTime = new Date();
       this.setStatus("success");
@@ -649,11 +720,11 @@ const SyncManager = {
         success: true,
         r2Url: r2Result.url || "", r2Key: r2Result.key || "",
         url: r2Result.url || "", key: r2Result.key || "",
-        drivePromise, // 호출자가 bg 완료 핸들링
+        drivePromise,
       };
     }
 
-    // 4) R2 실패 → Drive 결과 기다림 (폴백)
+    // 4) R2 실패 → Drive 결과 기다림
     if (drivePromise) {
       const driveResult = await drivePromise;
       if (driveResult) {
@@ -6693,29 +6764,31 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
 
     const files = Array.from(fileList);
     const total = files.length;
+    let completedCount = 0;
+    const totalSizeMB = files.reduce((s,f)=>s+f.size, 0) / 1048576;
+    const batchStart = Date.now();
     setUploadStats({current: 0, total});
-    setUploadProgress(`파일 준비 중... (0/${total})`);
+    setUploadProgress(`파일 준비 중... (0/${total}, ${totalSizeMB.toFixed(1)}MB)`);
 
     // 단일 파일 업로드 함수
     const uploadOne = async (file, idx) => {
+      const fileSizeMB = (file.size / 1048576).toFixed(1);
       setUploadStats(prev => ({...prev, current: idx + 1}));
-      setUploadProgress(`"${file.name}" 업로드 중... (${idx+1}/${total}, ${(file.size/1024/1024).toFixed(1)}MB)`);
+      setUploadProgress(`"${file.name}" 업로드 중... (${idx+1}/${total}, ${fileSizeMB}MB)`);
 
       if (file.size > 100 * 1024 * 1024) {
-        toast(`⏳ "${file.name}" 대용량(${(file.size/1024/1024).toFixed(0)}MB) 업로드 시작`, "warn");
+        toast(`⏳ "${file.name}" 대용량(${Math.round(file.size/1048576)}MB) 업로드 시작`, "warn");
       }
 
-      // base64 변환
-      const base64 = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result.split(",")[1]);
-        reader.readAsDataURL(file);
-      });
-
-      // ⚡ R2-first 업로드 (빠른 R2 → 느린 Drive 백그라운드)
+      // ⚡ R2-first 업로드 — 바이너리 직접 전송 (base64 변환 생략 → 33% 빠름)
       if (CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED) {
-        const result = await SyncManager.uploadFileR2First(project.name, file.name, base64, file.type);
+        const result = await SyncManager.uploadFileR2First(
+          project.name, file.name, file, file.type,
+          (pct) => setUploadProgress(`"${file.name}" 전송 중... (${idx+1}/${total}, ${pct}%)`)
+        );
         if (result && (result.ok || result.success)) {
+          completedCount++;
+          const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
           const fileEntry = {
             name: file.name,
             driveFileId: result.fileId || result.id || "",
@@ -6728,7 +6801,7 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
           const updatedFiles = [...(project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== file.name), fileEntry];
           onUpdate({...project, files: updatedFiles});
           setDriveFiles(prev => [...prev.filter(f=>f.name!==file.name), { fileId: fileEntry.driveFileId, name: file.name, mimeType: file.type, size: file.size, url: fileEntry.url, lastUpdated: new Date().toISOString() }]);
-          toast(`⚡ "${file.name}" 업로드 완료`, "success");
+          toast(`⚡ "${file.name}" 완료 (${fileSizeMB}MB, ${elapsed}s)`, "success");
 
           // Drive 백그라운드 동기화 처리
           if (result.drivePromise) {
@@ -6736,7 +6809,6 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
             result.drivePromise.then(driveResult => {
               if (driveResult && (driveResult.fileId || driveResult.id)) {
                 const driveId = driveResult.fileId || driveResult.id;
-                // localStorage에서 최신 프로젝트 읽기 (stale closure 방지)
                 try {
                   const allProjects = JSON.parse(localStorage.getItem("eventos_projects") || "[]");
                   const curProj = allProjects.find(p => p.id === project.id);
@@ -6755,7 +6827,8 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
             });
           }
         } else {
-          // 클라우드 실패 → base64 로컬 보관 (파일 유실 방지)
+          // 클라우드 실패 → base64 로컬 보관 (파일 유실 방지, 지연 변환)
+          const base64 = await SyncManager._fileToBase64(file);
           const fileEntry = {
             name: file.name, mimeType: file.type, size: file.size,
             uploadedAt: new Date().toISOString(),
@@ -6766,7 +6839,8 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
           toast(`⚠️ "${file.name}" 로컬 저장됨 (클라우드 재시도 예정)`, "warn");
         }
       } else {
-        // 클라우드 전혀 미연결: base64 로컬 보관
+        // 클라우드 전혀 미연결: base64 로컬 보관 (지연 변환)
+        const base64 = await SyncManager._fileToBase64(file);
         const fileEntry = {
           name: file.name, mimeType: file.type, size: file.size,
           uploadedAt: new Date().toISOString(),
@@ -6778,19 +6852,20 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
       }
     };
 
-    // 🔥 병렬 업로드 (최대 3개 동시 — 네트워크 과부하 방지)
-    const CONCURRENCY = 3;
+    // 🔥 병렬 업로드 (최대 5개 동시 — 속도 최적화)
+    const CONCURRENCY = 5;
     for (let i = 0; i < files.length; i += CONCURRENCY) {
       const batch = files.slice(i, i + CONCURRENCY);
       await Promise.allSettled(batch.map((file, j) => uploadOne(file, i + j)));
     }
 
+    const totalElapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
     setUploading(false);
     setUploadProgress("");
     setUploadStats({current: 0, total: 0});
     onUploadStateChange?.(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
-    toast(`✅ 총 ${total}개 파일 업로드 완료`, "success");
+    toast(`✅ ${completedCount}/${total}개 업로드 완료 (${totalSizeMB.toFixed(1)}MB, ${totalElapsed}s)`, "success");
   };
 
   const handleDrop = (e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); };
@@ -6833,20 +6908,21 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
     if (!fileList || !fileList.length || !reuploadTarget) return;
     const file = fileList[0];
     const targetName = reuploadTarget;
+    const fileSizeMB = (file.size / 1048576).toFixed(1);
     setReuploadTarget(null);
 
     setUploading(true);
-    setUploadProgress(`"${targetName}" 재업로드 중... (${(file.size/1024/1024).toFixed(1)}MB)`);
+    setUploadProgress(`"${targetName}" 재업로드 중... (${fileSizeMB}MB)`);
 
-    const base64 = await new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result.split(",")[1]);
-      reader.readAsDataURL(file);
-    });
-
+    // ⚡ 바이너리 직접 전송 (base64 변환 생략)
     if (CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED) {
-      const result = await SyncManager.uploadFileR2First(project.name, targetName, base64, file.type);
+      const startTime = Date.now();
+      const result = await SyncManager.uploadFileR2First(
+        project.name, targetName, file, file.type,
+        (pct) => setUploadProgress(`"${targetName}" 전송 중... (${pct}%)`)
+      );
       if (result && (result.ok || result.success)) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         const fileEntry = {
           name: targetName,
           driveFileId: result.fileId || result.id || "",
@@ -6859,7 +6935,7 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
         const updatedFiles = [...(project.files||[]).filter(f => (typeof f==="string" ? f : f.name) !== targetName), fileEntry];
         onUpdate({...project, files: updatedFiles});
         setDriveFiles(prev => [...prev.filter(f=>f.name!==targetName), { fileId: fileEntry.driveFileId, name: targetName, mimeType: file.type, size: file.size, url: fileEntry.url, lastUpdated: new Date().toISOString() }]);
-        toast(`⚡ "${targetName}" 재업로드 완료`, "success");
+        toast(`⚡ "${targetName}" 재업로드 완료 (${fileSizeMB}MB, ${elapsed}s)`, "success");
 
         // Drive 백그라운드 동기화 처리
         if (result.drivePromise) {
@@ -6885,7 +6961,8 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
           });
         }
       } else {
-        // 클라우드 실패 → base64 로컬 보관
+        // 클라우드 실패 → base64 로컬 보관 (지연 변환)
+        const base64 = await SyncManager._fileToBase64(file);
         const fileEntry = {
           name: targetName, mimeType: file.type, size: file.size,
           uploadedAt: new Date().toISOString(),
