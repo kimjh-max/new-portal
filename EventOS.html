@@ -10209,9 +10209,16 @@ function App() {
   }, []);
 
   // ── 30분 자동 백업 시스템 (localStorage + Cloudflare + Drive) ──
+  // ⚠️ 중요: dataRef로 최신 상태를 참조 → useEffect 의존성 [] (타이머 리셋 방지)
   const lastBackupRef = useRef(null);
+  const backupDataRef = useRef({ projects, users, priceList, expenses, laborCosts, purchases });
+  useEffect(() => {
+    backupDataRef.current = { projects, users, priceList, expenses, laborCosts, purchases };
+  }, [projects, users, priceList, expenses, laborCosts, purchases]);
+
   useEffect(() => {
     const createAutoBackup = () => {
+      const { projects, users, priceList, expenses, laborCosts, purchases } = backupDataRef.current;
       const snapshot = {
         projects, users, priceList, expenses, laborCosts, purchases,
         backupAt: new Date().toISOString(),
@@ -10219,7 +10226,10 @@ function App() {
       };
       // JSON 비교로 변경 없으면 스킵
       const json = JSON.stringify({p:projects,u:users,pl:priceList,e:expenses,l:laborCosts,pu:purchases});
-      if (lastBackupRef.current === json) return;
+      if (lastBackupRef.current === json) {
+        console.log("[EventOS] 자동 백업 스킵 (변경 없음):", new Date().toLocaleTimeString("ko-KR"));
+        return;
+      }
       lastBackupRef.current = json;
 
       // localStorage에 최근 N개 백업 보관
@@ -10234,15 +10244,15 @@ function App() {
       if (CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED) {
         SyncManager.queueSync("saveBackup", { data: snapshot });
       }
-      console.log("[EventOS] 자동 백업 완료:", new Date().toLocaleTimeString("ko-KR"));
+      console.log("[EventOS] ✅ 자동 백업 완료:", new Date().toLocaleTimeString("ko-KR"));
     };
 
-    // 앱 시작 10초 후 첫 백업 + 30분 간격 반복
+    // 앱 시작 10초 후 첫 백업 + 정확히 30분 간격 반복 (타이머 리셋 없음)
     const initialTimer = setTimeout(createAutoBackup, 10000);
     const intervalTimer = setInterval(createAutoBackup, DRIVE_CONFIG.AUTO_BACKUP_INTERVAL_MS);
 
     return () => { clearTimeout(initialTimer); clearInterval(intervalTimer); };
-  }, [projects, users, priceList, expenses, laborCosts, purchases]);
+  }, []); // 빈 의존성 → 타이머 한 번만 설정, 리셋 없음
 
   // 로그인
   const handleLogin = (user) => {
