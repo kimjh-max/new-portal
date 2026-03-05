@@ -80,6 +80,25 @@ function doPost(e) {
       return jsonResponse({ ok: true });
     }
 
+    // 📧 이메일 발송 (긴급 과업 알림)
+    if (action === "sendEmail") {
+      const to = body.to || "";
+      const subject = body.subject || "[EventOS] 알림";
+      const htmlBody = body.htmlBody || "";
+
+      if (!to) return jsonResponse({ error: "수신자 이메일(to)이 필요합니다" });
+
+      MailApp.sendEmail({
+        to: to,
+        subject: subject,
+        htmlBody: htmlBody,
+        name: "EventOS 알림 시스템",
+      });
+
+      Logger.log("[EventOS] 📧 이메일 발송: " + to + " | " + subject);
+      return jsonResponse({ ok: true, to: to, sentAt: new Date().toISOString() });
+    }
+
     return jsonResponse({ error: "Unknown action: " + action });
   } catch (err) {
     return jsonResponse({ error: err.message });

@@ -248,6 +248,32 @@ function doPost(e) {
       return makeResponse({ success: true });
     }
 
+    // 📧 이메일 발송 (긴급 과업 알림)
+    if (action === "sendEmail") {
+      const to = body.to || "";
+      const subject = body.subject || "[EventOS] 알림";
+      const htmlBody = body.htmlBody || "";
+
+      if (!to) return makeResponse({ success: false, error: "수신자 이메일(to)이 필요합니다" });
+
+      // GmailApp 대신 MailApp 사용 (Gmail 권한 불필요)
+      MailApp.sendEmail({
+        to: to,
+        subject: subject,
+        htmlBody: htmlBody,
+        name: "EventOS 알림 시스템",
+      });
+
+      Logger.log("[EventOS] 📧 이메일 발송: " + to + " | " + subject);
+
+      return makeResponse({
+        success: true,
+        to: to,
+        subject: subject,
+        sentAt: new Date().toISOString()
+      });
+    }
+
     return makeResponse({ success: false, error: "Unknown action: " + action });
 
   } catch (err) {
