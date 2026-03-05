@@ -452,31 +452,43 @@ function buildUrgentEmailHtml(userName, tasks, todayStr) {
 }
 
 /**
- * 매일 아침 10시(KST) 트리거 설치
- * GAS 에디터에서 수동으로 한 번 실행하세요
+ * 중복 발송 방지: 오늘 이미 발송했는지 Drive 파일로 체크
+ * GitHub Actions 크론 또는 포털 접속 시 호출
  */
-function installDailyEmailTrigger() {
-  removeDailyEmailTrigger();
+function checkAndSendDailyEmails() {
+  var root = DriveApp.getFolderById(ROOT_FOLDER_ID);
+  var trackerFileName = "_dailyEmailTracker.json";
+  var todayStr = Utilities.formatDate(new Date(), "Asia/Seoul", "yyyy-MM-dd");
 
-  ScriptApp.newTrigger("sendDailyUrgentEmails")
-    .timeBased()
-    .atHour(10)
-    .everyDays(1)
-    .inTimezone("Asia/Seoul")
-    .create();
+  // 오늘 이미 발송했는지 확인
+  var trackerFiles = root.getFilesByName(trackerFileName);
+  var trackerFile = trackerFiles.hasNext() ? trackerFiles.next() : null;
 
-  Logger.log("[EventOS] ✅ 매일 10시 이메일 트리거 설치 완료");
-}
+  if (trackerFile) {
+    try {
+      var tracker = JSON.parse(trackerFile.getBlob().getDataAsString());
+      if (tracker.lastSentDate === todayStr) {
+        Logger.log("[EventOS] ℹ️ 오늘(" + todayStr + ") 이미 발송됨, 스킵");
+        return { success: true, skipped: true, lastSentDate: todayStr, message: "Already sent today" };
+      }
+    } catch (e) { /* tracker 파싱 실패 시 재발송 */ }
+  }
 
-/**
- * 이메일 트리거 제거
- */
-function removeDailyEmailTrigger() {
-  var triggers = ScriptApp.getProjectTriggers();
-  triggers.forEach(function(trigger) {
-    if (trigger.getHandlerFunction() === "sendDailyUrgentEmails") {
-      ScriptApp.deleteTrigger(trigger);
-      Logger.log("[EventOS] 🗑 기존 이메일 트리거 제거됨");
-    }
+  // 이메일 발송
+  sendDailyUrgentEmails();
+
+  // 발송 기록 업데이트
+  var trackerData = JSON.stringify({
+    lastSentDate: todayStr,
+    sentAt: new Date().toISOString(),
   });
+
+  if (trackerFile) {
+    trackerFile.setContent(trackerData);
+  } else {
+    root.createFile(trackerFileName, trackerData, "application/json");
+  }
+
+  Logger.log("[EventOS] ✅ 일일 이메일 발송 완료 (" + todayStr + ")");
+  return { success: true, skipped: false, sentDate: todayStr, message: "Daily emails sent" };
 }

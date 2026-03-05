@@ -47,20 +47,16 @@ function doGet(e) {
       return jsonResponse({ ok: true, timestamp: new Date().toISOString() });
     }
 
-    // 트리거 설치/제거 (GET으로도 가능)
-    if (action === "installTrigger") {
-      installDailyEmailTrigger();
-      return jsonResponse({ ok: true, message: "Daily email trigger installed (10AM KST)" });
+    // 📧 매일 아침 자동 이메일 체크 & 발송 (GitHub Actions 크론에서 호출)
+    if (action === "sendDailyEmail") {
+      var result = checkAndSendDailyEmails();
+      return jsonResponse(result);
     }
 
-    if (action === "removeTrigger") {
-      removeDailyEmailTrigger();
-      return jsonResponse({ ok: true, message: "Daily email trigger removed" });
-    }
-
-    if (action === "testDailyEmail") {
+    // 📧 강제 이메일 발송 (중복 체크 무시)
+    if (action === "forceDailyEmail") {
       sendDailyUrgentEmails();
-      return jsonResponse({ ok: true, message: "Daily email sent (test)" });
+      return jsonResponse({ ok: true, message: "Daily email force sent" });
     }
 
     return jsonResponse({ error: "Unknown action: " + action });
@@ -94,17 +90,6 @@ function doPost(e) {
       const file = DriveApp.getFileById(body.fileId);
       file.setTrashed(true);
       return jsonResponse({ ok: true });
-    }
-
-    // 📅 트리거 설치/제거 (서버사이드)
-    if (action === "installTrigger") {
-      installDailyEmailTrigger();
-      return jsonResponse({ ok: true, message: "Daily email trigger installed (10AM KST)" });
-    }
-
-    if (action === "removeTrigger") {
-      removeDailyEmailTrigger();
-      return jsonResponse({ ok: true, message: "Daily email trigger removed" });
     }
 
     // 📧 이메일 발송 (긴급 과업 알림)
@@ -490,33 +475,40 @@ function buildUrgentEmailHtml(userName, tasks, todayStr) {
 }
 
 /**
- * 매일 아침 10시(KST) 트리거 설치
- * GAS 에디터에서 수동으로 한 번 실행하세요
+ * 중복 발송 방지: 오늘 이미 발송했는지 Drive 파일로 체크
+ * GitHub Actions 크론 또는 포털 접속 시 호출
  */
-function installDailyEmailTrigger() {
-  // 기존 트리거 정리
-  removeDailyEmailTrigger();
+function checkAndSendDailyEmails() {
+  var root = DriveApp.getFolderById(ROOT_FOLDER_ID);
+  var trackerFile = findFile(root, "_dailyEmailTracker.json");
+  var todayStr = Utilities.formatDate(new Date(), "Asia/Seoul", "yyyy-MM-dd");
 
-  // 매일 오전 10시~11시 사이 실행 (KST 기준)
-  ScriptApp.newTrigger("sendDailyUrgentEmails")
-    .timeBased()
-    .atHour(10)
-    .everyDays(1)
-    .inTimezone("Asia/Seoul")
-    .create();
+  // 오늘 이미 발송했는지 확인
+  if (trackerFile) {
+    try {
+      var tracker = JSON.parse(trackerFile.getBlob().getDataAsString());
+      if (tracker.lastSentDate === todayStr) {
+        Logger.log("[EventOS] ℹ️ 오늘(" + todayStr + ") 이미 발송됨, 스킵");
+        return { ok: true, skipped: true, lastSentDate: todayStr, message: "Already sent today" };
+      }
+    } catch (e) { /* tracker 파싱 실패 시 재발송 */ }
+  }
 
-  Logger.log("[EventOS] ✅ 매일 10시 이메일 트리거 설치 완료");
-}
+  // 이메일 발송
+  sendDailyUrgentEmails();
 
-/**
- * 이메일 트리거 제거
- */
-function removeDailyEmailTrigger() {
-  var triggers = ScriptApp.getProjectTriggers();
-  triggers.forEach(function(trigger) {
-    if (trigger.getHandlerFunction() === "sendDailyUrgentEmails") {
-      ScriptApp.deleteTrigger(trigger);
-      Logger.log("[EventOS] 🗑 기존 이메일 트리거 제거됨");
-    }
+  // 발송 기록 업데이트
+  var trackerData = JSON.stringify({
+    lastSentDate: todayStr,
+    sentAt: new Date().toISOString(),
   });
+
+  if (trackerFile) {
+    trackerFile.setContent(trackerData);
+  } else {
+    root.createFile("_dailyEmailTracker.json", trackerData, "application/json");
+  }
+
+  Logger.log("[EventOS] ✅ 일일 이메일 발송 완료 (" + todayStr + ")");
+  return { ok: true, skipped: false, sentDate: todayStr, message: "Daily emails sent" };
 }
