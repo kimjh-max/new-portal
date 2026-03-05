@@ -5293,7 +5293,7 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
   const A = quoteByDiv.reduce((s,d)=>s+d.subtotal,0) + custOther.reduce((s,c)=>s+calcAmt(c),0);
   const B = quoteType==="공공기관" ? Math.round(A*0.08) : 0;
   const C = quoteType==="공공기관" ? Math.round((A+B)*0.10) : 0;
-  const D = Math.round(A*0.10);
+  const D = Math.round((A+B+C)*0.10);
   const total = A + B + C + D;
   const totalFinal = Math.floor(total/10)*10; // 10원 단위 절사
 
@@ -5307,16 +5307,19 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
   if (hasBudgetAdj) {
     const overAmount = totalFinal - budgetTarget;
     if (quoteType === "공공기관") {
-      // 수익(C)에서 감액
+      // 수익(C)에서 감액 후 부가세 재계산
       profitReduction = Math.min(C, overAmount);
       adjC = C - profitReduction;
+      const adjD = Math.round((A + B + adjC) * 0.10);
+      const adjTotal = A + B + adjC + adjD;
+      adjTotalFinal = Math.floor(adjTotal / 10) * 10;
     } else {
       // 일반기업: 마진(15%)에서 감액
       const maxMargin = A - Math.round(A / 1.15);
       profitReduction = Math.min(maxMargin, overAmount);
+      const adjTotal = total - profitReduction;
+      adjTotalFinal = Math.floor(adjTotal / 10) * 10;
     }
-    const adjTotal = total - profitReduction;
-    adjTotalFinal = Math.floor(adjTotal / 10) * 10;
   }
 
   // 체크리스트 토글
@@ -5651,7 +5654,7 @@ function ChecklistPanel({project, onUpdate, currentUser}) {
       <tr><td>일반관리비 (B = A × 8%)</td><td>${B.toLocaleString()} 원</td></tr>
       <tr><td>수익 (C${hasBudgetAdj?" - 감액":" = (A+B) × 10%"})</td><td>${(hasBudgetAdj ? adjC : C).toLocaleString()} 원</td></tr>
       ` : ""}
-      <tr><td>부가세 (D = A × 10%)</td><td>${D.toLocaleString()} 원</td></tr>
+      <tr><td>부가세 (D = (A+B+C) × 10%)</td><td>${D.toLocaleString()} 원</td></tr>
       ${hasBudgetAdj ? `<tr><td>절사금액</td><td style="color:#c0392b">-${profitReduction.toLocaleString()} 원</td></tr>` : ""}
       <tr class="final"><td>최종 견적금액</td><td>₩ ${adjTotalFinal.toLocaleString()}</td></tr>
     </table>
@@ -8196,34 +8199,92 @@ function DocEditorPanel({docType, project}) {
   const [activeSection, setActiveSection] = React.useState("overview");
   const [activeDesignItem, setActiveDesignItem] = React.useState(null);
 
-  // 프로젝트별 문서 데이터 저장 (프로젝트id+타입 키)
-  const [allDocs, setAllDocs] = React.useState({});
-
   const proj = project;
   const docKey = `${proj?.id}_${docType}`;
-  const docData = allDocs[docKey] || {};
+  const storageKey = `eventos_doc_${docKey}`;
+  const versionsKey = `eventos_docVersions_${docKey}`;
+
+  // ── localStorage에서 문서 데이터 로드 ──
+  const loadDocFromStorage = () => {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  };
+
+  const [docData, setDocData] = React.useState(() => loadDocFromStorage());
+  const [versions, setVersions] = React.useState(() => {
+    try { const v = localStorage.getItem(versionsKey); return v ? JSON.parse(v) : []; } catch { return []; }
+  });
+  const [showVersions, setShowVersions] = React.useState(false);
+  const [saveStatus, setSaveStatus] = React.useState("saved"); // "saved" | "saving" | "unsaved"
+  const saveTimerRef = React.useRef(null);
+
+  // ── docKey 변경 시 데이터 리로드 ──
+  React.useEffect(() => {
+    setDocData(loadDocFromStorage());
+    try { const v = localStorage.getItem(versionsKey); setVersions(v ? JSON.parse(v) : []); } catch { setVersions([]); }
+  }, [docKey]);
+
+  // ── 변경 시 자동 저장 (디바운스 1초) ──
+  React.useEffect(() => {
+    if (!docKey || Object.keys(docData).length === 0) return;
+    setSaveStatus("unsaved");
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(docData));
+        setSaveStatus("saved");
+      } catch (e) {
+        console.error("[DocEditor] localStorage save error:", e);
+        setSaveStatus("unsaved");
+      }
+    }, 1000);
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+  }, [docData]);
 
   const updateDoc = (sectionId, field, value) => {
-    setAllDocs(prev => ({
+    setDocData(prev => ({
       ...prev,
-      [docKey]: {
-        ...prev[docKey],
-        [sectionId]: {
-          ...(prev[docKey]?.[sectionId] || {}),
-          [field]: value,
-        }
+      [sectionId]: {
+        ...(prev[sectionId] || {}),
+        [field]: value,
       }
     }));
   };
 
   const updateDocSection = (sectionId, obj) => {
-    setAllDocs(prev => ({
+    setDocData(prev => ({
       ...prev,
-      [docKey]: {
-        ...prev[docKey],
-        [sectionId]: { ...(prev[docKey]?.[sectionId] || {}), ...obj }
-      }
+      [sectionId]: { ...(prev[sectionId] || {}), ...obj }
     }));
+  };
+
+  // ── 버전 저장 ──
+  const saveVersion = (label) => {
+    const now = new Date();
+    const ts = now.toISOString();
+    const displayName = label || `v${versions.length + 1} (${now.toLocaleDateString("ko-KR")} ${now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})})`;
+    const newVersion = { id: Date.now(), name: displayName, timestamp: ts, data: JSON.parse(JSON.stringify(docData)) };
+    const updated = [newVersion, ...versions].slice(0, 30); // 최대 30개 버전
+    setVersions(updated);
+    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch {}
+    toast(`"${displayName}" 버전 저장 완료`, "success");
+  };
+
+  // ── 버전 불러오기 ──
+  const loadVersion = (ver) => {
+    setDocData(ver.data);
+    try { localStorage.setItem(storageKey, JSON.stringify(ver.data)); } catch {}
+    setShowVersions(false);
+    toast(`"${ver.name}" 버전을 불러왔습니다`, "success");
+  };
+
+  // ── 버전 삭제 ──
+  const deleteVersion = (verId) => {
+    const updated = versions.filter(v => v.id !== verId);
+    setVersions(updated);
+    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch {}
   };
 
   // 현재 섹션 데이터
@@ -8262,12 +8323,12 @@ function DocEditorPanel({docType, project}) {
     const imgHtml = (sectionId) => {
       const imgs = sd(sectionId).images || [];
       if (!imgs.length) return "";
-      return `<div style="margin-top:16px"><div class="box-title">참고 이미지</div><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:8px">${
-        imgs.map(img => `<div style="border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
-          <img src="${img.data}" style="width:100%;display:block"/>
-          ${(img.annotations||[]).length ? `<div style="padding:4px 8px;background:#f8fafc;font-size:10px;color:#475569">${img.annotations.map(a=>a.text).join(" · ")}</div>` : ""}
-        </div>`).join("")
-      }</div></div>`;
+      return imgs.map(img => `
+        <div class="page-break" style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:20px;box-sizing:border-box">
+          <img src="${img.data}" style="max-width:100%;max-height:90vh;object-fit:contain;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.1);display:block"/>
+          ${(img.annotations||[]).length ? `<div style="margin-top:12px;padding:8px 16px;background:#f8fafc;border-radius:6px;font-size:12px;color:#475569;text-align:center;max-width:80%">${img.annotations.map(a=>a.text).join(" · ")}</div>` : ""}
+          <div style="margin-top:8px;font-size:10px;color:#94a3b8">${img.name||""}</div>
+        </div>`).join("");
     };
 
     const bannerRows = (de.bannerList||[]).map((b,i)=>`
@@ -8354,6 +8415,8 @@ tr:nth-child(even) td{background:#f8fafc}
 @media print{
   .page{width:297mm;margin:0;page-break-after:always}
   .page:last-child{page-break-after:auto}
+  .page-break{page-break-before:always;height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center}
+  .page-break img{max-width:100%;max-height:85vh;object-fit:contain}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style></head><body>
@@ -8624,17 +8687,22 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
       }
     };
 
-    /* 이미지 자동 분할 */
+    /* 이미지 자동 분할 - 각 이미지를 1슬라이드에 가득 채움 */
     const pmImages = (pm, secData) => {
       const imgs = (secData?.images || []);
       if (!imgs.length) return;
       imgs.forEach((img) => {
-        pm.need(2.6);
         try {
-          pm.sl.addImage({data:img.data,x:0.5,y:pm.y,w:5,h:2.8,rounding:true});
-          if ((img.annotations||[]).length) pm.sl.addText(img.annotations.map(a=>a.text).join(" · "),{x:0.5,y:pm.y+2.8,w:5,h:0.25,fontSize:8,color:"64748B",align:"center"});
-          pm.y += 3.15;
-        } catch(e){}
+          // 새 슬라이드에 이미지를 가득 채움
+          const imgSlide = pptx.addSlide();
+          imgSlide.addImage({data:img.data, x:0.3, y:0.3, w:12.73, h:6.4, sizing:{type:"contain",w:12.73,h:6.4}});
+          if ((img.annotations||[]).length) {
+            imgSlide.addText(img.annotations.map(a=>a.text).join(" · "), {x:0.5,y:7.0,w:12.33,h:0.35,fontSize:10,color:"64748B",align:"center"});
+          }
+          if (img.name) {
+            imgSlide.addText(img.name, {x:0.5,y:7.15,w:12.33,h:0.25,fontSize:8,color:"94A3B8",align:"center"});
+          }
+        } catch(e){ console.error("PPT image error:", e); }
       });
     };
 
@@ -9313,7 +9381,18 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
             <div style={{fontSize:12,color:"var(--txt3)"}}>{isPlan?"행사 사전 운영 계획 문서":"행사 사후 결과 보고 문서"} · PPT/PDF 출력</div>
           </div>
         </div>
-        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginRight:4}}>
+            <div style={{width:8,height:8,borderRadius:"50%",background:saveStatus==="saved"?"#10b981":saveStatus==="saving"?"#f59e0b":"#ef4444"}}/>
+            <span style={{fontSize:11,color:"var(--txt4)"}}>{saveStatus==="saved"?"저장됨":saveStatus==="saving"?"저장 중...":"변경됨"}</span>
+          </div>
+          <button onClick={()=>saveVersion()} className="btn" style={{background:"rgba(99,102,241,.1)",border:"1px solid rgba(99,102,241,.25)",color:"#a5b4fc",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
+            💾 버전 저장
+          </button>
+          <button onClick={()=>setShowVersions(!showVersions)} className="btn" style={{background:"rgba(245,158,11,.08)",border:"1px solid rgba(245,158,11,.2)",color:"#fbbf24",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12,position:"relative"}}>
+            📂 불러오기 {versions.length > 0 && <span style={{background:"#f59e0b",color:"#000",borderRadius:10,padding:"1px 6px",fontSize:10,fontWeight:800,marginLeft:4}}>{versions.length}</span>}
+          </button>
+          <div style={{width:1,height:24,background:"var(--border)"}}/>
           <button className="btn btn-primary" onClick={printPDF} style={{background:isPlan?"linear-gradient(135deg,#6366f1,#8b5cf6)":"linear-gradient(135deg,#10b981,#059669)"}}>
             PDF 출력
           </button>
@@ -9322,6 +9401,38 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
           </button>
         </div>
       </div>
+
+      {/* 버전 관리 패널 */}
+      {showVersions && (
+        <div className="card" style={{marginBottom:16,border:"1px solid rgba(245,158,11,.2)",background:"rgba(245,158,11,.03)"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+            <div style={{fontWeight:800,fontSize:14,color:"var(--txt)"}}>📂 저장된 버전 ({versions.length}개)</div>
+            <button onClick={()=>setShowVersions(false)} style={{background:"none",border:"none",color:"var(--txt4)",cursor:"pointer",fontSize:18}}>×</button>
+          </div>
+          {versions.length === 0 ? (
+            <div style={{textAlign:"center",color:"var(--txt4)",fontSize:13,padding:"20px 0",border:"1px dashed rgba(255,255,255,.08)",borderRadius:8}}>
+              저장된 버전이 없습니다. "💾 버전 저장" 버튼을 눌러 현재 상태를 저장하세요.
+            </div>
+          ) : (
+            <div style={{maxHeight:280,overflowY:"auto",display:"flex",flexDirection:"column",gap:6}}>
+              {versions.map(ver => (
+                <div key={ver.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"rgba(255,255,255,.04)",borderRadius:8,border:"1px solid var(--border)"}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:700,fontSize:13,color:"var(--txt)"}}>{ver.name}</div>
+                    <div style={{fontSize:11,color:"var(--txt4)",marginTop:2}}>{new Date(ver.timestamp).toLocaleString("ko-KR")}</div>
+                  </div>
+                  <button onClick={()=>loadVersion(ver)} style={{background:"rgba(99,102,241,.1)",border:"1px solid rgba(99,102,241,.25)",color:"#a5b4fc",borderRadius:6,padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+                    불러오기
+                  </button>
+                  <button onClick={()=>deleteVersion(ver.id)} style={{background:"rgba(239,68,68,.08)",border:"1px solid rgba(239,68,68,.15)",color:"#f87171",borderRadius:6,padding:"6px 10px",fontSize:11,cursor:"pointer"}}>
+                    삭제
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 섹션 탭 + 편집 영역 */}
       <div style={{display:"flex",gap:16}}>
@@ -9351,7 +9462,7 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
                 <div style={{fontSize:15,fontWeight:800,color:"var(--txt)"}}>{curSec?.num} {curSec?.title}</div>
                 <div style={{fontSize:11,color:"var(--txt3)"}}>{docLabel} · {proj?.name||""}</div>
               </div>
-              <div style={{marginLeft:"auto",fontSize:11,color:"var(--txt4)"}}>수정 내용은 자동 저장됩니다</div>
+              <div style={{marginLeft:"auto",fontSize:11,color:saveStatus==="saved"?"#10b981":"var(--txt4)"}}>{saveStatus==="saved"?"✓ 자동 저장 완료":"수정 내용 자동 저장 중..."}</div>
             </div>
             {renderSection()}
             {(activeSection !== "design" || !activeDesignItem) && (
