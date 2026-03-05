@@ -280,3 +280,203 @@ function doPost(e) {
     return makeResponse({ success: false, error: err.toString() });
   }
 }
+
+// ─── 매일 아침 자동 긴급 과업 이메일 ─────────────────────
+
+/**
+ * 서버사이드: 매일 아침 10시(KST) 자동 실행
+ * Drive에서 프로젝트 데이터를 읽고, 긴급 과업이 있는 담당자에게 이메일 발송
+ */
+function sendDailyUrgentEmails() {
+  try {
+    // 1. 사용자 목록 로드 (이메일 포함)
+    const appData = readJsonFile(ROOT_FOLDER_ID, "_appData.json");
+    if (!appData) {
+      Logger.log("[EventOS] _appData.json not found");
+      return;
+    }
+    const users = appData.users || [];
+
+    // 이메일이 있는 사용자만
+    const usersWithEmail = users.filter(function(u) { return u.email && u.email.trim(); });
+    if (usersWithEmail.length === 0) {
+      Logger.log("[EventOS] No users with email found");
+      return;
+    }
+
+    // 2. 프로젝트 데이터 로드
+    const allProjects = [];
+    const root = DriveApp.getFolderById(ROOT_FOLDER_ID);
+    const subFolders = root.getFolders();
+    while (subFolders.hasNext()) {
+      const folder = subFolders.next();
+      if (folder.getName().startsWith("_")) continue;
+      const projData = readJsonFile(folder.getId(), "_projectData.json");
+      if (projData) {
+        const project = projData.project || projData;
+        if (project.name) allProjects.push(project);
+      }
+    }
+
+    // 3. 오늘 날짜 기준 3일 이내 긴급 과업 수집
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const threeDaysLater = new Date(today);
+    threeDaysLater.setDate(threeDaysLater.getDate() + 3);
+
+    const todayStr = Utilities.formatDate(today, "Asia/Seoul", "yyyy-MM-dd");
+    const threeStr = Utilities.formatDate(threeDaysLater, "Asia/Seoul", "yyyy-MM-dd");
+
+    const tasksByUser = {};
+
+    allProjects.forEach(function(project) {
+      (project.gantt || []).forEach(function(ganttItem) {
+        (ganttItem.subtasks || []).forEach(function(subtask) {
+          if (subtask.done) return;
+          if (!subtask.endDate) return;
+          if (!subtask.assignee) return;
+
+          if (subtask.endDate <= threeStr) {
+            var assignee = subtask.assignee;
+            if (!tasksByUser[assignee]) tasksByUser[assignee] = [];
+
+            var endDate = new Date(subtask.endDate + "T00:00:00+09:00");
+            var diffMs = endDate.getTime() - today.getTime();
+            var diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+            tasksByUser[assignee].push({
+              projectName: project.name,
+              division: ganttItem.division || ganttItem.task || "",
+              taskName: subtask.task,
+              endDate: subtask.endDate,
+              dDay: diffDays,
+              assignee: assignee,
+            });
+          }
+        });
+      });
+    });
+
+    var sentCount = 0;
+
+    usersWithEmail.forEach(function(user) {
+      var userName = user.name;
+      var userEmail = user.email.trim();
+      var tasks = tasksByUser[userName];
+
+      if (!tasks || tasks.length === 0) return;
+
+      tasks.sort(function(a, b) { return a.endDate.localeCompare(b.endDate); });
+
+      var htmlBody = buildUrgentEmailHtml(userName, tasks, todayStr);
+      var subject = "[EventOS] 📋 " + userName + "님, 긴급 과업 " + tasks.length + "건 알림 (" + todayStr + ")";
+
+      try {
+        MailApp.sendEmail({
+          to: userEmail,
+          subject: subject,
+          htmlBody: htmlBody,
+          name: "EventOS 알림 시스템",
+        });
+        sentCount++;
+        Logger.log("[EventOS] 📧 일일 알림 발송: " + userEmail + " (" + tasks.length + "건)");
+      } catch (mailErr) {
+        Logger.log("[EventOS] 📧 발송 실패: " + userEmail + " - " + mailErr.message);
+      }
+    });
+
+    Logger.log("[EventOS] ✅ 일일 긴급 과업 알림 완료: " + sentCount + "명에게 발송");
+
+  } catch (err) {
+    Logger.log("[EventOS] ❌ sendDailyUrgentEmails 에러: " + err.message);
+  }
+}
+
+/**
+ * 긴급 과업 이메일 HTML 생성
+ */
+function buildUrgentEmailHtml(userName, tasks, todayStr) {
+  var overdueRows = "";
+  var urgentRows = "";
+
+  tasks.forEach(function(t) {
+    var dDayText = t.dDay < 0 ? "D+" + Math.abs(t.dDay) : t.dDay === 0 ? "D-Day" : "D-" + t.dDay;
+    var dDayColor = t.dDay < 0 ? "#ef4444" : t.dDay === 0 ? "#f97316" : "#eab308";
+    var bgColor = t.dDay < 0 ? "#fef2f2" : "#fffbeb";
+
+    var row =
+      '<tr style="background:' + bgColor + '">' +
+      '<td style="padding:10px 12px;border-bottom:1px solid #e5e7eb">' + t.projectName + "</td>" +
+      '<td style="padding:10px 12px;border-bottom:1px solid #e5e7eb">' + t.division + "</td>" +
+      '<td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;font-weight:600">' + t.taskName + "</td>" +
+      '<td style="padding:10px 12px;border-bottom:1px solid #e5e7eb">' + t.endDate + "</td>" +
+      '<td style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:center">' +
+      '<span style="background:' + dDayColor + ";color:white;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:700\">" + dDayText + "</span>" +
+      "</td>" +
+      "</tr>";
+
+    if (t.dDay < 0) overdueRows += row;
+    else urgentRows += row;
+  });
+
+  var overdueCount = tasks.filter(function(t) { return t.dDay < 0; }).length;
+  var urgentCount = tasks.length - overdueCount;
+
+  return (
+    '<!DOCTYPE html><html><body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:700px;margin:0 auto;padding:20px;background:#f8fafc">' +
+    '<div style="background:white;border-radius:12px;padding:30px;box-shadow:0 2px 8px rgba(0,0,0,0.08)">' +
+    '<h2 style="color:#1e293b;margin:0 0 8px">📋 EventOS 긴급 과업 알림</h2>' +
+    '<p style="color:#64748b;margin:0 0 20px">' + todayStr + " · " + userName + "님 담당</p>" +
+    (overdueCount > 0
+      ? '<div style="background:#fef2f2;border-left:4px solid #ef4444;padding:10px 16px;margin-bottom:16px;border-radius:0 8px 8px 0">' +
+        '<strong style="color:#ef4444">⚠️ 마감 경과: ' + overdueCount + "건</strong></div>"
+      : "") +
+    (urgentCount > 0
+      ? '<div style="background:#fffbeb;border-left:4px solid #f97316;padding:10px 16px;margin-bottom:16px;border-radius:0 8px 8px 0">' +
+        '<strong style="color:#f97316">🔔 임박 과업: ' + urgentCount + "건</strong></div>"
+      : "") +
+    '<table style="width:100%;border-collapse:collapse;font-size:14px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">' +
+    '<thead><tr style="background:#f1f5f9">' +
+    '<th style="padding:10px 12px;text-align:left;font-weight:600;color:#475569;border-bottom:2px solid #e5e7eb">프로젝트</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-weight:600;color:#475569;border-bottom:2px solid #e5e7eb">구분</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-weight:600;color:#475569;border-bottom:2px solid #e5e7eb">과업</th>' +
+    '<th style="padding:10px 12px;text-align:left;font-weight:600;color:#475569;border-bottom:2px solid #e5e7eb">마감일</th>' +
+    '<th style="padding:10px 12px;text-align:center;font-weight:600;color:#475569;border-bottom:2px solid #e5e7eb">D-Day</th>' +
+    "</tr></thead>" +
+    "<tbody>" + overdueRows + urgentRows + "</tbody>" +
+    "</table>" +
+    '<p style="color:#94a3b8;font-size:12px;margin:20px 0 0;text-align:center">이 메일은 EventOS에서 매일 오전 10시에 자동 발송됩니다.</p>' +
+    "</div>" +
+    "</body></html>"
+  );
+}
+
+/**
+ * 매일 아침 10시(KST) 트리거 설치
+ * GAS 에디터에서 수동으로 한 번 실행하세요
+ */
+function installDailyEmailTrigger() {
+  removeDailyEmailTrigger();
+
+  ScriptApp.newTrigger("sendDailyUrgentEmails")
+    .timeBased()
+    .atHour(10)
+    .everyDays(1)
+    .inTimezone("Asia/Seoul")
+    .create();
+
+  Logger.log("[EventOS] ✅ 매일 10시 이메일 트리거 설치 완료");
+}
+
+/**
+ * 이메일 트리거 제거
+ */
+function removeDailyEmailTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(function(trigger) {
+    if (trigger.getHandlerFunction() === "sendDailyUrgentEmails") {
+      ScriptApp.deleteTrigger(trigger);
+      Logger.log("[EventOS] 🗑 기존 이메일 트리거 제거됨");
+    }
+  });
+}
