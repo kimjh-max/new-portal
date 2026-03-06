@@ -8303,10 +8303,15 @@ function DocEditorPanel({docType, project}) {
   // 현재 섹션 데이터
   const sd = (sectionId) => docData[sectionId] || {};
 
-  // 동적 리스트 헬퍼
+  // 동적 리스트 헬퍼 — 기본 행을 docData에 자동 저장
   const getList = (sectionId, field, defaultItem) => {
     const val = sd(sectionId)[field];
-    return val && val.length ? val : [defaultItem];
+    if (val && val.length) return val;
+    // 기본 행을 docData에 즉시 저장 (다음 렌더에서 정상 동작 보장)
+    const defaults = [{...defaultItem, _id: Date.now()}];
+    // setTimeout으로 state 업데이트를 렌더 사이클 밖으로 이동
+    setTimeout(() => updateDoc(sectionId, field, defaults), 0);
+    return defaults;
   };
   const setList = (sectionId, field, newList) => updateDoc(sectionId, field, newList);
   const addListItem = (sectionId, field, defaultItem) => {
@@ -8315,11 +8320,15 @@ function DocEditorPanel({docType, project}) {
   };
   const removeListItem = (sectionId, field, idx) => {
     const cur = sd(sectionId)[field] || [];
+    if (cur.length <= 1) return; // 최소 1행 유지
     setList(sectionId, field, cur.filter((_,i)=>i!==idx));
   };
   const updateListItem = (sectionId, field, idx, key, val) => {
-    const cur = (sd(sectionId)[field] || []).map((item,i) => i===idx ? {...item, [key]:val} : item);
-    setList(sectionId, field, cur);
+    let cur = sd(sectionId)[field] || [];
+    // 기본 행이 아직 저장 안 된 경우 → 빈 객체로 초기화
+    while (cur.length <= idx) cur = [...cur, {_id: Date.now() + cur.length}];
+    const updated = cur.map((item,i) => i===idx ? {...item, [key]:val} : item);
+    setList(sectionId, field, updated);
   };
 
   // PDF 출력
