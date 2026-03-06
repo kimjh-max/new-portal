@@ -4509,7 +4509,7 @@ const INIT_PROJECTS = [
 
 /* ══ 헬퍼 ══════════════════════════════════════════════════════════════════ */
 const fmt = n => n?.toLocaleString("ko-KR")+"원";
-const profitRate = (b,c) => b > 0 ? (((b-c)/b)*100).toFixed(1) : "0.0";
+const profitRate = (b,c) => { if(b<=0) return "0"; const r=((b-c)/b)*100; return r%1===0?String(Math.round(r)):r.toFixed(1); };
 const today = new Date().toISOString().slice(0,10);
 
 function toast(msg, type="default") {
