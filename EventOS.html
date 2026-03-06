@@ -8184,17 +8184,25 @@ function SectionImages({sectionId, images, onUpdate}) {
 }
 
 /* ══ 운영계획안 / 결과보고서 ════════════════════════════════════════════════════ */
+const DocFG = ({label, children}) => (
+  <div className="form-group">
+    <label className="form-label">{label}</label>
+    {children}
+  </div>
+);
+
+const ALL_DOC_SECTIONS = [
+  {id:"overview", title:"Over View", icon:"📌", desc:"행사 개요"},
+  {id:"venue",    title:"Venue",     icon:"🏛", desc:"장소 안내"},
+  {id:"design",   title:"Design",    icon:"🎨", desc:"디자인 계획"},
+  {id:"program",  title:"Program",   icon:"📋", desc:"진행 순서"},
+  {id:"operation",title:"Operation", icon:"⚙️", desc:"운영 계획"},
+  {id:"timeline", title:"Time Line", icon:"📅", desc:"일정 계획"},
+];
+
 function DocEditorPanel({docType, project}) {
   // docType: "plan" | "report"
   const isPlan = docType === "plan";
-  const SECTIONS = [
-    {id:"overview", num:"01", title:"Over View", icon:"📌"},
-    {id:"venue",    num:"02", title:"Venue",     icon:"🏛"},
-    {id:"design",   num:"03", title:"Design",    icon:"🎨"},
-    {id:"program",  num:"04", title:"Program",   icon:"📋"},
-    {id:"operation",num:"05", title:"Operation", icon:"⚙️"},
-    {id:"timeline", num:"06", title:"Time Line", icon:"📅"},
-  ];
 
   const [activeSection, setActiveSection] = React.useState("overview");
   const [activeDesignItem, setActiveDesignItem] = React.useState(null);
@@ -8217,8 +8225,13 @@ function DocEditorPanel({docType, project}) {
     try { const v = localStorage.getItem(versionsKey); return v ? JSON.parse(v) : []; } catch { return []; }
   });
   const [showVersions, setShowVersions] = React.useState(false);
+  const [showSectionMgr, setShowSectionMgr] = React.useState(false);
   const [saveStatus, setSaveStatus] = React.useState("saved"); // "saved" | "saving" | "unsaved"
   const saveTimerRef = React.useRef(null);
+
+  // ── 동적 섹션 구성 ──
+  const enabledIds = docData._enabledSections || ALL_DOC_SECTIONS.map(s=>s.id);
+  const SECTIONS = ALL_DOC_SECTIONS.filter(s=>enabledIds.includes(s.id)).map((s,i)=>({...s, num:String(i+1).padStart(2,"0")}));
 
   // ── docKey 변경 시 데이터 리로드 ──
   React.useEffect(() => {
@@ -8320,6 +8333,12 @@ function DocEditorPanel({docType, project}) {
     const op = sd("operation");
     const tl = sd("timeline");
 
+    const secEnabled = (id) => enabledIds.includes(id);
+    const secNum = (id) => {
+      const idx = SECTIONS.findIndex(s=>s.id===id);
+      return idx >= 0 ? SECTIONS[idx].num : "00";
+    };
+
     const imgHtml = (sectionId) => {
       const imgs = sd(sectionId).images || [];
       if (!imgs.length) return "";
@@ -8379,10 +8398,10 @@ body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-si
 .page:last-child{page-break-after:auto}
 /* Cover */
 .cover{background:linear-gradient(135deg,#0f1623 0%,#1e2a4a 50%,#0f1623 100%);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:210mm;text-align:center;padding:40px}
-.cover .year{font-size:14px;color:#818cf8;letter-spacing:4px;font-weight:600;margin-bottom:16px}
+.cover .company{font-size:14px;color:#818cf8;letter-spacing:4px;font-weight:600;margin-bottom:24px}
 .cover .event-name{font-size:36px;font-weight:900;color:#fff;margin-bottom:12px;line-height:1.2}
-.cover .doc-type{font-size:18px;color:#a5b4fc;font-weight:700;margin-bottom:32px;letter-spacing:2px}
-.cover .company{font-size:13px;color:#64748b;letter-spacing:1px}
+.cover .doc-type{font-size:18px;color:#a5b4fc;font-weight:700;margin-bottom:20px;letter-spacing:2px}
+.cover .year{font-size:13px;color:#64748b;letter-spacing:1px}
 /* Section page */
 .sec-page{background:#fff;padding:0}
 .sec-header{background:linear-gradient(135deg,#0f1623,#1e3a5f);color:#fff;padding:24px 40px;display:flex;align-items:center;gap:16px}
@@ -8423,16 +8442,16 @@ tr:nth-child(even) td{background:#f8fafc}
 
 <!-- COVER -->
 <div class="page cover">
-  <div class="year">${new Date().getFullYear()} CRS in the Community</div>
+  <div class="company">(주)에픽스테이지</div>
   <div class="event-name">${p.name||"행사명"}</div>
   <div class="doc-type">${docTitle}</div>
-  <div class="company">(주)에픽스테이지</div>
+  <div class="year">${p.client ? p.client + "  ·  " : ""}${p.eventDate||""}</div>
 </div>
 
-<!-- 01 OVER VIEW -->
+${secEnabled("overview") ? `<!-- 01 OVER VIEW -->
 <div class="page sec-page">
   <div class="sec-header">
-    <div class="sec-num">01</div>
+    <div class="sec-num">${secNum("overview")}</div>
     <div class="sec-title-block">
       <div class="sec-title">Over View</div>
       <div class="sec-sub">행사 개요 | EVENT OVERVIEW</div>
@@ -8454,12 +8473,12 @@ tr:nth-child(even) td{background:#f8fafc}
     ${imgHtml("overview")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>
+</div>` : ""}
 
-<!-- 02 VENUE -->
+${secEnabled("venue") ? `<!-- 02 VENUE -->
 <div class="page sec-page">
   <div class="sec-header">
-    <div class="sec-num">02</div>
+    <div class="sec-num">${secNum("venue")}</div>
     <div class="sec-title-block">
       <div class="sec-title">Venue</div>
       <div class="sec-sub">장소 안내 | VENUE INFORMATION</div>
@@ -8482,12 +8501,12 @@ tr:nth-child(even) td{background:#f8fafc}
     ${imgHtml("venue")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>
+</div>` : ""}
 
-<!-- 03 DESIGN -->
+${secEnabled("design") ? `<!-- 03 DESIGN -->
 <div class="page sec-page">
   <div class="sec-header">
-    <div class="sec-num">03</div>
+    <div class="sec-num">${secNum("design")}</div>
     <div class="sec-title-block">
       <div class="sec-title">Design</div>
       <div class="sec-sub">디자인 계획 | DESIGN PLAN</div>
@@ -8508,10 +8527,9 @@ tr:nth-child(even) td{background:#f8fafc}
     ${imgHtml("design")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>
+</div>` : ""}
 
-${/* ── 03-X 디자인 아이템 개별 페이지 ── */
-(de.designItems||[]).map((dItem,dIdx)=>{
+${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   const dImgs = (dItem.images||[]);
   const dImgGrid = dImgs.length ? `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:16px">${dImgs.map(img=>`
     <div style="border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
@@ -8521,7 +8539,7 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
   return `
 <div class="page sec-page">
   <div class="sec-header">
-    <div class="sec-num">03</div>
+    <div class="sec-num">${secNum("design")}</div>
     <div class="sec-title-block">
       <div class="sec-title">${dItem.itemName||"Design Item"}</div>
       <div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div>
@@ -8539,12 +8557,12 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
 </div>`;
-}).join("\n")}
+}).join("\n") : ""}
 
-<!-- 04 PROGRAM -->
+${secEnabled("program") ? `<!-- 04 PROGRAM -->
 <div class="page sec-page">
   <div class="sec-header">
-    <div class="sec-num">04</div>
+    <div class="sec-num">${secNum("program")}</div>
     <div class="sec-title-block">
       <div class="sec-title">Program</div>
       <div class="sec-sub">진행 순서 | EVENT PROGRAM</div>
@@ -8560,12 +8578,12 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
     ${imgHtml("program")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>
+</div>` : ""}
 
-<!-- 05 OPERATION -->
+${secEnabled("operation") ? `<!-- 05 OPERATION -->
 <div class="page sec-page">
   <div class="sec-header">
-    <div class="sec-num">05</div>
+    <div class="sec-num">${secNum("operation")}</div>
     <div class="sec-title-block">
       <div class="sec-title">Operation</div>
       <div class="sec-sub">운영 계획 | OPERATION PLAN</div>
@@ -8589,12 +8607,12 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
     ${imgHtml("operation")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>
+</div>` : ""}
 
-<!-- 06 TIME LINE -->
+${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
 <div class="page sec-page">
   <div class="sec-header">
-    <div class="sec-num">06</div>
+    <div class="sec-num">${secNum("timeline")}</div>
     <div class="sec-title-block">
       <div class="sec-title">Time Line</div>
       <div class="sec-sub">일정 계획 | PROJECT TIMELINE</div>
@@ -8609,7 +8627,7 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
     ${imgHtml("timeline")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>
+</div>` : ""}
 
 </body></html>`;
     W.document.write(html);
@@ -8736,16 +8754,15 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
     /* ── Cover Slide ── */
     const cover = pptx.addSlide();
     cover.background = {fill:"0F1623"};
-    cover.addText(new Date().getFullYear()+" CRS in the Community",{x:0,y:2,w:"100%",h:0.5,align:"center",fontSize:12,color:"818CF8",letterSpacing:4});
+    cover.addText("(주)에픽스테이지",{x:0,y:1.8,w:"100%",h:0.5,align:"center",fontSize:12,color:"818CF8",letterSpacing:4});
     cover.addText(p.name||"행사명",{x:0.5,y:2.8,w:12.33,h:1.2,align:"center",fontSize:32,color:"FFFFFF",bold:true});
     cover.addText(docTitle,{x:0,y:4.2,w:"100%",h:0.5,align:"center",fontSize:16,color:"A5B4FC",bold:true});
     cover.addText((p.client||"")+"  ·  "+(p.eventDate||""),{x:0,y:4.9,w:"100%",h:0.4,align:"center",fontSize:11,color:"94A3B8"});
-    cover.addText("(주)에픽스테이지",{x:0,y:5.8,w:"100%",h:0.4,align:"center",fontSize:11,color:"64748B"});
 
     /* ── 01 Over View ── */
-    (() => {
+    if (secEnabled("overview")) (() => {
       const d = sd("overview");
-      const pm = new PageMgr("01","Over View","행사 개요 | EVENT OVERVIEW");
+      const pm = new PageMgr(secNum("overview"),"Over View","행사 개요 | EVENT OVERVIEW");
       pm2Col(pm,"행사명",d.eventName||p.name||"","주최사",d.organizer||p.client||"");
       pm2Col(pm,"일시",d.date||p.eventDate||"","시간",d.time||"");
       pmField(pm,"장소",d.venue||p.taskOrder?.venue,12.33,0.4);
@@ -8756,9 +8773,9 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
     })();
 
     /* ── 02 Venue ── */
-    (() => {
+    if (secEnabled("venue")) (() => {
       const d = sd("venue");
-      const pm = new PageMgr("02","Venue","장소 안내 | VENUE INFORMATION");
+      const pm = new PageMgr(secNum("venue"),"Venue","장소 안내 | VENUE INFORMATION");
       pm2Col(pm,"장소명",d.venueName||p.taskOrder?.venue||"","수용 인원",d.capacity||p.taskOrder?.attendance||"");
       pm2Col(pm,"주소",d.address||"","층/홀",d.floor||"");
       pmField(pm,"장소 특이사항",d.notes,12.33,0.8);
@@ -8769,9 +8786,10 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
     })();
 
     /* ── 03 Design ── */
-    (() => {
+    if (secEnabled("design")) (() => {
       const d = sd("design");
-      const pm = new PageMgr("03","Design","디자인 계획 | DESIGN PLAN");
+      const _dsn = secNum("design");
+      const pm = new PageMgr(_dsn,"Design","디자인 계획 | DESIGN PLAN");
       pmTable(pm,"현수막/배너 목록",tblHdr(["#","품목명","규격 (mm)","수량"]),
         (d.bannerList||[]).filter(b=>b.name).map((b,i)=>tblRow([i+1,b.name,b.size,b.qty])),
         [0.5,5,4.5,2.33]);
@@ -8784,7 +8802,7 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
       const _diList = d.designItems || [];
       _diList.forEach((dItem, dIdx) => {
         const itemLetter = String.fromCharCode(65 + dIdx);
-        const itemPm = new PageMgr(`03-${itemLetter}`, dItem.itemName||"Design Item", `${dItem.category||"디자인"} | DESIGN ITEM`);
+        const itemPm = new PageMgr(`${_dsn}-${itemLetter}`, dItem.itemName||"Design Item", `${dItem.category||"디자인"} | DESIGN ITEM`);
         pm2Col(itemPm,"카테고리",dItem.category||"-","구분",dItem.division||"-");
         pm2Col(itemPm,"규격 / 사이즈",dItem.specs||"-","수량",String(dItem.qty||1));
         if (dItem.notes) pmField(itemPm,"메모",dItem.notes,12.33,0.8);
@@ -8874,36 +8892,29 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
     const op = sd("operation");
     const tl = sd("timeline");
 
-    const FG = ({label, children}) => (
-      <div className="form-group">
-        <label className="form-label">{label}</label>
-        {children}
-      </div>
-    );
-
     if (activeSection === "overview") return (
       <div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-          <FG label="행사명"><input className="form-input" value={ov.eventName||proj?.name||""} onChange={e=>updateDoc("overview","eventName",e.target.value)} placeholder="행사명 입력"/></FG>
-          <FG label="주최사"><input className="form-input" value={ov.organizer||proj?.client||""} onChange={e=>updateDoc("overview","organizer",e.target.value)} placeholder="주최사/클라이언트"/></FG>
-          <FG label="일시"><input className="form-input" value={ov.date||proj?.eventDate||""} onChange={e=>updateDoc("overview","date",e.target.value)} placeholder="예) 2025년 11월 25일(화)"/></FG>
-          <FG label="시간"><input className="form-input" value={ov.time||""} onChange={e=>updateDoc("overview","time",e.target.value)} placeholder="예) 오전 10:30 ~ 오후 1:30 (3시간)"/></FG>
+          <DocFG label="행사명"><input className="form-input" value={ov.eventName||proj?.name||""} onChange={e=>updateDoc("overview","eventName",e.target.value)} placeholder="행사명 입력"/></DocFG>
+          <DocFG label="주최사"><input className="form-input" value={ov.organizer||proj?.client||""} onChange={e=>updateDoc("overview","organizer",e.target.value)} placeholder="주최사/클라이언트"/></DocFG>
+          <DocFG label="일시"><input className="form-input" value={ov.date||proj?.eventDate||""} onChange={e=>updateDoc("overview","date",e.target.value)} placeholder="예) 2025년 11월 25일(화)"/></DocFG>
+          <DocFG label="시간"><input className="form-input" value={ov.time||""} onChange={e=>updateDoc("overview","time",e.target.value)} placeholder="예) 오전 10:30 ~ 오후 1:30 (3시간)"/></DocFG>
         </div>
-        <FG label="장소"><input className="form-input" value={ov.venue||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("overview","venue",e.target.value)} placeholder="행사 장소명"/></FG>
-        <FG label="행사 내용">
+        <DocFG label="장소"><input className="form-input" value={ov.venue||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("overview","venue",e.target.value)} placeholder="행사 장소명"/></DocFG>
+        <DocFG label="행사 내용">
           <textarea className="form-input" rows={3} value={ov.content||proj?.taskOrder?.purpose||""} onChange={e=>updateDoc("overview","content",e.target.value)} placeholder="행사의 주요 내용 및 목적" style={{resize:"vertical"}}/>
-        </FG>
+        </DocFG>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-          <FG label="행사 성격">
+          <DocFG label="행사 성격">
             <textarea className="form-input" rows={4} value={ov.character||""} onChange={e=>updateDoc("overview","character",e.target.value)} placeholder="예) 지역사회공헌인정제 시상식&#10;- 시상식&#10;- 네트워킹&#10;- 전시" style={{resize:"vertical"}}/>
-          </FG>
-          <FG label="지원 사항">
+          </DocFG>
+          <DocFG label="지원 사항">
             <textarea className="form-input" rows={4} value={ov.support||""} onChange={e=>updateDoc("overview","support",e.target.value)} placeholder="예) 무대/음향/조명/LED&#10;사회자&#10;영상 제작&#10;인쇄물" style={{resize:"vertical"}}/>
-          </FG>
+          </DocFG>
         </div>
-        <FG label="기타사항">
+        <DocFG label="기타사항">
           <textarea className="form-input" rows={2} value={ov.extraNotes||""} onChange={e=>updateDoc("overview","extraNotes",e.target.value)} placeholder="기타 특이사항" style={{resize:"vertical"}}/>
-        </FG>
+        </DocFG>
       </div>
     );
 
@@ -8912,14 +8923,14 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
       return (
         <div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <FG label="장소명"><input className="form-input" value={ve.venueName||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("venue","venueName",e.target.value)} placeholder="장소명"/></FG>
-            <FG label="수용 인원"><input className="form-input" value={ve.capacity||proj?.taskOrder?.attendance||""} onChange={e=>updateDoc("venue","capacity",e.target.value)} placeholder="예) 300명"/></FG>
-            <FG label="주소"><input className="form-input" value={ve.address||""} onChange={e=>updateDoc("venue","address",e.target.value)} placeholder="도로명 주소"/></FG>
-            <FG label="층/홀"><input className="form-input" value={ve.floor||""} onChange={e=>updateDoc("venue","floor",e.target.value)} placeholder="예) B1층 그랜드볼룸"/></FG>
+            <DocFG label="장소명"><input className="form-input" value={ve.venueName||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("venue","venueName",e.target.value)} placeholder="장소명"/></DocFG>
+            <DocFG label="수용 인원"><input className="form-input" value={ve.capacity||proj?.taskOrder?.attendance||""} onChange={e=>updateDoc("venue","capacity",e.target.value)} placeholder="예) 300명"/></DocFG>
+            <DocFG label="주소"><input className="form-input" value={ve.address||""} onChange={e=>updateDoc("venue","address",e.target.value)} placeholder="도로명 주소"/></DocFG>
+            <DocFG label="층/홀"><input className="form-input" value={ve.floor||""} onChange={e=>updateDoc("venue","floor",e.target.value)} placeholder="예) B1층 그랜드볼룸"/></DocFG>
           </div>
-          <FG label="장소 특이사항">
+          <DocFG label="장소 특이사항">
             <textarea className="form-input" rows={2} value={ve.notes||""} onChange={e=>updateDoc("venue","notes",e.target.value)} placeholder="반입 동선, 주차, 특이사항 등" style={{resize:"vertical"}}/>
-          </FG>
+          </DocFG>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
             <label className="form-label" style={{margin:0}}>장비/시설 목록</label>
             <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("venue","equipList",{name:"",spec:"",qty:"",note:""})}>+ 항목 추가</button>
@@ -9072,20 +9083,20 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
                 </table>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-                <FG label="디지털/영상 계획">
+                <DocFG label="디지털/영상 계획">
                   <textarea className="form-input" rows={4} value={de.videoNotes||""} onChange={e=>updateDoc("design","videoNotes",e.target.value)} placeholder="예) DIDID(7대), 영상 계획&#10;- 오프닝 영상 (1분 30초)&#10;- 시상 영상 (각 30초)" style={{resize:"vertical"}}/>
-                </FG>
-                <FG label="인쇄물">
+                </DocFG>
+                <DocFG label="인쇄물">
                   <textarea className="form-input" rows={4} value={de.printNotes||""} onChange={e=>updateDoc("design","printNotes",e.target.value)} placeholder="예) 팸플릿 A3&#10;좌석 안내판&#10;명패 등" style={{resize:"vertical"}}/>
-                </FG>
+                </DocFG>
               </div>
-              <FG label="LED/스크린 계획">
+              <DocFG label="LED/스크린 계획">
                 <textarea className="form-input" rows={3} value={de.ledNotes||""} onChange={e=>updateDoc("design","ledNotes",e.target.value)} placeholder="예) LED 스크린 4853x960 / 메인 프로젝터 12,000 DLP" style={{resize:"vertical"}}/>
-              </FG>
+              </DocFG>
               {!isPlan && (
-                <FG label="결과 메모">
+                <DocFG label="결과 메모">
                   <textarea className="form-input" rows={2} value={de.resultNotes||""} onChange={e=>updateDoc("design","resultNotes",e.target.value)} placeholder="디자인 실제 적용 결과 메모" style={{resize:"vertical"}}/>
-                </FG>
+                </DocFG>
               )}
             </div>
           )}
@@ -9099,22 +9110,22 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
                 <button onClick={()=>{removeDesignItem(activeItemObj._id)}} style={{marginLeft:"auto",background:"rgba(239,68,68,.12)",border:"1px solid rgba(239,68,68,.25)",color:"#fca5a5",borderRadius:6,padding:"5px 12px",cursor:"pointer",fontSize:12,fontWeight:600}}>삭제</button>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-                <FG label="아이템명">
+                <DocFG label="아이템명">
                   <input className="form-input" value={activeItemObj.itemName||""} onChange={e=>updateDesignItem(activeItemObj._id,"itemName",e.target.value)} placeholder="아이템명"/>
-                </FG>
-                <FG label="카테고리">
+                </DocFG>
+                <DocFG label="카테고리">
                   <input className="form-input" value={activeItemObj.category||""} readOnly style={{opacity:.7}}/>
-                </FG>
-                <FG label="규격 / 사이즈">
+                </DocFG>
+                <DocFG label="규격 / 사이즈">
                   <input className="form-input" value={activeItemObj.specs||""} onChange={e=>updateDesignItem(activeItemObj._id,"specs",e.target.value)} placeholder="예) 5000 x 3000mm"/>
-                </FG>
-                <FG label="수량">
+                </DocFG>
+                <DocFG label="수량">
                   <input className="form-input" type="number" value={activeItemObj.qty||""} onChange={e=>updateDesignItem(activeItemObj._id,"qty",parseInt(e.target.value)||0)}/>
-                </FG>
+                </DocFG>
               </div>
-              <FG label="메모">
+              <DocFG label="메모">
                 <textarea className="form-input" rows={3} value={activeItemObj.notes||""} onChange={e=>updateDesignItem(activeItemObj._id,"notes",e.target.value)} placeholder="제작 시방, 소재, 특이사항 등" style={{resize:"vertical"}}/>
-              </FG>
+              </DocFG>
               <div style={{marginTop:12}}>
                 <label className="form-label">제작 이미지</label>
                 <SectionImages sectionId={`designItem_${activeItemObj._id}`} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)}/>
@@ -9157,13 +9168,13 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
               </tbody>
             </table>
           </div>
-          <FG label="MC / 진행 메모">
+          <DocFG label="MC / 진행 메모">
             <textarea className="form-input" rows={2} value={pr.mcInfo||""} onChange={e=>updateDoc("program","mcInfo",e.target.value)} placeholder="MC 진행 관련 특이사항" style={{resize:"vertical"}}/>
-          </FG>
+          </DocFG>
           {!isPlan && (
-            <FG label="프로그램 결과 메모">
+            <DocFG label="프로그램 결과 메모">
               <textarea className="form-input" rows={2} value={pr.resultNotes||""} onChange={e=>updateDoc("program","resultNotes",e.target.value)} placeholder="실제 진행 결과 메모" style={{resize:"vertical"}}/>
-            </FG>
+            </DocFG>
           )}
         </div>
       );
@@ -9175,14 +9186,14 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
       return (
         <div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:4}}>
-            <FG label="MC 이름"><input className="form-input" value={op.mcName||""} onChange={e=>updateDoc("operation","mcName",e.target.value)} placeholder="MC 이름"/></FG>
-            <FG label="MC 프로필">
+            <DocFG label="MC 이름"><input className="form-input" value={op.mcName||""} onChange={e=>updateDoc("operation","mcName",e.target.value)} placeholder="MC 이름"/></DocFG>
+            <DocFG label="MC 프로필">
               <textarea className="form-input" rows={2} value={op.mcProfile||""} onChange={e=>updateDoc("operation","mcProfile",e.target.value)} placeholder="방송 경력 등" style={{resize:"vertical"}}/>
-            </FG>
+            </DocFG>
           </div>
-          <FG label="운영 특이사항">
+          <DocFG label="운영 특이사항">
             <textarea className="form-input" rows={2} value={op.notes||""} onChange={e=>updateDoc("operation","notes",e.target.value)} placeholder="운영 관련 특이사항" style={{resize:"vertical"}}/>
-          </FG>
+          </DocFG>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
             <label className="form-label" style={{margin:0}}>스태프 배치</label>
             <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("operation","staffList",{role:"",name:"",contact:"",note:""})}>+ 추가</button>
@@ -9357,9 +9368,9 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
             </div>
           )}
 
-          <FG label="타임라인 메모">
+          <DocFG label="타임라인 메모">
             <textarea className="form-input" rows={2} value={tl.ganttNotes||""} onChange={e=>updateDoc("timeline","ganttNotes",e.target.value)} placeholder="전체 일정 관련 메모" style={{resize:"vertical"}}/>
-          </FG>
+          </DocFG>
         </div>
       );
     }
@@ -9386,6 +9397,9 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
             <div style={{width:8,height:8,borderRadius:"50%",background:saveStatus==="saved"?"#10b981":saveStatus==="saving"?"#f59e0b":"#ef4444"}}/>
             <span style={{fontSize:11,color:"var(--txt4)"}}>{saveStatus==="saved"?"저장됨":saveStatus==="saving"?"저장 중...":"변경됨"}</span>
           </div>
+          <button onClick={()=>setShowSectionMgr(!showSectionMgr)} className="btn" style={{background:"rgba(99,102,241,.06)",border:"1px solid rgba(99,102,241,.15)",color:"#818cf8",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
+            ⚙️ 섹션 관리
+          </button>
           <button onClick={()=>saveVersion()} className="btn" style={{background:"rgba(99,102,241,.1)",border:"1px solid rgba(99,102,241,.25)",color:"#a5b4fc",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
             💾 버전 저장
           </button>
@@ -9431,6 +9445,42 @@ ${/* ── 03-X 디자인 아이템 개별 페이지 ── */
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* 섹션 구성 관리 패널 */}
+      {showSectionMgr && (
+        <div className="card" style={{marginBottom:16,border:"1px solid rgba(99,102,241,.2)",background:"rgba(99,102,241,.03)"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+            <div style={{fontWeight:800,fontSize:14,color:"var(--txt)"}}>⚙️ 섹션 구성 관리</div>
+            <button onClick={()=>setShowSectionMgr(false)} style={{background:"none",border:"none",color:"var(--txt4)",cursor:"pointer",fontSize:18}}>×</button>
+          </div>
+          <div style={{fontSize:12,color:"var(--txt3)",marginBottom:12}}>행사에 필요한 섹션만 선택하세요. 선택하지 않은 섹션은 PDF/PPT 출력에서도 제외됩니다.</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+            {ALL_DOC_SECTIONS.map(sec=>{
+              const isOn = enabledIds.includes(sec.id);
+              return (
+                <button key={sec.id} onClick={()=>{
+                  const cur = docData._enabledSections || ALL_DOC_SECTIONS.map(s=>s.id);
+                  const next = isOn ? cur.filter(id=>id!==sec.id) : [...cur, sec.id];
+                  if (next.length === 0) { toast("최소 1개 섹션은 필요합니다","warn"); return; }
+                  setDocData(prev=>({...prev, _enabledSections:next}));
+                  if (isOn && activeSection===sec.id) setActiveSection(next[0]);
+                }}
+                style={{
+                  padding:"12px",borderRadius:8,cursor:"pointer",textAlign:"center",transition:"all .15s",
+                  background:isOn?"rgba(99,102,241,.12)":"rgba(255,255,255,.02)",
+                  border:isOn?"1px solid rgba(99,102,241,.4)":"1px solid rgba(255,255,255,.08)",
+                  opacity:isOn?1:0.5,
+                }}>
+                  <div style={{fontSize:20,marginBottom:4}}>{sec.icon}</div>
+                  <div style={{fontSize:12,fontWeight:isOn?700:500,color:isOn?"#a5b4fc":"var(--txt4)"}}>{sec.title}</div>
+                  <div style={{fontSize:10,color:"var(--txt4)",marginTop:2}}>{sec.desc}</div>
+                  <div style={{fontSize:10,marginTop:6,color:isOn?"#10b981":"#ef4444",fontWeight:700}}>{isOn?"✓ 사용":"미사용"}</div>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
