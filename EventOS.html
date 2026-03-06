@@ -8256,12 +8256,23 @@ function DocEditorPanel({docType, project}) {
   });
   const [showVersions, setShowVersions] = React.useState(false);
   const [showSectionMgr, setShowSectionMgr] = React.useState(false);
+  const [showCoverEdit, setShowCoverEdit] = React.useState(false);
   const [saveStatus, setSaveStatus] = React.useState("saved"); // "saved" | "saving" | "unsaved"
   const saveTimerRef = React.useRef(null);
 
-  // ── 동적 섹션 구성 ──
+  // ── cover / keyColor 데이터 ──
+  const cv = docData._cover || {};
+  const kc = docData._keyColor || "#6366f1";
+  const updateCover = (field, value) => {
+    setDocData(prev => ({...prev, _cover: {...(prev._cover||{}), [field]: value}}));
+  };
+
+  // ── 동적 섹션 구성 (순서 반영) ──
   const enabledIds = docData._enabledSections || ALL_DOC_SECTIONS.map(s=>s.id);
-  const SECTIONS = ALL_DOC_SECTIONS.filter(s=>enabledIds.includes(s.id)).map((s,i)=>({...s, num:String(i+1).padStart(2,"0")}));
+  const SECTIONS = enabledIds.filter(id=>ALL_DOC_SECTIONS.find(s=>s.id===id)).map((id,i)=>{
+    const sec = ALL_DOC_SECTIONS.find(s=>s.id===id);
+    return {...sec, num:String(i+1).padStart(2,"0")};
+  });
 
   // ── docKey 변경 시 데이터 리로드 ──
   React.useEffect(() => {
@@ -8361,10 +8372,23 @@ function DocEditorPanel({docType, project}) {
     setList(sectionId, field, updated);
   };
 
+  // ── 섹션 순서 이동 함수 ──
+  const moveSection = (id, dir) => {
+    const cur = docData._enabledSections || ALL_DOC_SECTIONS.map(s=>s.id);
+    const idx = cur.indexOf(id);
+    if (idx < 0) return;
+    const next = [...cur];
+    if (dir === -1 && idx > 0) { [next[idx-1], next[idx]] = [next[idx], next[idx-1]]; }
+    if (dir === 1 && idx < next.length-1) { [next[idx], next[idx+1]] = [next[idx+1], next[idx]]; }
+    setDocData(prev=>({...prev, _enabledSections: next}));
+  };
+
   // PDF 출력
   const printPDF = () => {
     const W = window.open("","_blank","width=1200,height=900");
     const p = proj || {};
+    const _cv = docData._cover || {};
+    const _kc = docData._keyColor || "#6366f1";
     const ov = sd("overview");
     const ve = sd("venue");
     const de = sd("design");
@@ -8390,7 +8414,7 @@ function DocEditorPanel({docType, project}) {
     };
 
     const bannerRows = (de.bannerList||[]).map((b,i)=>`
-      <tr><td>${i+1}</td><td>${b.name||""}</td><td>${b.size||""}</td><td style="text-align:center">${b.qty||""}</td></tr>`).join("") || `<tr><td colspan="4" style="text-align:center;color:#888">데이터 없음</td></tr>`;
+      <tr><td>${i+1}</td><td>${b.name||""}</td><td>${b.category||""}</td><td>${b.size||""}</td><td style="text-align:center">${b.qty||""}</td></tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
 
     const programRows = (pr.timeline||[]).map((t,i)=>`
       <tr><td style="text-align:center">${i+1}</td><td style="white-space:nowrap">${t.time||""}</td><td style="text-align:center">${t.duration||""}</td><td>${t.content||""}</td><td>${t.note||""}</td></tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
@@ -8402,7 +8426,7 @@ function DocEditorPanel({docType, project}) {
       <tr><td style="text-align:center">${i+1}</td><td>${s.grade||""}</td><td>${s.item||""}</td><td style="text-align:center">${s.qty||""}</td><td>${s.note||""}</td></tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
 
     const milestoneRows = (tl.milestones||[]).map((m,i)=>{
-      const sc = m.status==="완료"?"#10b981":m.status==="진행중"?"#f59e0b":"#6366f1";
+      const sc = m.status==="완료"?"#10b981":m.status==="진행중"?"#f59e0b":_kc;
       const rowStyle = m.isSubtask ? "background:#f8fafc;" : "";
       const taskStyle = m.isSubtask ? "padding-left:20px;color:#64748b;" : "font-weight:600;";
       const progPct = m.progress||0;
@@ -8436,28 +8460,33 @@ body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-si
 .page{width:297mm;min-height:210mm;padding:0;margin:0 auto;page-break-after:always;position:relative;overflow:hidden}
 .page:last-child{page-break-after:auto}
 /* Cover */
-.cover{background:linear-gradient(135deg,#0f1623 0%,#1e2a4a 50%,#0f1623 100%);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:210mm;text-align:center;padding:40px}
-.cover .company{font-size:14px;color:#818cf8;letter-spacing:4px;font-weight:600;margin-bottom:24px}
+.cover{background:linear-gradient(135deg,#0f1623 0%,#1e2a4a 50%,#0f1623 100%);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:210mm;text-align:center;padding:40px;position:relative;overflow:hidden}
+.cover::before{content:'';position:absolute;top:0;left:0;right:0;height:6px;background:linear-gradient(90deg,${_kc},${_kc}88,${_kc}44)}
+.cover::after{content:'';position:absolute;bottom:60px;left:50%;transform:translateX(-50%);width:120px;height:2px;background:linear-gradient(90deg,transparent,${_kc},transparent)}
+.cover .cover-version{position:absolute;top:24px;right:32px;background:${_kc}33;color:${_kc};border:1px solid ${_kc}55;padding:4px 14px;border-radius:4px;font-size:11px;font-weight:700;letter-spacing:1px}
+.cover .company{font-size:14px;color:${_kc};letter-spacing:4px;font-weight:600;margin-bottom:24px}
 .cover .event-name{font-size:36px;font-weight:900;color:#fff;margin-bottom:12px;line-height:1.2}
-.cover .doc-type{font-size:18px;color:#a5b4fc;font-weight:700;margin-bottom:20px;letter-spacing:2px}
-.cover .year{font-size:13px;color:#64748b;letter-spacing:1px}
+.cover .doc-type{font-size:18px;color:${_kc}cc;font-weight:700;margin-bottom:20px;letter-spacing:2px}
+.cover .year{font-size:13px;color:#94a3b8;letter-spacing:1px}
+.cover .contact{font-size:12px;color:#94a3b8;margin-top:16px}
+.cover .contact-point{font-size:11px;color:#64748b;margin-top:6px}
 /* Section page */
 .sec-page{background:#fff;padding:0}
-.sec-header{background:linear-gradient(135deg,#0f1623,#1e3a5f);color:#fff;padding:24px 40px;display:flex;align-items:center;gap:16px}
-.sec-num{font-size:48px;font-weight:900;color:#6366f1;opacity:.5;line-height:1;min-width:60px}
+.sec-header{background:linear-gradient(135deg,#0f1623,#1e3a5f);color:#fff;padding:24px 40px;display:flex;align-items:center;gap:16px;border-left:5px solid ${_kc}}
+.sec-num{font-size:48px;font-weight:900;color:${_kc};opacity:.5;line-height:1;min-width:60px}
 .sec-title-block{display:flex;flex-direction:column}
 .sec-title{font-size:24px;font-weight:900;color:#fff;letter-spacing:2px}
-.sec-sub{font-size:11px;color:#818cf8;letter-spacing:1px;margin-top:2px}
+.sec-sub{font-size:11px;color:${_kc}cc;letter-spacing:1px;margin-top:2px}
 .sec-body{padding:28px 40px}
 /* 공통 테이블 */
 table{width:100%;border-collapse:collapse;margin-bottom:16px}
-th{background:#0f1623;color:#a5b4fc;font-size:11px;font-weight:700;padding:8px 10px;text-align:left;border:1px solid #1e3a5f}
+th{background:${_kc}15;color:${_kc};font-size:11px;font-weight:700;padding:8px 10px;text-align:left;border:1px solid ${_kc}33}
 td{border:1px solid #e2e8f0;padding:7px 10px;font-size:12px;vertical-align:top}
 tr:nth-child(even) td{background:#f8fafc}
 /* Info grid */
 .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
 .info-box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px}
-.info-label{font-size:10px;font-weight:700;color:#6366f1;letter-spacing:1px;margin-bottom:5px;text-transform:uppercase}
+.info-label{font-size:10px;font-weight:700;color:${_kc};letter-spacing:1px;margin-bottom:5px;text-transform:uppercase}
 .info-value{font-size:13px;color:#1e293b;font-weight:600;white-space:pre-wrap;line-height:1.5}
 /* 2컬럼 박스 */
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
@@ -8481,10 +8510,13 @@ tr:nth-child(even) td{background:#f8fafc}
 
 <!-- COVER -->
 <div class="page cover">
+  <div class="cover-version">${_cv.version || "Ver 1.0"}</div>
   <div class="company">(주)에픽스테이지</div>
-  <div class="event-name">${p.name||"행사명"}</div>
+  <div class="event-name">${_cv.eventName || p.name || "행사명"}</div>
   <div class="doc-type">${docTitle}</div>
-  <div class="year">${p.client ? p.client + "  ·  " : ""}${p.eventDate||""}</div>
+  <div class="year">${_cv.client || p.client || ""}${(_cv.client||p.client) && (_cv.eventDate||p.eventDate) ? "  ·  " : ""}${_cv.eventDate || p.eventDate || ""}</div>
+  ${(_cv.contactName || _cv.contactPhone) ? `<div class="contact">${_cv.contactName||""} ${_cv.contactPhone||""}</div>` : ""}
+  ${_cv.contactPoint ? `<div class="contact-point">Contact: ${_cv.contactPoint} ${_cv.contactPointPhone||""}</div>` : ""}
 </div>
 
 ${secEnabled("overview") ? `<!-- 01 OVER VIEW -->
@@ -8552,9 +8584,9 @@ ${secEnabled("design") ? `<!-- 03 DESIGN -->
     </div>
   </div>
   <div class="sec-body">
-    <div class="box-title" style="margin-bottom:8px">현수막/배너 목록</div>
+    <div class="box-title" style="margin-bottom:8px">디자인 제작물 목록</div>
     <table>
-      <thead><tr><th>#</th><th>품목명</th><th>규격 (mm)</th><th style="text-align:center">수량</th></tr></thead>
+      <thead><tr><th>#</th><th>품목명</th><th>카테고리</th><th>규격 (mm)</th><th style="text-align:center">수량</th></tr></thead>
       <tbody>${bannerRows}</tbody>
     </table>
     <div class="two-col">
@@ -8629,10 +8661,10 @@ ${secEnabled("operation") ? `<!-- 05 OPERATION -->
     </div>
   </div>
   <div class="sec-body">
-    <div class="two-col">
+    ${op.showMC ? `<div class="two-col">
       <div class="box"><div class="box-title">MC</div><div class="box-val"><strong>${op.mcName||""}</strong><br/>${op.mcProfile||""}</div></div>
       <div class="box"><div class="box-title">운영 특이사항</div><div class="box-val">${op.notes||""}</div></div>
-    </div>
+    </div>` : `<div class="box"><div class="box-title">운영 특이사항</div><div class="box-val">${op.notes||""}</div></div>`}
     <div class="box-title" style="margin-bottom:8px">스태프 배치</div>
     <table>
       <thead><tr><th>#</th><th>역할</th><th>이름</th><th>연락처</th><th>비고</th></tr></thead>
@@ -8681,6 +8713,9 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
     pptx.defineLayout({name:"A4_LAND",width:13.33,height:7.5});
     pptx.layout = "A4_LAND";
     const p = proj || {};
+    const _cv = docData._cover || {};
+    const _kc = docData._keyColor || "#6366f1";
+    const _kcHex = _kc.replace("#","").toUpperCase();
     const docTitle = isPlan ? "운영계획안" : "결과보고서";
     const footerTxt = `${p.name||""} ${docTitle} · (주)에픽스테이지`;
     const HDR_H = 1.0;
@@ -8697,10 +8732,11 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
         this.sl = pptx.addSlide();
         this.sl.background = {fill:"FFFFFF"};
         this.sl.addShape(pptx.ShapeType.rect,{x:0,y:0,w:"100%",h:HDR_H,fill:{color:"0F1623"}});
+        this.sl.addShape(pptx.ShapeType.rect,{x:0,y:0,w:0.06,h:HDR_H,fill:{color:_kcHex}});
         const lbl = this.page > 1 ? `${this.num} (${this.page})` : this.num;
-        this.sl.addText(lbl,{x:0.3,y:0.1,w:1.2,h:0.8,fontSize:36,color:"6366F1",bold:true});
+        this.sl.addText(lbl,{x:0.3,y:0.1,w:1.2,h:0.8,fontSize:36,color:_kcHex,bold:true});
         this.sl.addText(this.title,{x:1.5,y:0.15,w:8,h:0.4,fontSize:20,color:"FFFFFF",bold:true});
-        this.sl.addText(this.sub,{x:1.5,y:0.55,w:8,h:0.3,fontSize:9,color:"818CF8"});
+        this.sl.addText(this.sub,{x:1.5,y:0.55,w:8,h:0.3,fontSize:9,color:_kcHex});
         if (this.page > 1) this.sl.addText("continued",{x:10,y:0.55,w:3,h:0.3,fontSize:9,color:"F59E0B",align:"right",italic:true});
         this.sl.addText(footerTxt,{x:0,y:7.1,w:"100%",h:0.3,align:"right",fontSize:8,color:"94A3B8",margin:[0,20,0,0]});
         this.y = BODY_TOP;
@@ -8711,7 +8747,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
     }
 
     /* ── 공통 헬퍼 ── */
-    const tblHdr = (cols) => cols.map(c=>({text:c,options:{fontSize:9,bold:true,color:"FFFFFF",fill:{color:"0F1623"},align:"center",border:{pt:0.5,color:"E2E8F0"}}}));
+    const tblHdr = (cols) => cols.map(c=>({text:c,options:{fontSize:9,bold:true,color:"FFFFFF",fill:{color:_kcHex},align:"center",border:{pt:0.5,color:"E2E8F0"}}}));
     const tblRow = (cells) => cells.map(c=>({text:String(c||""),options:{fontSize:10,color:"1E293B",border:{pt:0.5,color:"E2E8F0"},valign:"middle"}}));
 
     const pmField = (pm, label, val, w, maxH) => {
@@ -8720,7 +8756,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
       const textH = Math.min(Math.max(lines.length * 0.22, 0.3), maxH||2.0);
       const totalH = 0.25 + textH + 0.1;
       pm.need(totalH);
-      pm.sl.addText(label,{x:0.5,y:pm.y,w:w||12.33,h:0.25,fontSize:9,color:"6366F1",bold:true,valign:"top"});
+      pm.sl.addText(label,{x:0.5,y:pm.y,w:w||12.33,h:0.25,fontSize:9,color:_kcHex,bold:true,valign:"top"});
       pm.sl.addText(String(val),{x:0.5,y:pm.y+0.25,w:w||12.33,h:textH,fontSize:11,color:"1E293B",valign:"top",wrap:true,lineSpacingMultiple:1.15});
       pm.y += totalH;
     };
@@ -8729,7 +8765,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
     const pmTable = (pm, label, hdrRow, dataRows, colW) => {
       if (!dataRows.length) return;
       pm.need(0.6);
-      pm.sl.addText(label,{x:0.5,y:pm.y,w:12.33,h:0.25,fontSize:9,color:"6366F1",bold:true});
+      pm.sl.addText(label,{x:0.5,y:pm.y,w:12.33,h:0.25,fontSize:9,color:_kcHex,bold:true});
       pm.y += 0.3;
       let idx = 0;
       while (idx < dataRows.length) {
@@ -8768,8 +8804,8 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
       const halfW = w || 6.0, gap = 0.33;
       if (!v1 && !v2) return;
       pm.need(0.65);
-      if (l1) pm.sl.addText(l1,{x:0.5,y:pm.y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-      if (l2) pm.sl.addText(l2,{x:0.5+halfW+gap,y:pm.y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
+      if (l1) pm.sl.addText(l1,{x:0.5,y:pm.y,w:halfW,h:0.22,fontSize:9,color:_kcHex,bold:true});
+      if (l2) pm.sl.addText(l2,{x:0.5+halfW+gap,y:pm.y,w:halfW,h:0.22,fontSize:9,color:_kcHex,bold:true});
       pm.y += 0.22;
       if (v1) pm.sl.addText(v1,{x:0.5,y:pm.y,w:halfW,h:0.3,fontSize:11,color:"1E293B"});
       if (v2) pm.sl.addText(v2,{x:0.5+halfW+gap,y:pm.y,w:halfW,h:0.3,fontSize:11,color:"1E293B"});
@@ -8782,8 +8818,8 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
       const l1n = (v1||"").split("\n").length, l2n = (v2||"").split("\n").length;
       const maxH = Math.min(Math.max(l1n, l2n) * 0.22, 2.0);
       pm.need(0.22 + maxH + 0.1);
-      if (l1) pm.sl.addText(l1,{x:0.5,y:pm.y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
-      if (l2) pm.sl.addText(l2,{x:0.5+halfW+gap,y:pm.y,w:halfW,h:0.22,fontSize:9,color:"6366F1",bold:true});
+      if (l1) pm.sl.addText(l1,{x:0.5,y:pm.y,w:halfW,h:0.22,fontSize:9,color:_kcHex,bold:true});
+      if (l2) pm.sl.addText(l2,{x:0.5+halfW+gap,y:pm.y,w:halfW,h:0.22,fontSize:9,color:_kcHex,bold:true});
       pm.y += 0.22;
       if (v1) pm.sl.addText(v1,{x:0.5,y:pm.y,w:halfW,h:maxH,fontSize:10,color:"1E293B",valign:"top",wrap:true,lineSpacingMultiple:1.15});
       if (v2) pm.sl.addText(v2,{x:0.5+halfW+gap,y:pm.y,w:halfW,h:maxH,fontSize:10,color:"1E293B",valign:"top",wrap:true,lineSpacingMultiple:1.15});
@@ -8793,10 +8829,15 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
     /* ── Cover Slide ── */
     const cover = pptx.addSlide();
     cover.background = {fill:"0F1623"};
-    cover.addText("(주)에픽스테이지",{x:0,y:1.8,w:"100%",h:0.5,align:"center",fontSize:12,color:"818CF8",letterSpacing:4});
-    cover.addText(p.name||"행사명",{x:0.5,y:2.8,w:12.33,h:1.2,align:"center",fontSize:32,color:"FFFFFF",bold:true});
-    cover.addText(docTitle,{x:0,y:4.2,w:"100%",h:0.5,align:"center",fontSize:16,color:"A5B4FC",bold:true});
-    cover.addText((p.client||"")+"  ·  "+(p.eventDate||""),{x:0,y:4.9,w:"100%",h:0.4,align:"center",fontSize:11,color:"94A3B8"});
+    cover.addShape(pptx.ShapeType.rect,{x:0,y:0,w:"100%",h:0.08,fill:{color:_kcHex}});
+    cover.addText(_cv.version||"Ver 1.0",{x:10,y:0.3,w:3,h:0.35,align:"right",fontSize:10,color:_kcHex,bold:true});
+    cover.addText("(주)에픽스테이지",{x:0,y:1.8,w:"100%",h:0.5,align:"center",fontSize:12,color:_kcHex,letterSpacing:4});
+    cover.addText(_cv.eventName||p.name||"행사명",{x:0.5,y:2.8,w:12.33,h:1.2,align:"center",fontSize:32,color:"FFFFFF",bold:true});
+    cover.addText(docTitle,{x:0,y:4.2,w:"100%",h:0.5,align:"center",fontSize:16,color:_kcHex+"CC",bold:true});
+    const _coverYear = (_cv.client||p.client||"") + ((_cv.client||p.client)&&(_cv.eventDate||p.eventDate) ? "  ·  " : "") + (_cv.eventDate||p.eventDate||"");
+    cover.addText(_coverYear,{x:0,y:4.9,w:"100%",h:0.4,align:"center",fontSize:11,color:"94A3B8"});
+    if (_cv.contactName||_cv.contactPhone) cover.addText((_cv.contactName||"")+" "+(_cv.contactPhone||""),{x:0,y:5.5,w:"100%",h:0.3,align:"center",fontSize:10,color:"94A3B8"});
+    if (_cv.contactPoint) cover.addText("Contact: "+_cv.contactPoint+" "+(_cv.contactPointPhone||""),{x:0,y:5.8,w:"100%",h:0.3,align:"center",fontSize:9,color:"64748B"});
 
     /* ── 01 Over View ── */
     if (secEnabled("overview")) (() => {
@@ -8829,9 +8870,9 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
       const d = sd("design");
       const _dsn = secNum("design");
       const pm = new PageMgr(_dsn,"Design","디자인 계획 | DESIGN PLAN");
-      pmTable(pm,"현수막/배너 목록",tblHdr(["#","품목명","규격 (mm)","수량"]),
-        (d.bannerList||[]).filter(b=>b.name).map((b,i)=>tblRow([i+1,b.name,b.size,b.qty])),
-        [0.5,5,4.5,2.33]);
+      pmTable(pm,"디자인 제작물 목록",tblHdr(["#","품목명","카테고리","규격 (mm)","수량"]),
+        (d.bannerList||[]).filter(b=>b.name).map((b,i)=>tblRow([i+1,b.name,b.category||"",b.size,b.qty])),
+        [0.5,4,2.5,3.5,2.33]);
       pm2ColBig(pm,"디지털/영상 계획",d.videoNotes,"인쇄물",d.printNotes);
       pmField(pm,"LED/스크린 계획",d.ledNotes,12.33,1.0);
       if (!isPlan) pmField(pm,"결과 메모",d.resultNotes,12.33,0.8);
@@ -8860,9 +8901,9 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
     })();
 
     /* ── 04 Program ── */
-    (() => {
+    if (secEnabled("program")) (() => {
       const d = sd("program");
-      const pm = new PageMgr("04","Program","진행 순서 | EVENT PROGRAM");
+      const pm = new PageMgr(secNum("program"),"Program","진행 순서 | EVENT PROGRAM");
       pmTable(pm,"타임테이블 / 진행순서",tblHdr(["#","시간","소요(분)","내용","비고"]),
         (d.timeline||[]).filter(t=>t.time||t.content).map((t,i)=>tblRow([i+1,t.time,t.duration,t.content,t.note])),
         [0.5,2,1.2,5.63,3]);
@@ -8872,10 +8913,10 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
     })();
 
     /* ── 05 Operation ── */
-    (() => {
+    if (secEnabled("operation")) (() => {
       const d = sd("operation");
-      const pm = new PageMgr("05","Operation","운영 계획 | OPERATION PLAN");
-      pm2Col(pm,"MC 이름",d.mcName||"","MC 프로필",d.mcProfile||"");
+      const pm = new PageMgr(secNum("operation"),"Operation","운영 계획 | OPERATION PLAN");
+      if (d.showMC) pm2Col(pm,"MC 이름",d.mcName||"","MC 프로필",d.mcProfile||"");
       pmField(pm,"운영 특이사항",d.notes,12.33,0.8);
       pmTable(pm,"스태프 배치",tblHdr(["#","역할","이름","연락처","비고"]),
         (d.staffList||[]).filter(s=>s.role||s.name).map((s,i)=>tblRow([i+1,s.role,s.name,s.contact,s.note])),
@@ -8887,11 +8928,11 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
     })();
 
     /* ── 06 Time Line ── */
-    (() => {
+    if (secEnabled("timeline")) (() => {
       const d = sd("timeline");
-      const pm = new PageMgr("06","Time Line","일정 계획 | PROJECT TIMELINE");
+      const pm = new PageMgr(secNum("timeline"),"Time Line","일정 계획 | PROJECT TIMELINE");
       const mlList = (d.milestones||[]).filter(m=>m.task);
-      const STATUS_CLR = {"완료":"10B981","진행중":"F59E0B","예정":"6366F1"};
+      const STATUS_CLR = {"완료":"10B981","진행중":"F59E0B","예정":_kcHex};
       if (mlList.length) {
         pmTable(pm,"타임라인 (간트차트 연동)",tblHdr(["구분","항목","시작일","종료일","진행률","상태"]),
           mlList.map(m=>[
@@ -9044,7 +9085,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
       };
 
       const designItemsList = getDesignItems();
-      const bnList = getList("design","bannerList",{name:"",size:"",qty:""});
+      const bnList = getList("design","bannerList",{name:"",category:"",size:"",qty:""});
       const activeItemObj = designItemsList.find(d=>d._id===activeDesignItem);
 
       return (
@@ -9096,14 +9137,15 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
           {!activeItemObj && (
             <div>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-                <label className="form-label" style={{margin:0}}>현수막/배너 목록</label>
-                <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("design","bannerList",{name:"",size:"",qty:""})}>+ 항목 추가</button>
+                <label className="form-label" style={{margin:0}}>디자인 제작물 목록</label>
+                <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("design","bannerList",{name:"",category:"",size:"",qty:""})}>+ 항목 추가</button>
               </div>
               <div style={{overflowX:"auto",marginBottom:16}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                   <thead><tr style={{background:"rgba(99,102,241,.1)"}}>
                     <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:30}}>#</th>
                     <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)"}}>품목명</th>
+                    <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)"}}>카테고리</th>
                     <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)"}}>규격 (mm)</th>
                     <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:60}}>수량</th>
                     <th style={{width:36,border:"1px solid rgba(255,255,255,.07)"}}></th>
@@ -9112,7 +9154,8 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
                     {bnList.map((item,idx)=>(
                       <tr key={idx}>
                         <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.name||""} onChange={e=>updateListItem("design","bannerList",idx,"name",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="현수막명/용도"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.name||""} onChange={e=>updateListItem("design","bannerList",idx,"name",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="품목명/용도"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.category||""} onChange={e=>updateListItem("design","bannerList",idx,"category",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="현수막, 배너, 포스터 등"/></td>
                         <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.size||""} onChange={e=>updateListItem("design","bannerList",idx,"size",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="예) 3000*2000"/></td>
                         <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.qty||""} onChange={e=>updateListItem("design","bannerList",idx,"qty",e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="0"/></td>
                         <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("design","bannerList",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
@@ -9224,12 +9267,26 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
       const prList = getList("operation","prizeList",{grade:"",item:"",qty:"",note:""});
       return (
         <div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:4}}>
-            <DocFG label="MC 이름"><input className="form-input" value={op.mcName||""} onChange={e=>updateDoc("operation","mcName",e.target.value)} placeholder="MC 이름"/></DocFG>
-            <DocFG label="MC 프로필">
-              <textarea className="form-input" rows={2} value={op.mcProfile||""} onChange={e=>updateDoc("operation","mcProfile",e.target.value)} placeholder="방송 경력 등" style={{resize:"vertical"}}/>
-            </DocFG>
+          {/* MC 토글 */}
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12,padding:"10px 14px",background:"rgba(99,102,241,.04)",border:"1px solid rgba(99,102,241,.12)",borderRadius:8}}>
+            <span style={{fontSize:12,fontWeight:700,color:"var(--txt2)"}}>MC 정보</span>
+            <div onClick={()=>updateDoc("operation","showMC",!op.showMC)} style={{
+              width:40,height:22,borderRadius:11,cursor:"pointer",position:"relative",transition:"all .2s",
+              background:op.showMC?"rgba(99,102,241,.6)":"rgba(255,255,255,.12)",border:"1px solid",borderColor:op.showMC?"rgba(99,102,241,.8)":"rgba(255,255,255,.15)"
+            }}>
+              <div style={{width:16,height:16,borderRadius:"50%",background:"#fff",position:"absolute",top:2,transition:"all .2s",
+                left:op.showMC?20:2,boxShadow:"0 1px 3px rgba(0,0,0,.2)"}}/>
+            </div>
+            <span style={{fontSize:11,color:"var(--txt4)"}}>{op.showMC ? "MC 섹션 표시" : "MC 섹션 숨김"}</span>
           </div>
+          {op.showMC && (
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:4}}>
+              <DocFG label="MC 이름"><input className="form-input" value={op.mcName||""} onChange={e=>updateDoc("operation","mcName",e.target.value)} placeholder="MC 이름"/></DocFG>
+              <DocFG label="MC 프로필">
+                <textarea className="form-input" rows={2} value={op.mcProfile||""} onChange={e=>updateDoc("operation","mcProfile",e.target.value)} placeholder="방송 경력 등" style={{resize:"vertical"}}/>
+              </DocFG>
+            </div>
+          )}
           <DocFG label="운영 특이사항">
             <textarea className="form-input" rows={2} value={op.notes||""} onChange={e=>updateDoc("operation","notes",e.target.value)} placeholder="운영 관련 특이사항" style={{resize:"vertical"}}/>
           </DocFG>
@@ -9436,7 +9493,10 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
             <div style={{width:8,height:8,borderRadius:"50%",background:saveStatus==="saved"?"#10b981":saveStatus==="saving"?"#f59e0b":"#ef4444"}}/>
             <span style={{fontSize:11,color:"var(--txt4)"}}>{saveStatus==="saved"?"저장됨":saveStatus==="saving"?"저장 중...":"변경됨"}</span>
           </div>
-          <button onClick={()=>setShowSectionMgr(!showSectionMgr)} className="btn" style={{background:"rgba(99,102,241,.06)",border:"1px solid rgba(99,102,241,.15)",color:"#818cf8",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
+          <button onClick={()=>{setShowCoverEdit(!showCoverEdit);if(showSectionMgr)setShowSectionMgr(false);}} className="btn" style={{background:"rgba(99,102,241,.06)",border:"1px solid rgba(99,102,241,.15)",color:"#818cf8",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
+            표지 설정
+          </button>
+          <button onClick={()=>{setShowSectionMgr(!showSectionMgr);if(showCoverEdit)setShowCoverEdit(false);}} className="btn" style={{background:"rgba(99,102,241,.06)",border:"1px solid rgba(99,102,241,.15)",color:"#818cf8",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
             ⚙️ 섹션 관리
           </button>
           <button onClick={()=>saveVersion()} className="btn" style={{background:"rgba(99,102,241,.1)",border:"1px solid rgba(99,102,241,.25)",color:"#a5b4fc",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
@@ -9454,6 +9514,61 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
           </button>
         </div>
       </div>
+
+      {/* 표지 설정 패널 */}
+      {showCoverEdit && (
+        <div className="card" style={{marginBottom:16,border:"1px solid rgba(99,102,241,.2)",background:"rgba(99,102,241,.03)"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+            <div style={{fontWeight:800,fontSize:14,color:"var(--txt)"}}>표지 설정</div>
+            <button onClick={()=>setShowCoverEdit(false)} style={{background:"none",border:"none",color:"var(--txt4)",cursor:"pointer",fontSize:18}}>x</button>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+            <DocFG label="행사명 (표지)">
+              <input className="form-input" value={cv.eventName||""} onChange={e=>updateCover("eventName",e.target.value)} placeholder={proj?.name||"행사명 (비워두면 프로젝트명 사용)"}/>
+            </DocFG>
+            <DocFG label="버전">
+              <input className="form-input" value={cv.version||""} onChange={e=>updateCover("version",e.target.value)} placeholder="Ver 1.0"/>
+            </DocFG>
+            <DocFG label="클라이언트">
+              <input className="form-input" value={cv.client||""} onChange={e=>updateCover("client",e.target.value)} placeholder={proj?.client||"클라이언트명 (비워두면 프로젝트 정보 사용)"}/>
+            </DocFG>
+            <DocFG label="행사 일시">
+              <input className="form-input" value={cv.eventDate||""} onChange={e=>updateCover("eventDate",e.target.value)} placeholder={proj?.eventDate||"행사 일시 (비워두면 프로젝트 정보 사용)"}/>
+            </DocFG>
+            <DocFG label="담당자명">
+              <input className="form-input" value={cv.contactName||""} onChange={e=>updateCover("contactName",e.target.value)} placeholder="담당자 이름"/>
+            </DocFG>
+            <DocFG label="담당자 연락처">
+              <input className="form-input" value={cv.contactPhone||""} onChange={e=>updateCover("contactPhone",e.target.value)} placeholder="담당자 전화번호"/>
+            </DocFG>
+            <DocFG label="Contact Point">
+              <input className="form-input" value={cv.contactPoint||""} onChange={e=>updateCover("contactPoint",e.target.value)} placeholder="Contact Point 이름"/>
+            </DocFG>
+            <DocFG label="Contact Point 연락처">
+              <input className="form-input" value={cv.contactPointPhone||""} onChange={e=>updateCover("contactPointPhone",e.target.value)} placeholder="Contact Point 전화번호"/>
+            </DocFG>
+          </div>
+          {/* 키컬러 설정 */}
+          <div style={{borderTop:"1px solid var(--border)",paddingTop:12,marginTop:4}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+              <span style={{fontSize:12,fontWeight:700,color:"var(--txt2)"}}>키컬러</span>
+              <span style={{fontSize:11,color:"var(--txt4)"}}>PDF/PPT 문서의 강조 색상</span>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+              {["#6366f1","#ef4444","#f59e0b","#10b981","#3b82f6","#8b5cf6","#ec4899","#0f172a"].map(c=>(
+                <div key={c} onClick={()=>setDocData(prev=>({...prev,_keyColor:c}))}
+                  style={{width:28,height:28,borderRadius:"50%",background:c,cursor:"pointer",border:kc===c?"3px solid #fff":"3px solid transparent",boxShadow:kc===c?"0 0 0 2px "+c:"none",transition:"all .15s"}}/>
+              ))}
+              <div style={{position:"relative",marginLeft:8}}>
+                <input type="color" value={kc} onChange={e=>setDocData(prev=>({...prev,_keyColor:e.target.value}))}
+                  style={{width:28,height:28,border:"none",padding:0,cursor:"pointer",borderRadius:"50%",background:"none"}}/>
+              </div>
+              <div style={{width:20,height:20,borderRadius:4,background:kc,marginLeft:4}}/>
+              <span style={{fontSize:11,color:"var(--txt4)",fontFamily:"monospace"}}>{kc}</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 버전 관리 패널 */}
       {showVersions && (
@@ -9492,34 +9607,57 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
         <div className="card" style={{marginBottom:16,border:"1px solid rgba(99,102,241,.2)",background:"rgba(99,102,241,.03)"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
             <div style={{fontWeight:800,fontSize:14,color:"var(--txt)"}}>⚙️ 섹션 구성 관리</div>
-            <button onClick={()=>setShowSectionMgr(false)} style={{background:"none",border:"none",color:"var(--txt4)",cursor:"pointer",fontSize:18}}>×</button>
+            <button onClick={()=>setShowSectionMgr(false)} style={{background:"none",border:"none",color:"var(--txt4)",cursor:"pointer",fontSize:18}}>x</button>
           </div>
-          <div style={{fontSize:12,color:"var(--txt3)",marginBottom:12}}>행사에 필요한 섹션만 선택하세요. 선택하지 않은 섹션은 PDF/PPT 출력에서도 제외됩니다.</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
-            {ALL_DOC_SECTIONS.map(sec=>{
-              const isOn = enabledIds.includes(sec.id);
-              return (
-                <button key={sec.id} onClick={()=>{
-                  const cur = docData._enabledSections || ALL_DOC_SECTIONS.map(s=>s.id);
-                  const next = isOn ? cur.filter(id=>id!==sec.id) : [...cur, sec.id];
-                  if (next.length === 0) { toast("최소 1개 섹션은 필요합니다","warn"); return; }
-                  setDocData(prev=>({...prev, _enabledSections:next}));
-                  if (isOn && activeSection===sec.id) setActiveSection(next[0]);
-                }}
-                style={{
-                  padding:"12px",borderRadius:8,cursor:"pointer",textAlign:"center",transition:"all .15s",
-                  background:isOn?"rgba(99,102,241,.12)":"rgba(255,255,255,.02)",
-                  border:isOn?"1px solid rgba(99,102,241,.4)":"1px solid rgba(255,255,255,.08)",
-                  opacity:isOn?1:0.5,
-                }}>
-                  <div style={{fontSize:20,marginBottom:4}}>{sec.icon}</div>
-                  <div style={{fontSize:12,fontWeight:isOn?700:500,color:isOn?"#a5b4fc":"var(--txt4)"}}>{sec.title}</div>
-                  <div style={{fontSize:10,color:"var(--txt4)",marginTop:2}}>{sec.desc}</div>
-                  <div style={{fontSize:10,marginTop:6,color:isOn?"#10b981":"#ef4444",fontWeight:700}}>{isOn?"✓ 사용":"미사용"}</div>
-                </button>
-              );
-            })}
+          <div style={{fontSize:12,color:"var(--txt3)",marginBottom:12}}>섹션을 켜고 끄거나 순서를 변경하세요. 꺼진 섹션은 PDF/PPT 출력에서도 제외됩니다.</div>
+          {/* 활성 섹션 (순서대로) */}
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#818cf8",marginBottom:6}}>활성 섹션</div>
+            <div style={{display:"flex",flexDirection:"column",gap:4}}>
+              {enabledIds.map((id,idx)=>{
+                const sec = ALL_DOC_SECTIONS.find(s=>s.id===id);
+                if (!sec) return null;
+                return (
+                  <div key={id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",background:"rgba(99,102,241,.08)",border:"1px solid rgba(99,102,241,.25)",borderRadius:8}}>
+                    <span style={{fontSize:16}}>{sec.icon}</span>
+                    <span style={{fontSize:12,fontWeight:700,color:"#a5b4fc",minWidth:30}}>{String(idx+1).padStart(2,"0")}</span>
+                    <span style={{flex:1,fontSize:13,fontWeight:600,color:"var(--txt)"}}>{sec.title} <span style={{fontSize:11,color:"var(--txt3)",fontWeight:400}}>- {sec.desc}</span></span>
+                    <button onClick={()=>moveSection(id,-1)} disabled={idx===0} style={{background:"rgba(255,255,255,.08)",border:"1px solid rgba(255,255,255,.1)",color:idx===0?"var(--txt4)":"var(--txt2)",borderRadius:4,padding:"3px 8px",cursor:idx===0?"default":"pointer",fontSize:12,fontWeight:700}}>&#9650;</button>
+                    <button onClick={()=>moveSection(id,1)} disabled={idx===enabledIds.length-1} style={{background:"rgba(255,255,255,.08)",border:"1px solid rgba(255,255,255,.1)",color:idx===enabledIds.length-1?"var(--txt4)":"var(--txt2)",borderRadius:4,padding:"3px 8px",cursor:idx===enabledIds.length-1?"default":"pointer",fontSize:12,fontWeight:700}}>&#9660;</button>
+                    <button onClick={()=>{
+                      const cur = docData._enabledSections || ALL_DOC_SECTIONS.map(s=>s.id);
+                      const next = cur.filter(eid=>eid!==id);
+                      if (next.length===0) { toast("최소 1개 섹션은 필요합니다","warn"); return; }
+                      setDocData(prev=>({...prev, _enabledSections:next}));
+                      if (activeSection===id) setActiveSection(next[0]);
+                    }} style={{background:"rgba(239,68,68,.1)",border:"1px solid rgba(239,68,68,.2)",color:"#f87171",borderRadius:4,padding:"3px 8px",cursor:"pointer",fontSize:11,fontWeight:700}}>끄기</button>
+                  </div>
+                );
+              })}
+            </div>
           </div>
+          {/* 비활성 섹션 */}
+          {(() => {
+            const disabledSecs = ALL_DOC_SECTIONS.filter(s=>!enabledIds.includes(s.id));
+            if (!disabledSecs.length) return null;
+            return (
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:"var(--txt4)",marginBottom:6}}>비활성 섹션</div>
+                <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                  {disabledSecs.map(sec=>(
+                    <div key={sec.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.06)",borderRadius:8,opacity:0.6}}>
+                      <span style={{fontSize:16}}>{sec.icon}</span>
+                      <span style={{flex:1,fontSize:13,color:"var(--txt4)"}}>{sec.title} - {sec.desc}</span>
+                      <button onClick={()=>{
+                        const cur = docData._enabledSections || ALL_DOC_SECTIONS.map(s=>s.id);
+                        setDocData(prev=>({...prev, _enabledSections:[...cur, sec.id]}));
+                      }} style={{background:"rgba(16,185,129,.1)",border:"1px solid rgba(16,185,129,.2)",color:"#34d399",borderRadius:4,padding:"3px 10px",cursor:"pointer",fontSize:11,fontWeight:700}}>켜기</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
