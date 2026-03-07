@@ -8560,7 +8560,6 @@ function DocEditorPanel({docType, project}) {
             ${pageImgs.map(img => `
               <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%">
                 <img src="${img.data}" style="width:100%;max-height:${cols===1?'85vh':cols===2?'70vh':'55vh'};object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block"/>
-                ${img.name?`<div style="margin-top:6px;font-size:9px;color:#94a3b8;text-align:center">${img.name}</div>`:""}
               </div>`).join("")}
           </div>
         </div>`).join("");
@@ -8694,10 +8693,10 @@ ${secEnabled("overview") ? `<!-- 01 OVER VIEW -->
       <div class="box"><div class="box-title">지원 사항</div><div class="box-val">${ov.support||""}</div></div>
     </div>
     ${ov.extraNotes ? `<div class="box"><div class="box-title">기타사항</div><div class="box-val">${ov.extraNotes}</div></div>` : ""}
-    ${imgHtml("overview")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>` : ""}
+</div>
+${imgHtml("overview")}` : ""}
 
 ${secEnabled("venue") ? `<!-- 02 VENUE -->
 <div class="page sec-page">
@@ -8722,10 +8721,10 @@ ${secEnabled("venue") ? `<!-- 02 VENUE -->
         ${(ve.equipList||[]).map((e,i)=>`<tr><td>${i+1}</td><td>${e.name||""}</td><td>${e.spec||""}</td><td style="text-align:center">${e.qty||""}</td><td>${e.note||""}</td></tr>`).join("")||`<tr><td colspan="5" style="text-align:center;color:#888">장비 목록 없음</td></tr>`}
       </tbody>
     </table>
-    ${imgHtml("venue")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>` : ""}
+</div>
+${imgHtml("venue")}` : ""}
 
 ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   const vImgs = (vItem.images||[]);
@@ -8740,7 +8739,6 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
         <div style="display:grid;grid-template-columns:repeat(${Math.min(pg.length,vCols)},1fr);gap:16px;width:100%;flex:1;align-items:center">
           ${pg.map(img=>`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%">
             <img src="${img.data}" style="width:100%;max-height:${vCols===1?'85vh':'70vh'};object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
-            ${img.name?`<div style="margin-top:6px;font-size:9px;color:#94a3b8;text-align:center">${img.name}</div>`:""}
           </div>`).join("")}
         </div>
       </div>`).join("");
@@ -8756,10 +8754,10 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   </div>
   <div class="sec-body">
     ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
-    ${vImgHtml}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
-</div>`;
+</div>
+${vImgHtml}`;
 }).join("\\n") : ""}
 
 ${secEnabled("design") ? `<!-- 03 DESIGN -->
@@ -8783,10 +8781,10 @@ ${secEnabled("design") ? `<!-- 03 DESIGN -->
     </div>
     <div class="box"><div class="box-title">LED/스크린 계획</div><div class="box-val">${de.ledNotes||""}</div></div>
     ${isPlan ? "" : `<div class="box-title" style="margin-top:8px;margin-bottom:8px">현장 사진</div><div class="photo-grid">${[1,2,3,4,5,6].map(()=>`<div class="photo-box">사진 첨부</div>`).join("")}</div>`}
-    ${imgHtml("design")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>` : ""}
+</div>
+${imgHtml("design")}` : ""}
 
 ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   const dImgs = (dItem.images||[]);
@@ -8797,7 +8795,6 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
         <div style="display:grid;grid-template-columns:repeat(${Math.min(dImgs.length,dCols)},1fr);gap:16px;width:100%;flex:1;align-items:center">
           ${dImgs.map(img=>`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%">
             <img src="${img.data}" style="width:100%;max-height:${dCols===1?'85vh':'70vh'};object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
-            ${img.name?`<div style="margin-top:6px;font-size:9px;color:#94a3b8;text-align:center">${img.name}</div>`:""}
           </div>`).join("")}
         </div>
       </div>` : "";
@@ -8818,10 +8815,10 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
       <div class="info-box"><div class="info-label">수량</div><div class="info-value">${dItem.qty||1}</div></div>
     </div>
     ${dItem.notes?`<div class="box"><div class="box-title">메모</div><div class="box-val">${dItem.notes}</div></div>`:""}
-    ${dImgGrid}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
-</div>`;
+</div>
+${dImgGrid}`;
 }).join("\n") : ""}
 
 ${secEnabled("program") ? `<!-- 04 PROGRAM -->
@@ -8840,10 +8837,10 @@ ${secEnabled("program") ? `<!-- 04 PROGRAM -->
     </table>
     ${pr.mcInfo ? `<div class="box"><div class="box-title">MC 진행 메모</div><div class="box-val">${pr.mcInfo}</div></div>` : ""}
     ${isPlan ? "" : `<div class="box"><div class="box-title">프로그램 결과 메모</div><div class="box-val">${pr.resultNotes||""}</div></div>`}
-    ${imgHtml("program")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>` : ""}
+</div>
+${imgHtml("program")}` : ""}
 
 ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).length ? `
 <div class="page sec-page" style="page-break-before:always">
@@ -8931,10 +8928,10 @@ ${secEnabled("operation") ? `<!-- 05 OPERATION -->
       <thead><tr><th>#</th><th>등급</th><th>품목</th><th style="text-align:center">수량</th><th>비고</th></tr></thead>
       <tbody>${prizeRows}</tbody>
     </table>` : ""}
-    ${imgHtml("operation")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>` : ""}
+</div>
+${imgHtml("operation")}` : ""}
 
 ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
 <div class="page sec-page">
@@ -8951,10 +8948,10 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
       <tbody>${milestoneRows}</tbody>
     </table>
     ${tl.ganttNotes ? `<div class="box"><div class="box-title">일정 메모</div><div class="box-val">${tl.ganttNotes}</div></div>` : ""}
-    ${imgHtml("timeline")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>` : ""}
+</div>
+${imgHtml("timeline")}` : ""}
 
 </body></html>`;
     W.document.write(html);
