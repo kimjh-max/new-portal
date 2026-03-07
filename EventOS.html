@@ -8122,8 +8122,53 @@ function FilesPage({projects}) {
   async function saveToIDB(key,data){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readwrite");tx.objectStore(IDB_STORE).put(data,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
   async function loadFromIDB(key){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
 
+    /* ──────── Draggable Tab List ──────── */
+    function DraggableTabList({items, activeId, onSelect, onReorder, onAdd, renderLabel, addLabel="+ 추가"}) {
+      const [dragIdx, setDragIdx] = React.useState(null);
+      const [overIdx, setOverIdx] = React.useState(null);
+
+      const handleDragStart = (e, idx) => { setDragIdx(idx); e.dataTransfer.effectAllowed = "move"; };
+      const handleDragOver = (e, idx) => { e.preventDefault(); setOverIdx(idx); };
+      const handleDragEnd = () => {
+        if (dragIdx !== null && overIdx !== null && dragIdx !== overIdx) {
+          const newItems = [...items];
+          const [moved] = newItems.splice(dragIdx, 1);
+          newItems.splice(overIdx, 0, moved);
+          onReorder(newItems);
+        }
+        setDragIdx(null); setOverIdx(null);
+      };
+
+      return React.createElement("div", {style:{display:"flex",gap:4,overflowX:"auto",marginBottom:16,paddingBottom:8,borderBottom:"1px solid var(--border)",flexWrap:"wrap"}},
+        items.map((item, idx) =>
+          React.createElement("div", {
+            key: item._id || idx,
+            draggable: true,
+            onDragStart: e => handleDragStart(e, idx),
+            onDragOver: e => handleDragOver(e, idx),
+            onDragEnd: handleDragEnd,
+            onClick: () => onSelect(item._id || idx),
+            style: {
+              padding: "8px 14px", borderRadius: 8, cursor: "grab", fontSize: 12,
+              fontWeight: activeId === (item._id||idx) ? 700 : 500,
+              background: activeId === (item._id||idx) ? "rgba(99,102,241,.15)" : dragIdx === idx ? "rgba(99,102,241,.08)" : "transparent",
+              color: activeId === (item._id||idx) ? "#a5b4fc" : "var(--txt3)",
+              border: overIdx === idx && dragIdx !== null ? "2px dashed #818cf8" : "2px solid transparent",
+              transition: "all .15s", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, minWidth: 80,
+              opacity: dragIdx === idx ? 0.5 : 1,
+              userSelect: "none"
+            }
+          }, renderLabel(item, idx))
+        ),
+        onAdd && React.createElement("button", {
+          onClick: onAdd,
+          style: {padding:"8px 14px",borderRadius:8,border:"1px dashed rgba(255,255,255,.15)",background:"transparent",color:"var(--txt4)",cursor:"pointer",fontSize:12}
+        }, addLabel)
+      );
+    }
+
 /* ── Section Image Uploader ────────────────────────────────────────────────── */
-function SectionImages({sectionId, images, onUpdate}) {
+function SectionImages({sectionId, images, onUpdate, layoutMode, onLayoutChange}) {
   const fileRef = useRef(null);
   const [annotating, setAnnotating] = useState(null);
   const [annoText, setAnnoText] = useState("");
@@ -8180,6 +8225,36 @@ function SectionImages({sectionId, images, onUpdate}) {
           이미지를 추가하면 보고서 PDF/PPT에 포함됩니다
         </div>
       )}
+
+      {(images||[]).length > 0 && (
+            <div style={{marginBottom:12,padding:10,background:"rgba(99,102,241,.05)",borderRadius:8,border:"1px solid rgba(99,102,241,.1)"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <span style={{fontSize:11,fontWeight:700,color:"var(--txt3)"}}>PDF 레이아웃</span>
+                {[1,2,3,4].map(n=>(
+                  <button key={n} onClick={()=>onLayoutChange && onLayoutChange(n)} style={{
+                    padding:"4px 10px",borderRadius:6,fontSize:11,fontWeight:(layoutMode||0)===n?700:500,cursor:"pointer",
+                    background:(layoutMode||0)===n?"rgba(99,102,241,.2)":"rgba(255,255,255,.05)",
+                    color:(layoutMode||0)===n?"#a5b4fc":"var(--txt4)",border:(layoutMode||0)===n?"1px solid #818cf8":"1px solid rgba(255,255,255,.08)"
+                  }}>{n}열</button>
+                ))}
+                <button onClick={()=>onLayoutChange && onLayoutChange(0)} style={{
+                  padding:"4px 10px",borderRadius:6,fontSize:11,fontWeight:(!layoutMode||layoutMode===0)?700:500,cursor:"pointer",
+                  background:(!layoutMode||layoutMode===0)?"rgba(99,102,241,.2)":"rgba(255,255,255,.05)",
+                  color:(!layoutMode||layoutMode===0)?"#a5b4fc":"var(--txt4)",border:(!layoutMode||layoutMode===0)?"1px solid #818cf8":"1px solid rgba(255,255,255,.08)"
+                }}>자동</button>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:`repeat(${layoutMode||Math.min((images||[]).length,3)},1fr)`,gap:8,background:"#fff",borderRadius:6,padding:12,minHeight:80}}>
+                {(images||[]).map((img,i)=>(
+                  <div key={i} style={{aspectRatio:"16/10",background:"#f1f5f9",borderRadius:4,overflow:"hidden",border:"1px solid #e2e8f0",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                    <img src={img.data} style={{width:"100%",height:"100%",objectFit:"contain"}} alt=""/>
+                  </div>
+                ))}
+              </div>
+              <div style={{fontSize:10,color:"var(--txt4)",marginTop:6,textAlign:"center"}}>
+                PDF 출력 시 {layoutMode||"자동"}열 그리드로 배치됩니다
+              </div>
+            </div>
+          )}
 
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10,marginTop:8}}>
         {(images||[]).map((img,idx)=>(
@@ -8471,38 +8546,24 @@ function DocEditorPanel({docType, project}) {
     };
 
     const imgHtml = (sectionId) => {
-      const imgs = sd(sectionId).images || [];
+      const sec = sd(sectionId);
+      const imgs = sec.images || [];
       if (!imgs.length) return "";
-      if (imgs.length === 1) {
-        const img = imgs[0];
-        return `
-        <div class="page-break" style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
-          <div style="flex:1;display:flex;align-items:center;justify-content:center;width:100%">
-            <img src="${img.data}" style="width:100%;max-height:85vh;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block"/>
-          </div>
-          ${(img.annotations||[]).length ? `<div style="margin-top:12px;padding:8px 16px;background:#f8fafc;border-radius:6px;font-size:11px;color:#475569;text-align:center;border:1px solid #e2e8f0">${img.annotations.map(a=>a.text).join(" · ")}</div>` : ""}
-          ${img.name ? `<div style="margin-top:6px;font-size:10px;color:#94a3b8">${img.name}</div>` : ""}
-        </div>`;
-      }
-      // Multiple images: group them on pages, max 2 per page for readability
+      const layout = sec.imageLayout || 0;
+      const cols = layout || (imgs.length === 1 ? 1 : imgs.length === 2 ? 2 : imgs.length <= 4 ? 2 : 3);
+      const perPage = cols <= 2 ? cols : cols;
       const pages = [];
-      for (let i = 0; i < imgs.length; i += 2) {
-        pages.push(imgs.slice(i, i + 2));
-      }
-      return pages.map(pageImgs => {
-        const cols = pageImgs.length;
-        const gridItems = pageImgs.map(img => `
-          <div style="display:flex;flex-direction:column;align-items:center;justify-content:center">
-            <img src="${img.data}" style="width:100%;max-height:70vh;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block"/>
-            ${img.name ? `<div style="margin-top:6px;font-size:9px;color:#94a3b8;text-align:center">${img.name}</div>` : ""}
-          </div>`).join("");
-        return `
+      for (let i = 0; i < imgs.length; i += perPage) pages.push(imgs.slice(i, i + perPage));
+      return pages.map(pageImgs => `
         <div class="page-break" style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
-          <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:20px;width:100%;flex:1;align-items:center">
-            ${gridItems}
+          <div style="display:grid;grid-template-columns:repeat(${Math.min(pageImgs.length, cols)},1fr);gap:16px;width:100%;flex:1;align-items:center">
+            ${pageImgs.map(img => `
+              <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%">
+                <img src="${img.data}" style="width:100%;max-height:${cols===1?'85vh':cols===2?'70vh':'55vh'};object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block"/>
+                ${img.name?`<div style="margin-top:6px;font-size:9px;color:#94a3b8;text-align:center">${img.name}</div>`:""}
+              </div>`).join("")}
           </div>
-        </div>`;
-      }).join("");
+        </div>`).join("");
     };
 
     const bannerRows = (de.bannerList||[]).map((b,i)=>`
@@ -8668,29 +8729,21 @@ ${secEnabled("venue") ? `<!-- 02 VENUE -->
 
 ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   const vImgs = (vItem.images||[]);
+  const vLayout = vItem.imageLayout || 0;
+  const vCols = vLayout || (vImgs.length === 1 ? 1 : 2);
   let vImgHtml = "";
-  if (vImgs.length === 1) {
-    const img = vImgs[0];
-    vImgHtml = `<div style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
-      <div style="flex:1;display:flex;align-items:center;justify-content:center;width:100%">
-        <img src="${img.data}" style="width:100%;max-height:85vh;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
-      </div>
-      ${(img.annotations||[]).length?`<div style="margin-top:12px;padding:8px 16px;background:#f8fafc;border-radius:6px;font-size:11px;color:#475569;text-align:center;border:1px solid #e2e8f0">${img.annotations.map(a=>a.text).join(" · ")}</div>`:""}
-    </div>`;
-  } else if (vImgs.length > 1) {
+  if (vImgs.length) {
     const pages = [];
-    for (let i = 0; i < vImgs.length; i += 2) pages.push(vImgs.slice(i, i + 2));
-    vImgHtml = pages.map(pg => {
-      const cols = pg.length;
-      return `<div style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
-        <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:20px;width:100%;flex:1;align-items:center">
-          ${pg.map(img=>`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center">
-            <img src="${img.data}" style="width:100%;max-height:70vh;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
+    for (let i = 0; i < vImgs.length; i += vCols) pages.push(vImgs.slice(i, i + vCols));
+    vImgHtml = pages.map(pg => `
+      <div style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
+        <div style="display:grid;grid-template-columns:repeat(${Math.min(pg.length,vCols)},1fr);gap:16px;width:100%;flex:1;align-items:center">
+          ${pg.map(img=>`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%">
+            <img src="${img.data}" style="width:100%;max-height:${vCols===1?'85vh':'70vh'};object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
             ${img.name?`<div style="margin-top:6px;font-size:9px;color:#94a3b8;text-align:center">${img.name}</div>`:""}
           </div>`).join("")}
         </div>
-      </div>`;
-    }).join("");
+      </div>`).join("");
   }
   return `
 <div class="page sec-page">
@@ -8737,13 +8790,17 @@ ${secEnabled("design") ? `<!-- 03 DESIGN -->
 
 ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   const dImgs = (dItem.images||[]);
-  const dImgGrid = dImgs.length ? `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:20px">${dImgs.map(img=>`
-    <div style="border-radius:8px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06)">
-      <div style="width:100%;aspect-ratio:16/10;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#f8fafc">
-        <img src="${img.data}" style="width:100%;height:100%;object-fit:contain;display:block"/>
-      </div>
-      ${(img.annotations||[]).length?`<div style="padding:4px 8px;background:#f8fafc;font-size:10px;color:#475569">${img.annotations.map(a=>a.text).join(" / ")}</div>`:""}
-    </div>`).join("")}</div>` : "";
+    const dLayout = dItem.imageLayout || 0;
+    const dCols = dLayout || (dImgs.length === 1 ? 1 : 2);
+    const dImgGrid = dImgs.length ? `
+      <div style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
+        <div style="display:grid;grid-template-columns:repeat(${Math.min(dImgs.length,dCols)},1fr);gap:16px;width:100%;flex:1;align-items:center">
+          ${dImgs.map(img=>`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%">
+            <img src="${img.data}" style="width:100%;max-height:${dCols===1?'85vh':'70vh'};object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
+            ${img.name?`<div style="margin-top:6px;font-size:9px;color:#94a3b8;text-align:center">${img.name}</div>`:""}
+          </div>`).join("")}
+        </div>
+      </div>` : "";
   return `
 <div class="page sec-page">
   <div class="sec-header">
@@ -9285,28 +9342,22 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
       return (
         <div>
           {/* 서브탭 네비 */}
-          <div style={{display:"flex",gap:4,overflowX:"auto",marginBottom:16,paddingBottom:8,borderBottom:"1px solid var(--border)"}}>
+          <div style={{display:"flex",gap:4,overflowX:"auto",marginBottom:16,paddingBottom:8,borderBottom:"1px solid var(--border)",flexWrap:"wrap",alignItems:"center"}}>
             <button onClick={()=>setActiveVenueItem(null)} style={{
               padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:activeVenueItem===null?700:500,
               background:activeVenueItem===null?"rgba(99,102,241,.15)":"transparent",color:activeVenueItem===null?"#a5b4fc":"var(--txt3)"
             }}>📋 개요</button>
-            {venueItemsList.map((item,itemIdx)=>(
-              <div key={item._id} style={{display:"flex",alignItems:"center",gap:2}}>
-                <button onClick={()=>setActiveVenueItem(item._id)} style={{
-                  padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:activeVenueItem===item._id?700:500,
-                  background:activeVenueItem===item._id?"rgba(99,102,241,.15)":"transparent",color:activeVenueItem===item._id?"#a5b4fc":"var(--txt3)",
-                  display:"flex",flexDirection:"column",alignItems:"center",gap:2,minWidth:80
-                }}>
-                  <span style={{fontSize:9,opacity:.6}}>{item.mandatory?"필수":""}</span>
-                  <span>{item.itemName}</span>
-                </button>
-                <div style={{display:"flex",flexDirection:"column",gap:1}}>
-                  <button onClick={()=>moveVenueItem(itemIdx,-1)} disabled={itemIdx===0} style={{background:"none",border:"none",color:itemIdx===0?"var(--txt4)":"#818cf8",cursor:itemIdx===0?"default":"pointer",fontSize:10,padding:"0 2px",lineHeight:1}}>▲</button>
-                  <button onClick={()=>moveVenueItem(itemIdx,1)} disabled={itemIdx===venueItemsList.length-1} style={{background:"none",border:"none",color:itemIdx===venueItemsList.length-1?"var(--txt4)":"#818cf8",cursor:itemIdx===venueItemsList.length-1?"default":"pointer",fontSize:10,padding:"0 2px",lineHeight:1}}>▼</button>
-                </div>
-              </div>
-            ))}
-            <button onClick={addVenueItem} style={{padding:"8px 14px",borderRadius:8,border:"1px dashed rgba(255,255,255,.15)",background:"transparent",color:"var(--txt4)",cursor:"pointer",fontSize:12}}>+ 추가</button>
+            <DraggableTabList
+              items={venueItemsList}
+              activeId={activeVenueItem}
+              onSelect={id => setActiveVenueItem(id)}
+              onReorder={newItems => updateDoc("venue","venueItems",newItems)}
+              onAdd={addVenueItem}
+              renderLabel={(item) => [
+                React.createElement("span", {key:"lbl",style:{fontSize:9,opacity:.6}}, item.mandatory?"필수":""),
+                React.createElement("span", {key:"name"}, item.itemName)
+              ]}
+            />
           </div>
 
           {/* 개요 탭 */}
@@ -9347,7 +9398,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
                   </tbody>
                 </table>
               </div>
-              <SectionImages sectionId="venue" images={ve.images||[]} onUpdate={imgs=>updateDoc("venue","images",imgs)}/>
+              <SectionImages sectionId="venue" images={ve.images||[]} onUpdate={imgs=>updateDoc("venue","images",imgs)} layoutMode={sd("venue").imageLayout||0} onLayoutChange={v=>updateDoc("venue","imageLayout",v)}/>
             </div>
           )}
 
@@ -9365,7 +9416,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
               </DocFG>
               <div style={{marginTop:12}}>
                 <label className="form-label">이미지</label>
-                <SectionImages sectionId={`venueItem_${activeVenueItemObj._id}`} images={activeVenueItemObj.images||[]} onUpdate={imgs=>updateVenueItem(activeVenueItemObj._id,"images",imgs)}/>
+                <SectionImages sectionId={`venueItem_${activeVenueItemObj._id}`} images={activeVenueItemObj.images||[]} onUpdate={imgs=>updateVenueItem(activeVenueItemObj._id,"images",imgs)} layoutMode={activeVenueItemObj.imageLayout||0} onLayoutChange={v=>updateVenueItem(activeVenueItemObj._id,"imageLayout",v)}/>
               </div>
             </div>
           )}
@@ -9443,7 +9494,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
           </div>
 
           {/* ── 서브탭 네비게이션 ── */}
-          <div style={{display:"flex",gap:4,overflowX:"auto",marginBottom:16,paddingBottom:8,borderBottom:"1px solid var(--border)"}}>
+          <div style={{display:"flex",gap:4,overflowX:"auto",marginBottom:16,paddingBottom:8,borderBottom:"1px solid var(--border)",flexWrap:"wrap",alignItems:"center"}}>
             <button onClick={()=>setActiveDesignItem(null)}
               style={{padding:"6px 14px",borderRadius:6,border:"1px solid",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",
                 background:!activeDesignItem?"rgba(99,102,241,.15)":"transparent",
@@ -9451,16 +9502,18 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
                 color:!activeDesignItem?"#818cf8":"var(--txt3)"}}>
               개요
             </button>
-            {designItemsList.map(item=>(
-              <button key={item._id} onClick={()=>setActiveDesignItem(item._id)}
-                style={{padding:"6px 14px",borderRadius:6,border:"1px solid",fontSize:12,cursor:"pointer",whiteSpace:"nowrap",display:"flex",flexDirection:"column",alignItems:"center",gap:2,
-                  background:activeDesignItem===item._id?"rgba(99,102,241,.15)":"transparent",
-                  borderColor:activeDesignItem===item._id?"rgba(99,102,241,.4)":"rgba(255,255,255,.1)",
-                  color:activeDesignItem===item._id?"#818cf8":"var(--txt3)"}}>
-                <span style={{fontSize:9,opacity:.7}}>{item.category}</span>
-                <span style={{fontWeight:activeDesignItem===item._id?700:500}}>{item.itemName}</span>
-              </button>
-            ))}
+            <DraggableTabList
+              items={designItemsList}
+              activeId={activeDesignItem}
+              onSelect={id => setActiveDesignItem(id)}
+              onReorder={newItems => updateDoc("design","designItems",newItems)}
+              onAdd={addDesignItem}
+              renderLabel={(item) => [
+                React.createElement("span", {key:"cat",style:{fontSize:9,opacity:.6}}, item.category||""),
+                React.createElement("span", {key:"name"}, item.itemName||"새 항목")
+              ]}
+              addLabel="+ 디자인 추가"
+            />
           </div>
 
           {/* ── 개요 탭 (기존 내용) ── */}
@@ -9540,7 +9593,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
               </DocFG>
               <div style={{marginTop:12}}>
                 <label className="form-label">제작 이미지</label>
-                <SectionImages sectionId={`designItem_${activeItemObj._id}`} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)}/>
+                <SectionImages sectionId={`designItem_${activeItemObj._id}`} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)} layoutMode={activeItemObj.imageLayout||0} onLayoutChange={v=>updateDesignItem(activeItemObj._id,"imageLayout",v)}/>
               </div>
             </div>
           )}
@@ -9736,7 +9789,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
                 </DocFG>
                 <div style={{marginTop:12}}>
                   <label className="form-label">이미지</label>
-                  <SectionImages sectionId={`programItem_${activeProgramItemObj._id}`} images={activeProgramItemObj.images||[]} onUpdate={imgs=>updateProgramItem(activeProgramItemObj._id,"images",imgs)}/>
+                  <SectionImages sectionId={`programItem_${activeProgramItemObj._id}`} images={activeProgramItemObj.images||[]} onUpdate={imgs=>updateProgramItem(activeProgramItemObj._id,"images",imgs)} layoutMode={activeProgramItemObj.imageLayout||0} onLayoutChange={v=>updateProgramItem(activeProgramItemObj._id,"imageLayout",v)}/>
                 </div>
               </div>
             )}
@@ -10228,7 +10281,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
             </div>
             {renderSection()}
             {(activeSection !== "design" || !activeDesignItem) && (
-              <SectionImages sectionId={activeSection} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)}/>
+              <SectionImages sectionId={activeSection} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)} layoutMode={sd(activeSection).imageLayout||0} onLayoutChange={v=>updateDoc(activeSection,"imageLayout",v)}/>
             )}
           </div>
         </div>
