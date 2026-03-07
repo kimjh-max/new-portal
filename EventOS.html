@@ -8579,7 +8579,7 @@ function DocEditorPanel({docType, project}) {
 
     const programRows = (pr.timeline||[]).map((t,i)=>{
       const dur = t.duration ? parseInt(t.duration) : 0;
-      const durStr = dur >= 60 ? Math.floor(dur/60)+":"+String(dur%60).padStart(2,"0") : (dur ? dur+"분" : "");
+      const durStr = dur ? Math.floor(dur/60)+":"+String(dur%60).padStart(2,"0") : "";
       return `<tr><td style="text-align:center">${i+1}</td><td style="white-space:nowrap">${t.startTime||t.time||""}${(t.startTime&&t.endTime)?" ~ ":""}${t.endTime||""}</td><td style="text-align:center">${durStr}</td><td>${t.content||""}</td><td>${t.note||""}</td></tr>`;
     }).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
 
@@ -8870,7 +8870,7 @@ ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).len
       <thead><tr><th style="width:20px">#</th><th>세션</th><th>내용</th><th>시간</th><th>경과</th><th>상세</th><th>화면</th><th>음향</th><th>에픽</th><th>${pr._cueSheetClientName||"주최측"}</th><th>의전</th></tr></thead>
       <tbody>
         ${(pr.cueSheet||[]).filter(c=>c.content||c.session).map((c,i)=>{
-          const dur = c.duration ? (parseInt(c.duration)>=60?Math.floor(parseInt(c.duration)/60)+":"+String(parseInt(c.duration)%60).padStart(2,"0"):c.duration+"분") : "";
+          const dur = c.duration ? Math.floor(parseInt(c.duration)/60)+":"+String(parseInt(c.duration)%60).padStart(2,"0") : "";
           return `<tr>
             <td style="text-align:center">${i+1}</td>
             <td style="font-weight:600">${c.session||""}</td>
@@ -9205,7 +9205,7 @@ ${imgHtml("timeline")}` : ""}
         pmTable(csPm, "큐시트",
           tblHdr(["#","세션","내용","시간","경과","상세","화면","에픽",d._cueSheetClientName||"주최측","의전"]),
           _csList.map((c,i)=>{
-            const dur = c.duration?(parseInt(c.duration)>=60?Math.floor(parseInt(c.duration)/60)+":"+String(parseInt(c.duration)%60).padStart(2,"0"):c.duration+"분"):"";
+            const dur = c.duration?Math.floor(parseInt(c.duration)/60)+":"+String(parseInt(c.duration)%60).padStart(2,"0"):"";
             return tblRow([i+1,c.session,c.content,(c.startTime||"")+(c.startTime&&c.endTime?"~":"")+(c.endTime||""),dur,c.details||"",c.screen||"",c.staffEpic||"",c.staffClient||"",c.staffProtocol||""]);
           }),
           [0.3,1.0,2.0,1.0,0.6,2.0,1.2,1.5,1.5,1.23]);
@@ -9694,7 +9694,7 @@ ${imgHtml("timeline")}` : ""}
                     <tbody>
                       {pgList.map((item,idx)=>{
                         const autoDur = calcDuration(item.startTime, item.endTime);
-                        const tlDurDisplay = autoDur ? (parseInt(autoDur)>=60 ? Math.floor(parseInt(autoDur)/60)+":"+String(parseInt(autoDur)%60).padStart(2,"0") : autoDur+"분") : item.duration||"";
+                        const tlDurDisplay = autoDur ? Math.floor(parseInt(autoDur)/60)+":"+String(parseInt(autoDur)%60).padStart(2,"0") : item.duration||"";
                         return (
                           <tr key={idx}>
                             <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
@@ -9754,7 +9754,7 @@ ${imgHtml("timeline")}` : ""}
                     <tbody>
                       {csList.map((item,idx)=>{
                         const autoDur = calcDuration(item.startTime, item.endTime);
-                        const durDisplay = autoDur ? (parseInt(autoDur)>=60 ? Math.floor(parseInt(autoDur)/60)+":"+String(parseInt(autoDur)%60).padStart(2,"0") : autoDur+"분") : item.duration||"";
+                        const durDisplay = autoDur ? Math.floor(parseInt(autoDur)/60)+":"+String(parseInt(autoDur)%60).padStart(2,"0") : item.duration||"";
                         return (
                           <tr key={idx}>
                             <td style={{padding:"3px 4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:10}}>{idx+1}</td>
