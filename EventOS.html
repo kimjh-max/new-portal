@@ -8550,17 +8550,14 @@ function DocEditorPanel({docType, project}) {
       const imgs = sec.images || [];
       if (!imgs.length) return "";
       const layout = sec.imageLayout || 0;
-      const cols = layout || (imgs.length === 1 ? 1 : imgs.length === 2 ? 2 : imgs.length <= 4 ? 2 : 3);
-      const perPage = cols <= 2 ? cols : cols;
+      const cols = layout || (imgs.length === 1 ? 1 : imgs.length <= 4 ? 2 : 3);
+      const maxPerPage = cols * 2;
       const pages = [];
-      for (let i = 0; i < imgs.length; i += perPage) pages.push(imgs.slice(i, i + perPage));
+      for (let i = 0; i < imgs.length; i += maxPerPage) pages.push(imgs.slice(i, i + maxPerPage));
       return pages.map(pageImgs => `
-        <div class="page-break" style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
-          <div style="display:grid;grid-template-columns:repeat(${Math.min(pageImgs.length, cols)},1fr);gap:16px;width:100%;flex:1;align-items:center">
-            ${pageImgs.map(img => `
-              <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%">
-                <img src="${img.data}" style="width:100%;max-height:${cols===1?'85vh':cols===2?'70vh':'55vh'};object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block"/>
-              </div>`).join("")}
+        <div class="img-page">
+          <div class="img-grid" style="grid-template-columns:repeat(${Math.min(pageImgs.length, cols)},1fr)">
+            ${pageImgs.map(img => `<img src="${img.data}"/>`).join("")}
           </div>
         </div>`).join("");
     };
@@ -8609,7 +8606,7 @@ function DocEditorPanel({docType, project}) {
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700;900&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-size:13px}
-.page{width:297mm;min-height:210mm;padding:0;margin:0 auto;page-break-after:always;position:relative;overflow:hidden}
+.page{width:297mm;min-height:210mm;padding:0;margin:0 auto;page-break-after:always;position:relative}
 .page:last-child{page-break-after:auto}
 /* Cover */
 .cover{background:${_bg.gradient};color:${_bg.textColor};display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:210mm;text-align:center;padding:40px;position:relative;overflow:hidden}
@@ -8651,11 +8648,19 @@ tr:nth-child(even) td{background:#f8fafc}
 /* Photo placeholder */
 .photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
 .photo-box{background:#f1f5f9;border:2px dashed #cbd5e1;border-radius:8px;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:11px}
+/* 인라인 이미지 (텍스트와 같은 페이지) */
+.inline-imgs{margin-top:20px}
+.inline-imgs .img-grid{display:grid;gap:16px}
+.inline-imgs img{width:100%;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block}
+/* 독립 이미지 페이지 (섹션 레벨) */
+.img-page{page-break-before:always;padding:30px 40px;box-sizing:border-box}
+.img-page .img-grid{display:grid;gap:16px;align-content:start}
+.img-page img{width:100%;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block}
 @media print{
-  .page{width:297mm;margin:0;page-break-after:always}
+  .page{width:297mm;margin:0;page-break-after:always;overflow:visible!important}
   .page:last-child{page-break-after:auto}
-  .page-break{page-break-before:always;height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:40px;box-sizing:border-box}
-  .page-break img{width:100%;max-height:85vh;object-fit:contain;border-radius:8px}
+  .img-page{page-break-before:always;page-break-inside:avoid}
+  .inline-imgs img{page-break-inside:avoid}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style></head><body>
@@ -8730,19 +8735,6 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   const vImgs = (vItem.images||[]);
   const vLayout = vItem.imageLayout || 0;
   const vCols = vLayout || (vImgs.length === 1 ? 1 : 2);
-  let vImgHtml = "";
-  if (vImgs.length) {
-    const pages = [];
-    for (let i = 0; i < vImgs.length; i += vCols) pages.push(vImgs.slice(i, i + vCols));
-    vImgHtml = pages.map(pg => `
-      <div style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
-        <div style="display:grid;grid-template-columns:repeat(${Math.min(pg.length,vCols)},1fr);gap:16px;width:100%;flex:1;align-items:center">
-          ${pg.map(img=>`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%">
-            <img src="${img.data}" style="width:100%;max-height:${vCols===1?'85vh':'70vh'};object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
-          </div>`).join("")}
-        </div>
-      </div>`).join("");
-  }
   return `
 <div class="page sec-page">
   <div class="sec-header">
@@ -8754,10 +8746,14 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   </div>
   <div class="sec-body">
     ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
+    ${vImgs.length ? `<div class="inline-imgs">
+      <div class="img-grid" style="grid-template-columns:repeat(${Math.min(vImgs.length,vCols)},1fr)">
+        ${vImgs.map(img=>`<img src="${img.data}"/>`).join("")}
+      </div>
+    </div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
-</div>
-${vImgHtml}`;
+</div>`;
 }).join("\\n") : ""}
 
 ${secEnabled("design") ? `<!-- 03 DESIGN -->
@@ -8788,16 +8784,8 @@ ${imgHtml("design")}` : ""}
 
 ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   const dImgs = (dItem.images||[]);
-    const dLayout = dItem.imageLayout || 0;
-    const dCols = dLayout || (dImgs.length === 1 ? 1 : 2);
-    const dImgGrid = dImgs.length ? `
-      <div style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
-        <div style="display:grid;grid-template-columns:repeat(${Math.min(dImgs.length,dCols)},1fr);gap:16px;width:100%;flex:1;align-items:center">
-          ${dImgs.map(img=>`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%">
-            <img src="${img.data}" style="width:100%;max-height:${dCols===1?'85vh':'70vh'};object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
-          </div>`).join("")}
-        </div>
-      </div>` : "";
+  const dLayout = dItem.imageLayout || 0;
+  const dCols = dLayout || (dImgs.length === 1 ? 1 : 2);
   return `
 <div class="page sec-page">
   <div class="sec-header">
@@ -8815,10 +8803,14 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
       <div class="info-box"><div class="info-label">수량</div><div class="info-value">${dItem.qty||1}</div></div>
     </div>
     ${dItem.notes?`<div class="box"><div class="box-title">메모</div><div class="box-val">${dItem.notes}</div></div>`:""}
+    ${dImgs.length ? `<div class="inline-imgs">
+      <div class="img-grid" style="grid-template-columns:repeat(${Math.min(dImgs.length,dCols)},1fr)">
+        ${dImgs.map(img=>`<img src="${img.data}"/>`).join("")}
+      </div>
+    </div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
-</div>
-${dImgGrid}`;
+</div>`;
 }).join("\n") : ""}
 
 ${secEnabled("program") ? `<!-- 04 PROGRAM -->
@@ -8879,13 +8871,6 @@ ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).len
 
 ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   const pImgs = (pItem.images||[]);
-  const pImgHtml = pImgs.length ? pImgs.map(img=>`
-    <div style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:40px;box-sizing:border-box">
-      <div style="flex:1;display:flex;align-items:center;justify-content:center;width:100%;max-height:80vh">
-        <img src="${img.data}" style="max-width:90%;max-height:75vh;width:auto;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
-      </div>
-      ${(img.annotations||[]).length?`<div style="margin-top:16px;padding:10px 20px;background:#f8fafc;border-radius:8px;font-size:12px;color:#475569;text-align:center">${img.annotations.map(a=>a.text).join(" · ")}</div>`:""}
-    </div>`).join("") : "";
   return `
 <div class="page sec-page">
   <div class="sec-header">
@@ -8897,7 +8882,11 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   </div>
   <div class="sec-body">
     ${pItem.notes?`<div class="box"><div class="box-title">운영 메모</div><div class="box-val">${pItem.notes}</div></div>`:""}
-    ${pImgHtml}
+    ${pImgs.length ? `<div class="inline-imgs">
+      <div class="img-grid" style="grid-template-columns:repeat(${pImgs.length===1?1:2},1fr)">
+        ${pImgs.map(img=>`<img src="${img.data}"/>`).join("")}
+      </div>
+    </div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>
 </div>`;
