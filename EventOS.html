@@ -8498,6 +8498,13 @@ function DocEditorPanel({docType, project}) {
     const updated = cur.map((item,i) => i===idx ? {...item, [key]:val} : item);
     setList(sectionId, field, updated);
   };
+  // 여러 필드를 한번에 업데이트 (stale state 방지)
+  const updateListItemMulti = (sectionId, field, idx, updates) => {
+    let cur = sd(sectionId)[field] || [];
+    while (cur.length <= idx) cur = [...cur, {_id: Date.now() + cur.length}];
+    const updated = cur.map((item,i) => i===idx ? {...item, ...updates} : item);
+    setList(sectionId, field, updated);
+  };
 
   // ── 섹션 순서 이동 함수 ──
   const moveSection = (id, dir) => {
@@ -8585,8 +8592,8 @@ function DocEditorPanel({docType, project}) {
       const taskStyle = m.isSubtask ? "padding-left:20px;color:#64748b;" : "font-weight:600;";
       const progPct = m.progress||0;
       return `<tr style="${rowStyle}">
-        <td style="text-align:center;width:24px">${i+1}</td>
-        <td style="width:60px;font-size:11px;color:#64748b">${m.division||""}</td>
+        <td style="text-align:center;width:28px;white-space:nowrap">${i+1}</td>
+        <td style="white-space:nowrap;font-size:11px;color:#64748b">${m.division||""}</td>
         <td style="${taskStyle}">${m.task||""}</td>
         <td style="white-space:nowrap;font-size:11px">${m.startDate||""}</td>
         <td style="white-space:nowrap;font-size:11px">${m.endDate||""}</td>
@@ -8598,8 +8605,8 @@ function DocEditorPanel({docType, project}) {
             <span style="font-size:10px;color:${sc};font-weight:700;min-width:24px">${progPct}%</span>
           </div>
         </td>
-        <td style="text-align:center;width:60px">
-          <span style="background:${sc}22;color:${sc};border:1px solid ${sc}44;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700">${m.status||"예정"}</span>
+        <td style="text-align:center;white-space:nowrap">
+          <span style="background:${sc}22;color:${sc};border:1px solid ${sc}44;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;white-space:nowrap">${m.status||"예정"}</span>
         </td>
       </tr>`;
     }).join("") || `<tr><td colspan="7" style="text-align:center;color:#888;padding:16px">타임라인 데이터 없음</td></tr>`;
@@ -9687,8 +9694,8 @@ ${imgHtml("timeline")}` : ""}
                         return (
                           <tr key={idx}>
                             <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
-                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{updateListItem("program","timeline",idx,"startTime",e.target.value);const d=calcDuration(e.target.value,item.endTime);if(d)updateListItem("program","timeline",idx,"duration",d);}} style={{padding:"4px 8px",fontSize:12}}/></td>
-                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{updateListItem("program","timeline",idx,"endTime",e.target.value);const d=calcDuration(item.startTime,e.target.value);if(d)updateListItem("program","timeline",idx,"duration",d);}} style={{padding:"4px 8px",fontSize:12}}/></td>
+                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(v,item.endTime);updateListItemMulti("program","timeline",idx,{startTime:v,...(d?{duration:d}:{})});}} style={{padding:"4px 8px",fontSize:12}}/></td>
+                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(item.startTime,v);updateListItemMulti("program","timeline",idx,{endTime:v,...(d?{duration:d}:{})});}} style={{padding:"4px 8px",fontSize:12}}/></td>
                             <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={autoDur||item.duration||""} onChange={e=>updateListItem("program","timeline",idx,"duration",e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:"center",color:autoDur?"#10b981":"inherit",fontWeight:autoDur?700:400}} placeholder="분"/></td>
                             <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.content||""} onChange={e=>updateListItem("program","timeline",idx,"content",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="순서 내용"/></td>
                             <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.note||""} onChange={e=>updateListItem("program","timeline",idx,"note",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
@@ -9755,8 +9762,8 @@ ${imgHtml("timeline")}` : ""}
                               {!SESSION_PRESETS.includes(item.session) && <input className="form-input" value={item.session||""} onChange={e=>updateListItem("program","cueSheet",idx,"session",e.target.value)} style={{padding:"2px 4px",fontSize:10,marginTop:2}} placeholder="세션명"/>}
                             </td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.content||""} onChange={e=>updateListItem("program","cueSheet",idx,"content",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="내용"/></td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{updateListItem("program","cueSheet",idx,"startTime",e.target.value);const d=calcDuration(e.target.value,item.endTime);if(d)updateListItem("program","cueSheet",idx,"duration",d);}} style={{padding:"4px 6px",fontSize:11,minWidth:65}}/></td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{updateListItem("program","cueSheet",idx,"endTime",e.target.value);const d=calcDuration(item.startTime,e.target.value);if(d)updateListItem("program","cueSheet",idx,"duration",d);}} style={{padding:"4px 6px",fontSize:11,minWidth:65}}/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(v,item.endTime);updateListItemMulti("program","cueSheet",idx,{startTime:v,...(d?{duration:d}:{})});}} style={{padding:"4px 6px",fontSize:11,minWidth:65}}/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(item.startTime,v);updateListItemMulti("program","cueSheet",idx,{endTime:v,...(d?{duration:d}:{})});}} style={{padding:"4px 6px",fontSize:11,minWidth:65}}/></td>
                             <td style={{padding:"2px 4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",fontSize:10,color:autoDur?"#10b981":"var(--txt3)",fontWeight:autoDur?700:400}}>{durDisplay}</td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.details||""} onChange={e=>updateListItem("program","cueSheet",idx,"details",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="상세"/></td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.reference||""} onChange={e=>updateListItem("program","cueSheet",idx,"reference",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="참고"/></td>
