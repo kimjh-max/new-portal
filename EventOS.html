@@ -8589,31 +8589,6 @@ function DocEditorPanel({docType, project}) {
     const prizeRows = (op.prizeList||[]).map((s,i)=>`
       <tr><td style="text-align:center">${i+1}</td><td>${s.grade||""}</td><td>${s.item||""}</td><td style="text-align:center">${s.qty||""}</td><td>${s.note||""}</td></tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
 
-    const milestoneRows = (tl.milestones||[]).map((m,i)=>{
-      const sc = m.status==="완료"?"#10b981":m.status==="진행중"?"#f59e0b":_kc;
-      const rowStyle = m.isSubtask ? "background:#f8fafc;" : "";
-      const taskStyle = m.isSubtask ? "padding-left:20px;color:#64748b;" : "font-weight:600;";
-      const progPct = m.progress||0;
-      return `<tr style="${rowStyle}">
-        <td style="text-align:center;width:28px;white-space:nowrap">${i+1}</td>
-        <td style="white-space:nowrap;font-size:11px;color:#64748b">${m.division||""}</td>
-        <td style="${taskStyle}">${m.task||""}</td>
-        <td style="white-space:nowrap;font-size:11px">${m.startDate||""}</td>
-        <td style="white-space:nowrap;font-size:11px">${m.endDate||""}</td>
-        <td style="width:80px">
-          <div style="display:flex;align-items:center;gap:4px">
-            <div style="flex:1;height:5px;background:#e2e8f0;border-radius:99px;overflow:hidden">
-              <div style="width:${progPct}%;height:100%;background:${sc};border-radius:99px"></div>
-            </div>
-            <span style="font-size:10px;color:${sc};font-weight:700;min-width:24px">${progPct}%</span>
-          </div>
-        </td>
-        <td style="text-align:center;white-space:nowrap">
-          <span style="background:${sc}22;color:${sc};border:1px solid ${sc}44;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;white-space:nowrap">${m.status||"예정"}</span>
-        </td>
-      </tr>`;
-    }).join("") || `<tr><td colspan="7" style="text-align:center;color:#888;padding:16px">타임라인 데이터 없음</td></tr>`;
-
     const docTitle = isPlan ? "운영계획안" : "결과보고서";
     const html = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"/>
 <title>${p.name||"행사"} ${docTitle}</title>
@@ -8949,7 +8924,20 @@ ${secEnabled("operation") ? `<!-- 05 OPERATION -->
 </div>
 ${imgHtml("operation")}` : ""}
 
-${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
+${secEnabled("timeline") ? (()=>{
+  const tlAllRows = (tl.milestones||[]).map((m,i)=>{
+    const sc = m.status==="완료"?"#10b981":m.status==="진행중"?"#f59e0b":_kc;
+    const rs = m.isSubtask?"background:#f8fafc;":"";
+    const ts = m.isSubtask?"padding-left:20px;color:#64748b;":"font-weight:600;";
+    const pp = m.progress||0;
+    return `<tr style="${rs}"><td style="text-align:center;width:28px;white-space:nowrap">${i+1}</td><td style="white-space:nowrap;font-size:11px;color:#64748b">${m.division||""}</td><td style="${ts}">${m.task||""}</td><td style="white-space:nowrap;font-size:11px">${m.startDate||""}</td><td style="white-space:nowrap;font-size:11px">${m.endDate||""}</td><td style="width:80px"><div style="display:flex;align-items:center;gap:4px"><div style="flex:1;height:5px;background:#e2e8f0;border-radius:99px;overflow:hidden"><div style="width:${pp}%;height:100%;background:${sc};border-radius:99px"></div></div><span style="font-size:10px;color:${sc};font-weight:700;min-width:24px">${pp}%</span></div></td><td style="text-align:center;white-space:nowrap"><span style="background:${sc}22;color:${sc};border:1px solid ${sc}44;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;white-space:nowrap">${m.status||"예정"}</span></td></tr>`;
+  });
+  const rowsPerPage = 17;
+  const tlPages = [];
+  for(let i=0;i<tlAllRows.length;i+=rowsPerPage) tlPages.push(tlAllRows.slice(i,i+rowsPerPage));
+  if(!tlPages.length) tlPages.push([]);
+  const tlThead = `<thead><tr><th>#</th><th>구분</th><th>업무</th><th>시작일</th><th>종료일</th><th>진행률</th><th>상태</th></tr></thead>`;
+  return tlPages.map((rows,pi)=>`<!-- 06 TIME LINE ${pi>0?"(continued)":""} -->
 <div class="page sec-page">
   <div class="sec-header">
     <div class="sec-num">${secNum("timeline")}</div>
@@ -8959,15 +8947,12 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
     </div>
   </div>
   <div class="sec-body">
-    <table>
-      <thead><tr><th>#</th><th>구분</th><th>업무</th><th>시작일</th><th>종료일</th><th>진행률</th><th>상태</th></tr></thead>
-      <tbody>${milestoneRows}</tbody>
-    </table>
-    ${tl.ganttNotes ? `<div class="box"><div class="box-title">일정 메모</div><div class="box-val">${tl.ganttNotes}</div></div>` : ""}
+    <table>${tlThead}<tbody>${rows.join("")}</tbody></table>
+    ${pi===tlPages.length-1 && tl.ganttNotes ? `<div class="box"><div class="box-title">일정 메모</div><div class="box-val">${tl.ganttNotes}</div></div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>
-${imgHtml("timeline")}` : ""}
+</div>`).join("\n") + imgHtml("timeline");
+})() : ""}
 
 </body></html>`;
     W.document.write(html);
