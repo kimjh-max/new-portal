@@ -8473,14 +8473,36 @@ function DocEditorPanel({docType, project}) {
     const imgHtml = (sectionId) => {
       const imgs = sd(sectionId).images || [];
       if (!imgs.length) return "";
-      return imgs.map(img => `
-        <div class="page-break" style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:40px;box-sizing:border-box">
-          <div style="flex:1;display:flex;align-items:center;justify-content:center;width:100%;max-height:80vh">
-            <img src="${img.data}" style="max-width:90%;max-height:75vh;width:auto;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block"/>
+      if (imgs.length === 1) {
+        const img = imgs[0];
+        return `
+        <div class="page-break" style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
+          <div style="flex:1;display:flex;align-items:center;justify-content:center;width:100%">
+            <img src="${img.data}" style="width:100%;max-height:85vh;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block"/>
           </div>
-          ${(img.annotations||[]).length ? `<div style="margin-top:16px;padding:10px 20px;background:#f8fafc;border-radius:8px;font-size:12px;color:#475569;text-align:center;max-width:80%;border:1px solid #e2e8f0">${img.annotations.map(a=>a.text).join(" · ")}</div>` : ""}
-          <div style="margin-top:8px;font-size:10px;color:#94a3b8">${img.name||""}</div>
-        </div>`).join("");
+          ${(img.annotations||[]).length ? `<div style="margin-top:12px;padding:8px 16px;background:#f8fafc;border-radius:6px;font-size:11px;color:#475569;text-align:center;border:1px solid #e2e8f0">${img.annotations.map(a=>a.text).join(" · ")}</div>` : ""}
+          ${img.name ? `<div style="margin-top:6px;font-size:10px;color:#94a3b8">${img.name}</div>` : ""}
+        </div>`;
+      }
+      // Multiple images: group them on pages, max 2 per page for readability
+      const pages = [];
+      for (let i = 0; i < imgs.length; i += 2) {
+        pages.push(imgs.slice(i, i + 2));
+      }
+      return pages.map(pageImgs => {
+        const cols = pageImgs.length;
+        const gridItems = pageImgs.map(img => `
+          <div style="display:flex;flex-direction:column;align-items:center;justify-content:center">
+            <img src="${img.data}" style="width:100%;max-height:70vh;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block"/>
+            ${img.name ? `<div style="margin-top:6px;font-size:9px;color:#94a3b8;text-align:center">${img.name}</div>` : ""}
+          </div>`).join("");
+        return `
+        <div class="page-break" style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
+          <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:20px;width:100%;flex:1;align-items:center">
+            ${gridItems}
+          </div>
+        </div>`;
+      }).join("");
     };
 
     const bannerRows = (de.bannerList||[]).map((b,i)=>`
@@ -8542,7 +8564,7 @@ body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-si
 .cover .contact-point{font-size:11px;color:${_bg.textColor==="#1e293b"?"#64748b":"#64748b"};margin-top:6px}
 /* Section page */
 .sec-page{background:#fff;padding:0}
-.sec-header{background:linear-gradient(135deg,#0f1623,#1e3a5f);color:#fff;padding:24px 40px;display:flex;align-items:center;gap:16px;border-left:5px solid ${_kc}}
+.sec-header{background:${_bg.gradient};color:${_bg.textColor};padding:24px 40px;display:flex;align-items:center;gap:16px;border-left:5px solid ${_kc}}
 .sec-num{font-size:48px;font-weight:900;color:${_kc};opacity:.5;line-height:1;min-width:60px}
 .sec-title-block{display:flex;flex-direction:column}
 .sec-title{font-size:24px;font-weight:900;color:#fff;letter-spacing:2px}
@@ -8573,7 +8595,7 @@ tr:nth-child(even) td{background:#f8fafc}
   .page{width:297mm;margin:0;page-break-after:always}
   .page:last-child{page-break-after:auto}
   .page-break{page-break-before:always;height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:40px;box-sizing:border-box}
-  .page-break img{max-width:90%;max-height:75vh;object-fit:contain;border-radius:8px}
+  .page-break img{width:100%;max-height:85vh;object-fit:contain;border-radius:8px}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style></head><body>
@@ -8646,13 +8668,30 @@ ${secEnabled("venue") ? `<!-- 02 VENUE -->
 
 ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   const vImgs = (vItem.images||[]);
-  const vImgHtml = vImgs.length ? vImgs.map(img=>`
-    <div style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:40px;box-sizing:border-box">
-      <div style="flex:1;display:flex;align-items:center;justify-content:center;width:100%;max-height:80vh">
-        <img src="${img.data}" style="max-width:90%;max-height:75vh;width:auto;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
+  let vImgHtml = "";
+  if (vImgs.length === 1) {
+    const img = vImgs[0];
+    vImgHtml = `<div style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
+      <div style="flex:1;display:flex;align-items:center;justify-content:center;width:100%">
+        <img src="${img.data}" style="width:100%;max-height:85vh;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
       </div>
-      ${(img.annotations||[]).length?`<div style="margin-top:16px;padding:10px 20px;background:#f8fafc;border-radius:8px;font-size:12px;color:#475569;text-align:center;max-width:80%;border:1px solid #e2e8f0">${img.annotations.map(a=>a.text).join(" · ")}</div>`:""}
-    </div>`).join("") : "";
+      ${(img.annotations||[]).length?`<div style="margin-top:12px;padding:8px 16px;background:#f8fafc;border-radius:6px;font-size:11px;color:#475569;text-align:center;border:1px solid #e2e8f0">${img.annotations.map(a=>a.text).join(" · ")}</div>`:""}
+    </div>`;
+  } else if (vImgs.length > 1) {
+    const pages = [];
+    for (let i = 0; i < vImgs.length; i += 2) pages.push(vImgs.slice(i, i + 2));
+    vImgHtml = pages.map(pg => {
+      const cols = pg.length;
+      return `<div style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:30px;box-sizing:border-box">
+        <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:20px;width:100%;flex:1;align-items:center">
+          ${pg.map(img=>`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center">
+            <img src="${img.data}" style="width:100%;max-height:70vh;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
+            ${img.name?`<div style="margin-top:6px;font-size:9px;color:#94a3b8;text-align:center">${img.name}</div>`:""}
+          </div>`).join("")}
+        </div>
+      </div>`;
+    }).join("");
+  }
   return `
 <div class="page sec-page">
   <div class="sec-header">
@@ -9225,10 +9264,17 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
         updateDoc("venue","venueItems",[...getVenueItems(),{_id:Date.now(),itemName:"새 항목",description:"",images:[],mandatory:false}]);
       };
       const removeVenueItem = (id) => {
-        const item = getVenueItems().find(v=>v._id===id);
-        if (item?.mandatory) { toast("필수 항목은 삭제할 수 없습니다","warn"); return; }
-        updateDoc("venue","venueItems",getVenueItems().filter(v=>v._id!==id));
+        const items = getVenueItems();
+        if (items.length <= 1) { toast("최소 1개 항목은 필요합니다","warn"); return; }
+        updateDoc("venue","venueItems",items.filter(v=>v._id!==id));
         if (activeVenueItem===id) setActiveVenueItem(null);
+      };
+      const moveVenueItem = (idx, dir) => {
+        const items = [...getVenueItems()];
+        const newIdx = idx + dir;
+        if (newIdx < 0 || newIdx >= items.length) return;
+        [items[idx], items[newIdx]] = [items[newIdx], items[idx]];
+        updateDoc("venue","venueItems",items);
       };
       const updateVenueItem = (id,field,value) => {
         updateDoc("venue","venueItems",getVenueItems().map(v=>v._id===id?{...v,[field]:value}:v));
@@ -9244,15 +9290,21 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
               padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:activeVenueItem===null?700:500,
               background:activeVenueItem===null?"rgba(99,102,241,.15)":"transparent",color:activeVenueItem===null?"#a5b4fc":"var(--txt3)"
             }}>📋 개요</button>
-            {venueItemsList.map(item=>(
-              <button key={item._id} onClick={()=>setActiveVenueItem(item._id)} style={{
-                padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:activeVenueItem===item._id?700:500,
-                background:activeVenueItem===item._id?"rgba(99,102,241,.15)":"transparent",color:activeVenueItem===item._id?"#a5b4fc":"var(--txt3)",
-                display:"flex",flexDirection:"column",alignItems:"center",gap:2,minWidth:80
-              }}>
-                <span style={{fontSize:9,opacity:.6}}>{item.mandatory?"필수":""}</span>
-                <span>{item.itemName}</span>
-              </button>
+            {venueItemsList.map((item,itemIdx)=>(
+              <div key={item._id} style={{display:"flex",alignItems:"center",gap:2}}>
+                <button onClick={()=>setActiveVenueItem(item._id)} style={{
+                  padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:activeVenueItem===item._id?700:500,
+                  background:activeVenueItem===item._id?"rgba(99,102,241,.15)":"transparent",color:activeVenueItem===item._id?"#a5b4fc":"var(--txt3)",
+                  display:"flex",flexDirection:"column",alignItems:"center",gap:2,minWidth:80
+                }}>
+                  <span style={{fontSize:9,opacity:.6}}>{item.mandatory?"필수":""}</span>
+                  <span>{item.itemName}</span>
+                </button>
+                <div style={{display:"flex",flexDirection:"column",gap:1}}>
+                  <button onClick={()=>moveVenueItem(itemIdx,-1)} disabled={itemIdx===0} style={{background:"none",border:"none",color:itemIdx===0?"var(--txt4)":"#818cf8",cursor:itemIdx===0?"default":"pointer",fontSize:10,padding:"0 2px",lineHeight:1}}>▲</button>
+                  <button onClick={()=>moveVenueItem(itemIdx,1)} disabled={itemIdx===venueItemsList.length-1} style={{background:"none",border:"none",color:itemIdx===venueItemsList.length-1?"var(--txt4)":"#818cf8",cursor:itemIdx===venueItemsList.length-1?"default":"pointer",fontSize:10,padding:"0 2px",lineHeight:1}}>▼</button>
+                </div>
+              </div>
             ))}
             <button onClick={addVenueItem} style={{padding:"8px 14px",borderRadius:8,border:"1px dashed rgba(255,255,255,.15)",background:"transparent",color:"var(--txt4)",cursor:"pointer",fontSize:12}}>+ 추가</button>
           </div>
@@ -9305,13 +9357,9 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
               <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
                 <span style={{fontSize:18,fontWeight:800,color:"var(--txt)"}}>{activeVenueItemObj.itemName}</span>
                 {activeVenueItemObj.mandatory && <span style={{fontSize:10,background:"rgba(99,102,241,.15)",color:"#818cf8",padding:"2px 8px",borderRadius:4,fontWeight:700}}>필수</span>}
-                {!activeVenueItemObj.mandatory && (
-                  <button onClick={()=>removeVenueItem(activeVenueItemObj._id)} style={{background:"rgba(239,68,68,.1)",border:"1px solid rgba(239,68,68,.2)",color:"#f87171",borderRadius:6,padding:"4px 12px",cursor:"pointer",fontSize:11,fontWeight:700}}>삭제</button>
-                )}
+                <button onClick={()=>removeVenueItem(activeVenueItemObj._id)} style={{background:"rgba(239,68,68,.1)",border:"1px solid rgba(239,68,68,.2)",color:"#f87171",borderRadius:6,padding:"4px 12px",cursor:"pointer",fontSize:11,fontWeight:700}}>삭제</button>
               </div>
-              {!activeVenueItemObj.mandatory && (
-                <DocFG label="항목명"><input className="form-input" value={activeVenueItemObj.itemName||""} onChange={e=>updateVenueItem(activeVenueItemObj._id,"itemName",e.target.value)} placeholder="항목명"/></DocFG>
-              )}
+              <DocFG label="항목명"><input className="form-input" value={activeVenueItemObj.itemName||""} onChange={e=>updateVenueItem(activeVenueItemObj._id,"itemName",e.target.value)} placeholder="항목명"/></DocFG>
               <DocFG label="설명">
                 <textarea className="form-input" rows={4} value={activeVenueItemObj.description||""} onChange={e=>updateVenueItem(activeVenueItemObj._id,"description",e.target.value)} placeholder="상세 설명을 입력하세요" style={{resize:"vertical"}}/>
               </DocFG>
@@ -9525,6 +9573,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
         const SESSION_PRESETS = ["사전설치","세팅","리허설","스탠바이","오프닝","환영사","국민의례","시상","개회사","축사","공연","촬영","발표","폐회선언","만찬","철수"];
         const csList = getList("program","cueSheet",{session:"",content:"",startTime:"",endTime:"",duration:"",details:"",reference:"",screen:"",bgm:"",mic:"",staffEpic:"",staffClient:"",staffProtocol:""});
         const csClientName = pr._cueSheetClientName || "주최주관사";
+        const csExtraCols = pr._cueSheetExtraCols || [];
 
         // ── 프로그램 아이템 ──
         const getProgramItems = () => sd("program").programItems || [];
@@ -9615,14 +9664,24 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
                       <span style={{fontSize:10,color:"var(--txt4)"}}>주최측 이름:</span>
                       <input className="form-input" value={csClientName} onChange={e=>updateDoc("program","_cueSheetClientName",e.target.value)} style={{padding:"2px 8px",fontSize:11,width:80}} placeholder="주최주관사"/>
                     </div>
+                    <div style={{display:"flex",alignItems:"center",gap:4,marginLeft:8}}>
+                      <span style={{fontSize:10,color:"var(--txt4)"}}>추가 컬럼:</span>
+                      {csExtraCols.map((col,ci)=>(
+                        <span key={ci} style={{fontSize:10,background:"rgba(99,102,241,.15)",color:"#a5b4fc",padding:"2px 6px",borderRadius:4,display:"flex",alignItems:"center",gap:3}}>
+                          {col}
+                          <span onClick={()=>{const newCols=[...csExtraCols];newCols.splice(ci,1);updateDoc("program","_cueSheetExtraCols",newCols);}} style={{cursor:"pointer",color:"#f87171",fontWeight:700}}>×</span>
+                        </span>
+                      ))}
+                      <button onClick={()=>{const name=prompt("추가할 스태프 컬럼명 (예: 의전, 통역)");if(name)updateDoc("program","_cueSheetExtraCols",[...csExtraCols,name]);}} style={{padding:"2px 8px",fontSize:10,background:"rgba(99,102,241,.1)",border:"1px dashed rgba(99,102,241,.3)",color:"#818cf8",borderRadius:4,cursor:"pointer"}}>+ 컬럼</button>
+                    </div>
                   </div>
-                  <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("program","cueSheet",{session:"",content:"",startTime:"",endTime:"",duration:"",details:"",reference:"",screen:"",bgm:"",mic:"",staffEpic:"",staffClient:"",staffProtocol:""})}>+ 항목 추가</button>
+                  <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("program","cueSheet",{session:"",content:"",startTime:"",endTime:"",duration:"",details:"",reference:"",screen:"",bgm:"",mic:"",staffEpic:"",staffClient:""})}>+ 항목 추가</button>
                 </div>
                 <div style={{overflowX:"auto",marginBottom:16}}>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:1200}}>
                     <thead><tr style={{background:"rgba(99,102,241,.1)"}}>
-                      {["#","세션","내용","시작","종료","경과","상세내용","참고","화면","BGM","MIC","에픽",""+csClientName,"의전",""].map((h,i)=>(
-                        <th key={i} style={{padding:"5px 6px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",fontSize:10,whiteSpace:"nowrap",width:i===0?26:i===3||i===4?60:i===5?40:i===14?30:undefined}}>{h}</th>
+                      {["#","세션","내용","시작","종료","경과","상세내용","참고","화면","BGM","MIC","에픽",""+csClientName,...csExtraCols,""].map((h,i)=>(
+                        <th key={i} style={{padding:"5px 6px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",fontSize:10,whiteSpace:"nowrap",width:i===0?26:i===3||i===4?75:i===5?40:i===14?30:undefined}}>{h}</th>
                       ))}
                     </tr></thead>
                     <tbody>
@@ -9640,8 +9699,8 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
                               {!SESSION_PRESETS.includes(item.session) && <input className="form-input" value={item.session||""} onChange={e=>updateListItem("program","cueSheet",idx,"session",e.target.value)} style={{padding:"2px 4px",fontSize:10,marginTop:2}} placeholder="세션명"/>}
                             </td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.content||""} onChange={e=>updateListItem("program","cueSheet",idx,"content",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="내용"/></td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{updateListItem("program","cueSheet",idx,"startTime",e.target.value);const d=calcDuration(e.target.value,item.endTime);if(d)updateListItem("program","cueSheet",idx,"duration",d);}} style={{padding:"2px 4px",fontSize:10}}/></td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{updateListItem("program","cueSheet",idx,"endTime",e.target.value);const d=calcDuration(item.startTime,e.target.value);if(d)updateListItem("program","cueSheet",idx,"duration",d);}} style={{padding:"2px 4px",fontSize:10}}/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{updateListItem("program","cueSheet",idx,"startTime",e.target.value);const d=calcDuration(e.target.value,item.endTime);if(d)updateListItem("program","cueSheet",idx,"duration",d);}} style={{padding:"4px 6px",fontSize:11,minWidth:65}}/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{updateListItem("program","cueSheet",idx,"endTime",e.target.value);const d=calcDuration(item.startTime,e.target.value);if(d)updateListItem("program","cueSheet",idx,"duration",d);}} style={{padding:"4px 6px",fontSize:11,minWidth:65}}/></td>
                             <td style={{padding:"2px 4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",fontSize:10,color:autoDur?"#10b981":"var(--txt3)",fontWeight:autoDur?700:400}}>{durDisplay}</td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.details||""} onChange={e=>updateListItem("program","cueSheet",idx,"details",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="상세"/></td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.reference||""} onChange={e=>updateListItem("program","cueSheet",idx,"reference",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="참고"/></td>
@@ -9650,7 +9709,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.mic||""} onChange={e=>updateListItem("program","cueSheet",idx,"mic",e.target.value)} style={{padding:"2px 4px",fontSize:10,width:50}} placeholder="MIC"/></td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.staffEpic||""} onChange={e=>updateListItem("program","cueSheet",idx,"staffEpic",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="에픽 담당"/></td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.staffClient||""} onChange={e=>updateListItem("program","cueSheet",idx,"staffClient",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder={csClientName+" 담당"}/></td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.staffProtocol||""} onChange={e=>updateListItem("program","cueSheet",idx,"staffProtocol",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="의전"/></td>
+                            {csExtraCols.map((col,ci)=>(<td key={"ec"+ci} style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item["extra_"+ci]||""} onChange={e=>updateListItem("program","cueSheet",idx,"extra_"+ci,e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder={col}/></td>))}
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("program","cueSheet",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"2px 5px",cursor:"pointer",fontSize:10}}>✕</button></td>
                           </tr>
                         );
