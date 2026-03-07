@@ -8551,15 +8551,20 @@ function DocEditorPanel({docType, project}) {
       if (!imgs.length) return "";
       const layout = sec.imageLayout || 0;
       const cols = layout || (imgs.length === 1 ? 1 : imgs.length <= 4 ? 2 : 3);
-      const maxPerPage = cols * 2;
+      const maxPerPage = cols <= 2 ? cols * 2 : cols * 2;
       const pages = [];
       for (let i = 0; i < imgs.length; i += maxPerPage) pages.push(imgs.slice(i, i + maxPerPage));
-      return pages.map(pageImgs => `
+      return pages.map(pageImgs => {
+        const actualCols = Math.min(pageImgs.length, cols);
+        const rows = Math.ceil(pageImgs.length / actualCols);
+        const mh = rows <= 1 ? '80vh' : rows <= 2 ? '38vh' : '24vh';
+        return `
         <div class="img-page">
-          <div class="img-grid" style="grid-template-columns:repeat(${Math.min(pageImgs.length, cols)},1fr)">
-            ${pageImgs.map(img => `<img src="${img.data}"/>`).join("")}
+          <div class="img-grid" style="grid-template-columns:repeat(${actualCols},1fr)">
+            ${pageImgs.map(img => `<img src="${img.data}" style="max-height:${mh}"/>`).join("")}
           </div>
-        </div>`).join("");
+        </div>`;
+      }).join("");
     };
 
     const bannerRows = (de.bannerList||[]).map((b,i)=>`
@@ -8606,7 +8611,7 @@ function DocEditorPanel({docType, project}) {
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700;900&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-size:13px}
-.page{width:297mm;min-height:210mm;padding:0;margin:0 auto;page-break-after:always;position:relative}
+.page{width:297mm;min-height:210mm;padding:0;margin:0 auto;page-break-after:always;position:relative;overflow:hidden}
 .page:last-child{page-break-after:auto}
 /* Cover */
 .cover{background:${_bg.gradient};color:${_bg.textColor};display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:210mm;text-align:center;padding:40px;position:relative;overflow:hidden}
@@ -8649,18 +8654,17 @@ tr:nth-child(even) td{background:#f8fafc}
 .photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
 .photo-box{background:#f1f5f9;border:2px dashed #cbd5e1;border-radius:8px;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:11px}
 /* 인라인 이미지 (텍스트와 같은 페이지) */
-.inline-imgs{margin-top:20px}
-.inline-imgs .img-grid{display:grid;gap:16px}
+.inline-imgs{margin-top:16px}
+.inline-imgs .img-grid{display:grid;gap:12px;align-items:center}
 .inline-imgs img{width:100%;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block}
 /* 독립 이미지 페이지 (섹션 레벨) */
-.img-page{page-break-before:always;padding:30px 40px;box-sizing:border-box}
-.img-page .img-grid{display:grid;gap:16px;align-content:start}
+.img-page{page-break-before:always;padding:30px 40px;box-sizing:border-box;overflow:hidden}
+.img-page .img-grid{display:grid;gap:12px;align-items:center;align-content:center}
 .img-page img{width:100%;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block}
 @media print{
-  .page{width:297mm;margin:0;page-break-after:always;overflow:visible!important}
+  .page{width:297mm;margin:0;page-break-after:always;overflow:hidden}
   .page:last-child{page-break-after:auto}
-  .img-page{page-break-before:always;page-break-inside:avoid}
-  .inline-imgs img{page-break-inside:avoid}
+  .img-page{page-break-before:always}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style></head><body>
@@ -8734,7 +8738,11 @@ ${imgHtml("venue")}` : ""}
 ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   const vImgs = (vItem.images||[]);
   const vLayout = vItem.imageLayout || 0;
-  const vCols = vLayout || (vImgs.length === 1 ? 1 : 2);
+  const vCols = vLayout || (vImgs.length === 1 ? 1 : vImgs.length <= 3 ? vImgs.length : 3);
+  const vActualCols = Math.min(vImgs.length, vCols);
+  const vRows = vImgs.length ? Math.ceil(vImgs.length / vActualCols) : 0;
+  const vHasDesc = !!vItem.description;
+  const vMaxH = vRows <= 1 ? (vHasDesc ? '55vh' : '70vh') : vRows <= 2 ? (vHasDesc ? '26vh' : '33vh') : '18vh';
   return `
 <div class="page sec-page">
   <div class="sec-header">
@@ -8747,8 +8755,8 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   <div class="sec-body">
     ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
     ${vImgs.length ? `<div class="inline-imgs">
-      <div class="img-grid" style="grid-template-columns:repeat(${Math.min(vImgs.length,vCols)},1fr)">
-        ${vImgs.map(img=>`<img src="${img.data}"/>`).join("")}
+      <div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
+        ${vImgs.map(img=>`<img src="${img.data}" style="max-height:${vMaxH}"/>`).join("")}
       </div>
     </div>` : ""}
   </div>
@@ -8785,7 +8793,11 @@ ${imgHtml("design")}` : ""}
 ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   const dImgs = (dItem.images||[]);
   const dLayout = dItem.imageLayout || 0;
-  const dCols = dLayout || (dImgs.length === 1 ? 1 : 2);
+  const dCols = dLayout || (dImgs.length === 1 ? 1 : dImgs.length <= 3 ? dImgs.length : dImgs.length <= 6 ? 3 : Math.min(dImgs.length, 6));
+  const dActualCols = Math.min(dImgs.length, dCols);
+  const dRows = dImgs.length ? Math.ceil(dImgs.length / dActualCols) : 0;
+  const hasInfo = true;
+  const dMaxH = dRows <= 1 ? (hasInfo ? '45vh' : '70vh') : dRows <= 2 ? (hasInfo ? '22vh' : '33vh') : '15vh';
   return `
 <div class="page sec-page">
   <div class="sec-header">
@@ -8804,8 +8816,8 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
     </div>
     ${dItem.notes?`<div class="box"><div class="box-title">메모</div><div class="box-val">${dItem.notes}</div></div>`:""}
     ${dImgs.length ? `<div class="inline-imgs">
-      <div class="img-grid" style="grid-template-columns:repeat(${Math.min(dImgs.length,dCols)},1fr)">
-        ${dImgs.map(img=>`<img src="${img.data}"/>`).join("")}
+      <div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
+        ${dImgs.map(img=>`<img src="${img.data}" style="max-height:${dMaxH}"/>`).join("")}
       </div>
     </div>` : ""}
   </div>
@@ -8871,6 +8883,11 @@ ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).len
 
 ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   const pImgs = (pItem.images||[]);
+  const pCols = pImgs.length === 1 ? 1 : pImgs.length <= 3 ? pImgs.length : 3;
+  const pActualCols = Math.min(pImgs.length, pCols);
+  const pRows = pImgs.length ? Math.ceil(pImgs.length / pActualCols) : 0;
+  const pHasNotes = !!pItem.notes;
+  const pMaxH = pRows <= 1 ? (pHasNotes ? '50vh' : '65vh') : pRows <= 2 ? '28vh' : '18vh';
   return `
 <div class="page sec-page">
   <div class="sec-header">
@@ -8883,8 +8900,8 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   <div class="sec-body">
     ${pItem.notes?`<div class="box"><div class="box-title">운영 메모</div><div class="box-val">${pItem.notes}</div></div>`:""}
     ${pImgs.length ? `<div class="inline-imgs">
-      <div class="img-grid" style="grid-template-columns:repeat(${pImgs.length===1?1:2},1fr)">
-        ${pImgs.map(img=>`<img src="${img.data}"/>`).join("")}
+      <div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
+        ${pImgs.map(img=>`<img src="${img.data}" style="max-height:${pMaxH}"/>`).join("")}
       </div>
     </div>` : ""}
   </div>
