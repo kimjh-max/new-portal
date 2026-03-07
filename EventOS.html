@@ -8114,6 +8114,14 @@ function FilesPage({projects}) {
   );
 }
 
+  // ── IndexedDB 폴백 (localStorage 용량 초과 대비) ──
+  const IDB_NAME = "eventos_docs";
+  const IDB_VER = 1;
+  const IDB_STORE = "documents";
+  function openIDB(){return new Promise((res,rej)=>{const r=indexedDB.open(IDB_NAME,IDB_VER);r.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains(IDB_STORE))db.createObjectStore(IDB_STORE)};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+  async function saveToIDB(key,data){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readwrite");tx.objectStore(IDB_STORE).put(data,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
+  async function loadFromIDB(key){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+
 /* ── Section Image Uploader ────────────────────────────────────────────────── */
 function SectionImages({sectionId, images, onUpdate}) {
   const fileRef = useRef(null);
@@ -8236,6 +8244,8 @@ function DocEditorPanel({docType, project}) {
 
   const [activeSection, setActiveSection] = React.useState("overview");
   const [activeDesignItem, setActiveDesignItem] = React.useState(null);
+  const [activeVenueItem, setActiveVenueItem] = React.useState(null);
+  const [activeProgramTab, setActiveProgramTab] = React.useState("timetable");
 
   const proj = project;
   const docKey = `${proj?.id}_${docType}`;
@@ -8246,8 +8256,11 @@ function DocEditorPanel({docType, project}) {
   const loadDocFromStorage = () => {
     try {
       const saved = localStorage.getItem(storageKey);
-      return saved ? JSON.parse(saved) : {};
-    } catch { return {}; }
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    // IndexedDB 폴백 로딩 (비동기)
+    loadFromIDB(storageKey).then(data => { if (data && Object.keys(data).length) setDocData(data); }).catch(() => {});
+    return {};
   };
 
   const [docData, setDocData] = React.useState(() => loadDocFromStorage());
@@ -8259,6 +8272,8 @@ function DocEditorPanel({docType, project}) {
   const [showCoverEdit, setShowCoverEdit] = React.useState(false);
   const [saveStatus, setSaveStatus] = React.useState("saved"); // "saved" | "saving" | "unsaved"
   const saveTimerRef = React.useRef(null);
+  const [lastSavedAt, setLastSavedAt] = React.useState(null);
+  const periodicSaveRef = React.useRef(null);
 
   // ── cover / keyColor 데이터 ──
   const cv = docData._cover || {};
@@ -8280,22 +8295,49 @@ function DocEditorPanel({docType, project}) {
     try { const v = localStorage.getItem(versionsKey); setVersions(v ? JSON.parse(v) : []); } catch { setVersions([]); }
   }, [docKey]);
 
-  // ── 변경 시 자동 저장 (디바운스 1초) ──
+  // ── Smart Save (localStorage + IndexedDB 폴백) ──
+  const performSave = React.useCallback((data) => {
+    const now = new Date();
+    const ts = now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(data));
+      setSaveStatus("saved"); setLastSavedAt(ts);
+    } catch(e) {
+      console.warn("[DocEditor] localStorage full, IndexedDB 폴백:", e);
+      saveToIDB(storageKey, data).then(()=>{ setSaveStatus("saved"); setLastSavedAt(ts); toast("용량 초과 → IndexedDB 저장","info"); })
+        .catch(err=>{ console.error("[DocEditor] IndexedDB 실패:", err); setSaveStatus("unsaved"); toast("저장 실패! 데이터를 백업하세요","error"); });
+    }
+  }, [storageKey]);
+
+  // 디바운스 1초 저장
   React.useEffect(() => {
     if (!docKey || Object.keys(docData).length === 0) return;
     setSaveStatus("unsaved");
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      try {
-        localStorage.setItem(storageKey, JSON.stringify(docData));
-        setSaveStatus("saved");
-      } catch (e) {
-        console.error("[DocEditor] localStorage save error:", e);
-        setSaveStatus("unsaved");
-      }
-    }, 1000);
+    saveTimerRef.current = setTimeout(() => performSave(docData), 1000);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
-  }, [docData]);
+  }, [docData, docKey, performSave]);
+
+  // 5분 주기 강제 저장
+  React.useEffect(() => {
+    if (!docKey) return;
+    const docDataRef = { current: docData };
+    periodicSaveRef.current = setInterval(() => {
+      if (Object.keys(docDataRef.current).length > 0) { performSave(docDataRef.current); toast("자동 저장 완료","success"); }
+    }, 5 * 60 * 1000);
+    return () => { if (periodicSaveRef.current) clearInterval(periodicSaveRef.current); };
+  }, [docKey, performSave]);
+
+  // docData ref 업데이트 (주기적 저장에서 최신 값 사용)
+  const docDataLatestRef = React.useRef(docData);
+  React.useEffect(() => { docDataLatestRef.current = docData; }, [docData]);
+
+  // 탭 닫기/새로고침 시 즉시 저장
+  React.useEffect(() => {
+    const handler = () => { try { localStorage.setItem(storageKey, JSON.stringify(docDataLatestRef.current)); } catch{} };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [storageKey]);
 
   const updateDoc = (sectionId, field, value) => {
     setDocData(prev => ({
@@ -8344,6 +8386,16 @@ function DocEditorPanel({docType, project}) {
   // 현재 섹션 데이터
   const sd = (sectionId) => docData[sectionId] || {};
 
+  const calcDuration = (st, et) => {
+    if (!st || !et) return "";
+    const [sh,sm] = st.split(":").map(Number);
+    const [eh,em] = et.split(":").map(Number);
+    if (isNaN(sh)||isNaN(sm)||isNaN(eh)||isNaN(em)) return "";
+    let d = (eh*60+em) - (sh*60+sm);
+    if (d<0) d += 24*60;
+    return String(d);
+  };
+
   // 동적 리스트 헬퍼 — 기본 행을 docData에 자동 저장
   const getList = (sectionId, field, defaultItem) => {
     const val = sd(sectionId)[field];
@@ -8383,12 +8435,28 @@ function DocEditorPanel({docType, project}) {
     setDocData(prev=>({...prev, _enabledSections: next}));
   };
 
+  // ── 커버 배경 프리셋 ──
+  const COVER_BG_PRESETS = [
+    {id:"dark-blue",label:"다크 블루",gradient:"linear-gradient(135deg,#0f1623 0%,#1e2a4a 50%,#0f1623 100%)",textColor:"#fff",pptFill:"0F1623"},
+    {id:"dark-green",label:"다크 그린",gradient:"linear-gradient(135deg,#0a1f12 0%,#1a3a2a 50%,#0a1f12 100%)",textColor:"#fff",pptFill:"0A1F12"},
+    {id:"black",label:"블랙",gradient:"linear-gradient(135deg,#0a0a0a 0%,#1a1a2e 50%,#0a0a0a 100%)",textColor:"#fff",pptFill:"0A0A0A"},
+    {id:"white",label:"화이트",gradient:"linear-gradient(135deg,#f8fafc 0%,#e2e8f0 50%,#f8fafc 100%)",textColor:"#1e293b",pptFill:"F8FAFC"},
+    {id:"navy",label:"네이비",gradient:"linear-gradient(135deg,#0c1445 0%,#1e3a5f 50%,#0c1445 100%)",textColor:"#fff",pptFill:"0C1445"},
+    {id:"burgundy",label:"버건디",gradient:"linear-gradient(135deg,#2d0a0a 0%,#4a1a2e 50%,#2d0a0a 100%)",textColor:"#fff",pptFill:"2D0A0A"},
+  ];
+  const getCoverBg = (cv) => {
+    const s = cv?.bgStyle || "dark-blue";
+    if (s === "custom") { const c = cv?.bgCustomColor || "#0f1623"; return {gradient:`linear-gradient(135deg,${c} 0%,${c}dd 50%,${c} 100%)`,textColor:"#fff",pptFill:c.replace("#","")}; }
+    return COVER_BG_PRESETS.find(p=>p.id===s) || COVER_BG_PRESETS[0];
+  };
+
   // PDF 출력
   const printPDF = () => {
     const W = window.open("","_blank","width=1200,height=900");
     const p = proj || {};
     const _cv = docData._cover || {};
     const _kc = docData._keyColor || "#6366f1";
+    const _bg = getCoverBg(_cv);
     const ov = sd("overview");
     const ve = sd("venue");
     const de = sd("design");
@@ -8406,9 +8474,11 @@ function DocEditorPanel({docType, project}) {
       const imgs = sd(sectionId).images || [];
       if (!imgs.length) return "";
       return imgs.map(img => `
-        <div class="page-break" style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:20px;box-sizing:border-box">
-          <img src="${img.data}" style="max-width:100%;max-height:90vh;object-fit:contain;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.1);display:block"/>
-          ${(img.annotations||[]).length ? `<div style="margin-top:12px;padding:8px 16px;background:#f8fafc;border-radius:6px;font-size:12px;color:#475569;text-align:center;max-width:80%">${img.annotations.map(a=>a.text).join(" · ")}</div>` : ""}
+        <div class="page-break" style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:40px;box-sizing:border-box">
+          <div style="flex:1;display:flex;align-items:center;justify-content:center;width:100%;max-height:80vh">
+            <img src="${img.data}" style="max-width:90%;max-height:75vh;width:auto;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block"/>
+          </div>
+          ${(img.annotations||[]).length ? `<div style="margin-top:16px;padding:10px 20px;background:#f8fafc;border-radius:8px;font-size:12px;color:#475569;text-align:center;max-width:80%;border:1px solid #e2e8f0">${img.annotations.map(a=>a.text).join(" · ")}</div>` : ""}
           <div style="margin-top:8px;font-size:10px;color:#94a3b8">${img.name||""}</div>
         </div>`).join("");
     };
@@ -8417,10 +8487,10 @@ function DocEditorPanel({docType, project}) {
       <tr><td>${i+1}</td><td>${b.name||""}</td><td>${b.category||""}</td><td>${b.size||""}</td><td style="text-align:center">${b.qty||""}</td></tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
 
     const programRows = (pr.timeline||[]).map((t,i)=>`
-      <tr><td style="text-align:center">${i+1}</td><td style="white-space:nowrap">${t.time||""}</td><td style="text-align:center">${t.duration||""}</td><td>${t.content||""}</td><td>${t.note||""}</td></tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
+      <tr><td style="text-align:center">${i+1}</td><td style="white-space:nowrap">${t.startTime||t.time||""}${(t.startTime&&t.endTime)?" ~ ":""}${t.endTime||""}</td><td style="text-align:center">${t.duration||""}${t.duration?"분":""}</td><td>${t.content||""}</td><td>${t.note||""}</td></tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
 
     const staffRows = (op.staffList||[]).map((s,i)=>`
-      <tr><td style="text-align:center">${i+1}</td><td>${s.role||""}</td><td>${s.name||""}</td><td>${s.contact||""}</td><td>${s.note||""}</td></tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
+      <tr><td style="text-align:center">${i+1}</td><td>${s.division||"에픽"}</td><td>${s.role||""}</td><td>${s.name||""}</td><td>${s.contact||""}</td><td style="text-align:center">${s.count||1}</td><td>${s.note||""}</td></tr>`).join("") || `<tr><td colspan="7" style="text-align:center;color:#888">데이터 없음</td></tr>`;
 
     const prizeRows = (op.prizeList||[]).map((s,i)=>`
       <tr><td style="text-align:center">${i+1}</td><td>${s.grade||""}</td><td>${s.item||""}</td><td style="text-align:center">${s.qty||""}</td><td>${s.note||""}</td></tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
@@ -8460,16 +8530,16 @@ body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-si
 .page{width:297mm;min-height:210mm;padding:0;margin:0 auto;page-break-after:always;position:relative;overflow:hidden}
 .page:last-child{page-break-after:auto}
 /* Cover */
-.cover{background:linear-gradient(135deg,#0f1623 0%,#1e2a4a 50%,#0f1623 100%);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:210mm;text-align:center;padding:40px;position:relative;overflow:hidden}
+.cover{background:${_bg.gradient};color:${_bg.textColor};display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:210mm;text-align:center;padding:40px;position:relative;overflow:hidden}
 .cover::before{content:'';position:absolute;top:0;left:0;right:0;height:6px;background:linear-gradient(90deg,${_kc},${_kc}88,${_kc}44)}
 .cover::after{content:'';position:absolute;bottom:60px;left:50%;transform:translateX(-50%);width:120px;height:2px;background:linear-gradient(90deg,transparent,${_kc},transparent)}
 .cover .cover-version{position:absolute;top:24px;right:32px;background:${_kc}33;color:${_kc};border:1px solid ${_kc}55;padding:4px 14px;border-radius:4px;font-size:11px;font-weight:700;letter-spacing:1px}
 .cover .company{font-size:14px;color:${_kc};letter-spacing:4px;font-weight:600;margin-bottom:24px}
 .cover .event-name{font-size:36px;font-weight:900;color:#fff;margin-bottom:12px;line-height:1.2}
 .cover .doc-type{font-size:18px;color:${_kc}cc;font-weight:700;margin-bottom:20px;letter-spacing:2px}
-.cover .year{font-size:13px;color:#94a3b8;letter-spacing:1px}
-.cover .contact{font-size:12px;color:#94a3b8;margin-top:16px}
-.cover .contact-point{font-size:11px;color:#64748b;margin-top:6px}
+.cover .year{font-size:13px;color:${_bg.textColor==="#1e293b"?"#475569":"#94a3b8"};letter-spacing:1px}
+.cover .contact{font-size:12px;color:${_bg.textColor==="#1e293b"?"#475569":"#94a3b8"};margin-top:16px}
+.cover .contact-point{font-size:11px;color:${_bg.textColor==="#1e293b"?"#64748b":"#64748b"};margin-top:6px}
 /* Section page */
 .sec-page{background:#fff;padding:0}
 .sec-header{background:linear-gradient(135deg,#0f1623,#1e3a5f);color:#fff;padding:24px 40px;display:flex;align-items:center;gap:16px;border-left:5px solid ${_kc}}
@@ -8502,8 +8572,8 @@ tr:nth-child(even) td{background:#f8fafc}
 @media print{
   .page{width:297mm;margin:0;page-break-after:always}
   .page:last-child{page-break-after:auto}
-  .page-break{page-break-before:always;height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center}
-  .page-break img{max-width:100%;max-height:85vh;object-fit:contain}
+  .page-break{page-break-before:always;height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:40px;box-sizing:border-box}
+  .page-break img{max-width:90%;max-height:75vh;object-fit:contain;border-radius:8px}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style></head><body>
@@ -8574,6 +8644,32 @@ ${secEnabled("venue") ? `<!-- 02 VENUE -->
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>` : ""}
 
+${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
+  const vImgs = (vItem.images||[]);
+  const vImgHtml = vImgs.length ? vImgs.map(img=>`
+    <div style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:40px;box-sizing:border-box">
+      <div style="flex:1;display:flex;align-items:center;justify-content:center;width:100%;max-height:80vh">
+        <img src="${img.data}" style="max-width:90%;max-height:75vh;width:auto;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
+      </div>
+      ${(img.annotations||[]).length?`<div style="margin-top:16px;padding:10px 20px;background:#f8fafc;border-radius:8px;font-size:12px;color:#475569;text-align:center;max-width:80%;border:1px solid #e2e8f0">${img.annotations.map(a=>a.text).join(" · ")}</div>`:""}
+    </div>`).join("") : "";
+  return `
+<div class="page sec-page">
+  <div class="sec-header">
+    <div class="sec-num">${secNum("venue")}</div>
+    <div class="sec-title-block">
+      <div class="sec-title">${vItem.itemName||"Venue Detail"}</div>
+      <div class="sec-sub">장소 상세 | VENUE DETAIL</div>
+    </div>
+  </div>
+  <div class="sec-body">
+    ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
+    ${vImgHtml}
+  </div>
+  <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
+</div>`;
+}).join("\\n") : ""}
+
 ${secEnabled("design") ? `<!-- 03 DESIGN -->
 <div class="page sec-page">
   <div class="sec-header">
@@ -8602,9 +8698,11 @@ ${secEnabled("design") ? `<!-- 03 DESIGN -->
 
 ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   const dImgs = (dItem.images||[]);
-  const dImgGrid = dImgs.length ? `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:16px">${dImgs.map(img=>`
-    <div style="border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
-      <img src="${img.data}" style="width:100%;display:block"/>
+  const dImgGrid = dImgs.length ? `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:20px">${dImgs.map(img=>`
+    <div style="border-radius:8px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06)">
+      <div style="width:100%;aspect-ratio:16/10;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#f8fafc">
+        <img src="${img.data}" style="width:100%;height:100%;object-fit:contain;display:block"/>
+      </div>
       ${(img.annotations||[]).length?`<div style="padding:4px 8px;background:#f8fafc;font-size:10px;color:#475569">${img.annotations.map(a=>a.text).join(" / ")}</div>`:""}
     </div>`).join("")}</div>` : "";
   return `
@@ -8651,6 +8749,67 @@ ${secEnabled("program") ? `<!-- 04 PROGRAM -->
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>` : ""}
 
+${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).length ? `
+<div class="page sec-page" style="page-break-before:always">
+  <div class="sec-header">
+    <div class="sec-num">${secNum("program")}</div>
+    <div class="sec-title-block">
+      <div class="sec-title">Cue Sheet</div>
+      <div class="sec-sub">큐시트 | OPERATIONAL CUE SHEET</div>
+    </div>
+  </div>
+  <div class="sec-body">
+    <table style="font-size:9px">
+      <thead><tr><th style="width:20px">#</th><th>세션</th><th>내용</th><th>시간</th><th>경과</th><th>상세</th><th>화면</th><th>음향</th><th>에픽</th><th>${pr._cueSheetClientName||"주최측"}</th><th>의전</th></tr></thead>
+      <tbody>
+        ${(pr.cueSheet||[]).filter(c=>c.content||c.session).map((c,i)=>{
+          const dur = c.duration ? (parseInt(c.duration)>=60?Math.floor(parseInt(c.duration)/60)+":"+String(parseInt(c.duration)%60).padStart(2,"0"):c.duration+"분") : "";
+          return `<tr>
+            <td style="text-align:center">${i+1}</td>
+            <td style="font-weight:600">${c.session||""}</td>
+            <td>${c.content||""}</td>
+            <td style="white-space:nowrap;font-size:8px">${c.startTime||""}${c.startTime&&c.endTime?"~":""}${c.endTime||""}</td>
+            <td style="text-align:center">${dur}</td>
+            <td style="font-size:8px">${c.details||""}</td>
+            <td style="font-size:8px">${c.screen||""}${c.bgm?" / "+c.bgm:""}${c.mic?" / "+c.mic:""}</td>
+            <td style="font-size:8px">${c.reference||""}</td>
+            <td style="font-size:8px">${c.staffEpic||""}</td>
+            <td style="font-size:8px">${c.staffClient||""}</td>
+            <td style="font-size:8px">${c.staffProtocol||""}</td>
+          </tr>`;
+        }).join("")}
+      </tbody>
+    </table>
+  </div>
+  <div class="footer">${p.name||""} ${docTitle} · Cue Sheet</div>
+</div>` : ""}
+
+${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
+  const pImgs = (pItem.images||[]);
+  const pImgHtml = pImgs.length ? pImgs.map(img=>`
+    <div style="page-break-before:always;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;padding:40px;box-sizing:border-box">
+      <div style="flex:1;display:flex;align-items:center;justify-content:center;width:100%;max-height:80vh">
+        <img src="${img.data}" style="max-width:90%;max-height:75vh;width:auto;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)"/>
+      </div>
+      ${(img.annotations||[]).length?`<div style="margin-top:16px;padding:10px 20px;background:#f8fafc;border-radius:8px;font-size:12px;color:#475569;text-align:center">${img.annotations.map(a=>a.text).join(" · ")}</div>`:""}
+    </div>`).join("") : "";
+  return `
+<div class="page sec-page">
+  <div class="sec-header">
+    <div class="sec-num">${secNum("program")}</div>
+    <div class="sec-title-block">
+      <div class="sec-title">${pItem.itemName||"Program"}</div>
+      <div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div>
+    </div>
+  </div>
+  <div class="sec-body">
+    ${pItem.notes?`<div class="box"><div class="box-title">운영 메모</div><div class="box-val">${pItem.notes}</div></div>`:""}
+    ${pImgHtml}
+  </div>
+  <div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>
+</div>`;
+}).join("\\n") : ""}
+
 ${secEnabled("operation") ? `<!-- 05 OPERATION -->
 <div class="page sec-page">
   <div class="sec-header">
@@ -8667,14 +8826,15 @@ ${secEnabled("operation") ? `<!-- 05 OPERATION -->
     </div>` : `<div class="box"><div class="box-title">운영 특이사항</div><div class="box-val">${op.notes||""}</div></div>`}
     <div class="box-title" style="margin-bottom:8px">스태프 배치</div>
     <table>
-      <thead><tr><th>#</th><th>역할</th><th>이름</th><th>연락처</th><th>비고</th></tr></thead>
+      <thead><tr><th>#</th><th>구분</th><th>역할</th><th>이름</th><th>연락처</th><th>인원</th><th>비고</th></tr></thead>
       <tbody>${staffRows}</tbody>
     </table>
-    <div class="box-title" style="margin-bottom:8px">경품 목록</div>
+    <div style="text-align:right;margin:-8px 0 16px;font-size:12px;font-weight:700;color:${_kc}">총 인원: ${(op.staffList||[]).reduce((sum,s)=>sum+(parseInt(s.count)||1),0)}명</div>
+    ${(op.showPrize!==false) ? `<div class="box-title" style="margin-bottom:8px">경품 목록</div>
     <table>
       <thead><tr><th>#</th><th>등급</th><th>품목</th><th style="text-align:center">수량</th><th>비고</th></tr></thead>
       <tbody>${prizeRows}</tbody>
-    </table>
+    </table>` : ""}
     ${imgHtml("operation")}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
@@ -8715,6 +8875,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
     const p = proj || {};
     const _cv = docData._cover || {};
     const _kc = docData._keyColor || "#6366f1";
+    const _bg = getCoverBg(_cv);
     const _kcHex = _kc.replace("#","").toUpperCase();
     const docTitle = isPlan ? "운영계획안" : "결과보고서";
     const footerTxt = `${p.name||""} ${docTitle} · (주)에픽스테이지`;
@@ -8828,11 +8989,11 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
 
     /* ── Cover Slide ── */
     const cover = pptx.addSlide();
-    cover.background = {fill:"0F1623"};
+    cover.background = {fill:_bg.pptFill};
     cover.addShape(pptx.ShapeType.rect,{x:0,y:0,w:"100%",h:0.08,fill:{color:_kcHex}});
     cover.addText(_cv.version||"Ver 1.0",{x:10,y:0.3,w:3,h:0.35,align:"right",fontSize:10,color:_kcHex,bold:true});
     cover.addText("(주)에픽스테이지",{x:0,y:1.8,w:"100%",h:0.5,align:"center",fontSize:12,color:_kcHex,letterSpacing:4});
-    cover.addText(_cv.eventName||p.name||"행사명",{x:0.5,y:2.8,w:12.33,h:1.2,align:"center",fontSize:32,color:"FFFFFF",bold:true});
+    cover.addText(_cv.eventName||p.name||"행사명",{x:0.5,y:2.8,w:12.33,h:1.2,align:"center",fontSize:32,color:_bg.textColor==="#1e293b"?"1E293B":"FFFFFF",bold:true});
     cover.addText(docTitle,{x:0,y:4.2,w:"100%",h:0.5,align:"center",fontSize:16,color:_kcHex+"CC",bold:true});
     const _coverYear = (_cv.client||p.client||"") + ((_cv.client||p.client)&&(_cv.eventDate||p.eventDate) ? "  ·  " : "") + (_cv.eventDate||p.eventDate||"");
     cover.addText(_coverYear,{x:0,y:4.9,w:"100%",h:0.4,align:"center",fontSize:11,color:"94A3B8"});
@@ -8863,6 +9024,23 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
         (d.equipList||[]).filter(e=>e.name).map((e,i)=>tblRow([i+1,e.name,e.spec,e.qty,e.note])),
         [0.5,4,3.5,1.33,3]);
       pmImages(pm, d);
+
+      // 베뉴 서브아이템 슬라이드
+      const _viList = d.venueItems || [];
+      _viList.forEach((vItem, vIdx) => {
+        const itemLetter = String.fromCharCode(65 + vIdx);
+        const itemPm = new PageMgr(secNum("venue")+"-"+itemLetter, vItem.itemName||"Venue Detail", "장소 상세 | VENUE DETAIL");
+        if (vItem.description) pmField(itemPm, "설명", vItem.description, 12.33, 1.5);
+        const vImgs = vItem.images||[];
+        vImgs.forEach(img => {
+          itemPm.need(4.0);
+          try {
+            itemPm.sl.addImage({data:img.data, x:1.5, y:itemPm.y, w:10, h:5.2, sizing:{type:"contain",w:10,h:5.2}});
+            if ((img.annotations||[]).length) itemPm.sl.addText(img.annotations.map(a=>a.text).join(" · "), {x:1.5,y:itemPm.y+5.2,w:10,h:0.3,fontSize:9,color:"64748B",align:"center"});
+            itemPm.y += 5.6;
+          } catch(e){}
+        });
+      });
     })();
 
     /* ── 03 Design ── */
@@ -8905,11 +9083,39 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
       const d = sd("program");
       const pm = new PageMgr(secNum("program"),"Program","진행 순서 | EVENT PROGRAM");
       pmTable(pm,"타임테이블 / 진행순서",tblHdr(["#","시간","소요(분)","내용","비고"]),
-        (d.timeline||[]).filter(t=>t.time||t.content).map((t,i)=>tblRow([i+1,t.time,t.duration,t.content,t.note])),
+        (d.timeline||[]).filter(t=>t.startTime||t.time||t.content).map((t,i)=>tblRow([i+1,(t.startTime||t.time||"")+(t.startTime&&t.endTime?" ~ ":"")+( t.endTime||""),t.duration?(t.duration+"분"):"",t.content,t.note])),
         [0.5,2,1.2,5.63,3]);
       pmField(pm,"MC / 진행 메모",d.mcInfo,12.33,0.8);
       if (!isPlan) pmField(pm,"프로그램 결과 메모",d.resultNotes,12.33,0.8);
       pmImages(pm, d);
+
+      // ── 큐시트 슬라이드 ──
+      const _csList = (d.cueSheet||[]).filter(c=>c.content||c.session);
+      if (_csList.length) {
+        const csPm = new PageMgr(secNum("program")+"-CS", "Cue Sheet", "큐시트 | OPERATIONAL CUE SHEET");
+        pmTable(csPm, "큐시트",
+          tblHdr(["#","세션","내용","시간","경과","상세","화면","에픽",d._cueSheetClientName||"주최측","의전"]),
+          _csList.map((c,i)=>{
+            const dur = c.duration?(parseInt(c.duration)>=60?Math.floor(parseInt(c.duration)/60)+":"+String(parseInt(c.duration)%60).padStart(2,"0"):c.duration+"분"):"";
+            return tblRow([i+1,c.session,c.content,(c.startTime||"")+(c.startTime&&c.endTime?"~":"")+(c.endTime||""),dur,c.details||"",c.screen||"",c.staffEpic||"",c.staffClient||"",c.staffProtocol||""]);
+          }),
+          [0.3,1.0,2.0,1.0,0.6,2.0,1.2,1.5,1.5,1.23]);
+      }
+
+      // ── 프로그램 아이템 슬라이드 ──
+      (d.programItems||[]).forEach((pItem, pIdx) => {
+        const itemLetter = String.fromCharCode(65 + pIdx);
+        const itemPm = new PageMgr(secNum("program")+"-"+itemLetter, pItem.itemName||"Program", (pItem.timeSlot||"")+" | PROGRAM DETAIL");
+        if (pItem.notes) pmField(itemPm,"운영 메모",pItem.notes,12.33,1.0);
+        (pItem.images||[]).forEach(img=>{
+          itemPm.need(4.0);
+          try {
+            itemPm.sl.addImage({data:img.data,x:1.5,y:itemPm.y,w:10,h:5.2,sizing:{type:"contain",w:10,h:5.2}});
+            if ((img.annotations||[]).length) itemPm.sl.addText(img.annotations.map(a=>a.text).join(" · "),{x:1.5,y:itemPm.y+5.2,w:10,h:0.3,fontSize:9,color:"64748B",align:"center"});
+            itemPm.y+=5.6;
+          } catch(e){}
+        });
+      });
     })();
 
     /* ── 05 Operation ── */
@@ -8918,12 +9124,16 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
       const pm = new PageMgr(secNum("operation"),"Operation","운영 계획 | OPERATION PLAN");
       if (d.showMC) pm2Col(pm,"MC 이름",d.mcName||"","MC 프로필",d.mcProfile||"");
       pmField(pm,"운영 특이사항",d.notes,12.33,0.8);
-      pmTable(pm,"스태프 배치",tblHdr(["#","역할","이름","연락처","비고"]),
-        (d.staffList||[]).filter(s=>s.role||s.name).map((s,i)=>tblRow([i+1,s.role,s.name,s.contact,s.note])),
-        [0.5,3,2.5,3,3.33]);
+      pmTable(pm,"스태프 배치",tblHdr(["#","구분","역할","이름","연락처","인원","비고"]),
+        (d.staffList||[]).filter(s=>s.role||s.name).map((s,i)=>tblRow([i+1,s.division||"에픽",s.role,s.name,s.contact,s.count||1,s.note])),
+        [0.4,1.5,2,1.8,2.5,0.6,3.53]);
+      const totalStaff = (d.staffList||[]).reduce((sum,s)=>sum+(parseInt(s.count)||1),0);
+      pmField(pm,"총 인원",totalStaff+"명",12.33,0.3);
+      if (d.showPrize !== false) {
       pmTable(pm,"경품 목록",tblHdr(["#","등급","품목","수량","비고"]),
         (d.prizeList||[]).filter(pr=>pr.grade||pr.item).map((pr,i)=>tblRow([i+1,pr.grade,pr.item,pr.qty,pr.note])),
         [0.5,2,4,1.5,4.33]);
+      }
       pmImages(pm, d);
     })();
 
@@ -9000,45 +9210,117 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
 
     if (activeSection === "venue") {
       const eqList = getList("venue","equipList",{name:"",spec:"",qty:"",note:""});
+
+      // ── 베뉴 서브아이템 (약식도면, 공간배치, 이동동선) ──
+      const MANDATORY_VENUE = ["약식도면","공간배치","이동동선"];
+      const getVenueItems = () => {
+        let items = ve.venueItems || [];
+        if (items.length === 0) {
+          items = MANDATORY_VENUE.map((name,i)=>({_id:Date.now()+i,itemName:name,description:"",images:[],mandatory:true}));
+          setTimeout(()=>updateDoc("venue","venueItems",items),0);
+        }
+        return items;
+      };
+      const addVenueItem = () => {
+        updateDoc("venue","venueItems",[...getVenueItems(),{_id:Date.now(),itemName:"새 항목",description:"",images:[],mandatory:false}]);
+      };
+      const removeVenueItem = (id) => {
+        const item = getVenueItems().find(v=>v._id===id);
+        if (item?.mandatory) { toast("필수 항목은 삭제할 수 없습니다","warn"); return; }
+        updateDoc("venue","venueItems",getVenueItems().filter(v=>v._id!==id));
+        if (activeVenueItem===id) setActiveVenueItem(null);
+      };
+      const updateVenueItem = (id,field,value) => {
+        updateDoc("venue","venueItems",getVenueItems().map(v=>v._id===id?{...v,[field]:value}:v));
+      };
+      const venueItemsList = getVenueItems();
+      const activeVenueItemObj = venueItemsList.find(v=>v._id===activeVenueItem);
+
       return (
         <div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <DocFG label="장소명"><input className="form-input" value={ve.venueName||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("venue","venueName",e.target.value)} placeholder="장소명"/></DocFG>
-            <DocFG label="수용 인원"><input className="form-input" value={ve.capacity||proj?.taskOrder?.attendance||""} onChange={e=>updateDoc("venue","capacity",e.target.value)} placeholder="예) 300명"/></DocFG>
-            <DocFG label="주소"><input className="form-input" value={ve.address||""} onChange={e=>updateDoc("venue","address",e.target.value)} placeholder="도로명 주소"/></DocFG>
-            <DocFG label="층/홀"><input className="form-input" value={ve.floor||""} onChange={e=>updateDoc("venue","floor",e.target.value)} placeholder="예) B1층 그랜드볼룸"/></DocFG>
+          {/* 서브탭 네비 */}
+          <div style={{display:"flex",gap:4,overflowX:"auto",marginBottom:16,paddingBottom:8,borderBottom:"1px solid var(--border)"}}>
+            <button onClick={()=>setActiveVenueItem(null)} style={{
+              padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:activeVenueItem===null?700:500,
+              background:activeVenueItem===null?"rgba(99,102,241,.15)":"transparent",color:activeVenueItem===null?"#a5b4fc":"var(--txt3)"
+            }}>📋 개요</button>
+            {venueItemsList.map(item=>(
+              <button key={item._id} onClick={()=>setActiveVenueItem(item._id)} style={{
+                padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:activeVenueItem===item._id?700:500,
+                background:activeVenueItem===item._id?"rgba(99,102,241,.15)":"transparent",color:activeVenueItem===item._id?"#a5b4fc":"var(--txt3)",
+                display:"flex",flexDirection:"column",alignItems:"center",gap:2,minWidth:80
+              }}>
+                <span style={{fontSize:9,opacity:.6}}>{item.mandatory?"필수":""}</span>
+                <span>{item.itemName}</span>
+              </button>
+            ))}
+            <button onClick={addVenueItem} style={{padding:"8px 14px",borderRadius:8,border:"1px dashed rgba(255,255,255,.15)",background:"transparent",color:"var(--txt4)",cursor:"pointer",fontSize:12}}>+ 추가</button>
           </div>
-          <DocFG label="장소 특이사항">
-            <textarea className="form-input" rows={2} value={ve.notes||""} onChange={e=>updateDoc("venue","notes",e.target.value)} placeholder="반입 동선, 주차, 특이사항 등" style={{resize:"vertical"}}/>
-          </DocFG>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-            <label className="form-label" style={{margin:0}}>장비/시설 목록</label>
-            <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("venue","equipList",{name:"",spec:"",qty:"",note:""})}>+ 항목 추가</button>
-          </div>
-          <div style={{overflowX:"auto"}}>
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-              <thead><tr style={{background:"rgba(99,102,241,.1)"}}>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:30}}>#</th>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)"}}>장비명</th>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)"}}>규격</th>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:60}}>수량</th>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)"}}>비고</th>
-                <th style={{width:36,border:"1px solid rgba(255,255,255,.07)"}}></th>
-              </tr></thead>
-              <tbody>
-                {eqList.map((item,idx)=>(
-                  <tr key={idx}>
-                    <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.name||""} onChange={e=>updateListItem("venue","equipList",idx,"name",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="장비명"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.spec||""} onChange={e=>updateListItem("venue","equipList",idx,"spec",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="규격"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.qty||""} onChange={e=>updateListItem("venue","equipList",idx,"qty",e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="0"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.note||""} onChange={e=>updateListItem("venue","equipList",idx,"note",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("venue","equipList",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+
+          {/* 개요 탭 */}
+          {activeVenueItem===null && (
+            <div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:4}}>
+                <DocFG label="장소명"><input className="form-input" value={ve.venueName||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("venue","venueName",e.target.value)} placeholder="장소명"/></DocFG>
+                <DocFG label="수용 인원"><input className="form-input" value={ve.capacity||proj?.taskOrder?.attendance||""} onChange={e=>updateDoc("venue","capacity",e.target.value)} placeholder="예) 300명"/></DocFG>
+                <DocFG label="주소"><input className="form-input" value={ve.address||""} onChange={e=>updateDoc("venue","address",e.target.value)} placeholder="도로명 주소"/></DocFG>
+                <DocFG label="층/홀"><input className="form-input" value={ve.floor||""} onChange={e=>updateDoc("venue","floor",e.target.value)} placeholder="예) B1층 그랜드볼룸"/></DocFG>
+              </div>
+              <DocFG label="장소 특이사항">
+                <textarea className="form-input" rows={2} value={ve.notes||""} onChange={e=>updateDoc("venue","notes",e.target.value)} placeholder="장소 관련 특이사항" style={{resize:"vertical"}}/>
+              </DocFG>
+              {/* 장비/시설 목록 */}
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,marginTop:8}}>
+                <label className="form-label" style={{margin:0}}>장비 / 시설 목록</label>
+                <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("venue","equipList",{name:"",spec:"",qty:"",note:""})}>+ 항목 추가</button>
+              </div>
+              <div style={{overflowX:"auto",marginBottom:16}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead><tr style={{background:"rgba(99,102,241,.1)"}}>
+                    {["#","품목명","규격","수량","비고",""].map((h,i)=>(
+                      <th key={i} style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:i===0?30:i===5?36:undefined}}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {eqList.map((item,idx)=>(
+                      <tr key={idx}>
+                        <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.name||""} onChange={e=>updateListItem("venue","equipList",idx,"name",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="장비명"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.spec||""} onChange={e=>updateListItem("venue","equipList",idx,"spec",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="규격"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.qty||""} onChange={e=>updateListItem("venue","equipList",idx,"qty",e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="수량"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.note||""} onChange={e=>updateListItem("venue","equipList",idx,"note",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("venue","equipList",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <SectionImages sectionId="venue" images={ve.images||[]} onUpdate={imgs=>updateDoc("venue","images",imgs)}/>
+            </div>
+          )}
+
+          {/* 서브아이템 탭 */}
+          {activeVenueItemObj && (
+            <div>
+              <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+                <span style={{fontSize:18,fontWeight:800,color:"var(--txt)"}}>{activeVenueItemObj.itemName}</span>
+                {activeVenueItemObj.mandatory && <span style={{fontSize:10,background:"rgba(99,102,241,.15)",color:"#818cf8",padding:"2px 8px",borderRadius:4,fontWeight:700}}>필수</span>}
+                {!activeVenueItemObj.mandatory && (
+                  <button onClick={()=>removeVenueItem(activeVenueItemObj._id)} style={{background:"rgba(239,68,68,.1)",border:"1px solid rgba(239,68,68,.2)",color:"#f87171",borderRadius:6,padding:"4px 12px",cursor:"pointer",fontSize:11,fontWeight:700}}>삭제</button>
+                )}
+              </div>
+              {!activeVenueItemObj.mandatory && (
+                <DocFG label="항목명"><input className="form-input" value={activeVenueItemObj.itemName||""} onChange={e=>updateVenueItem(activeVenueItemObj._id,"itemName",e.target.value)} placeholder="항목명"/></DocFG>
+              )}
+              <DocFG label="설명">
+                <textarea className="form-input" rows={4} value={activeVenueItemObj.description||""} onChange={e=>updateVenueItem(activeVenueItemObj._id,"description",e.target.value)} placeholder="상세 설명을 입력하세요" style={{resize:"vertical"}}/>
+              </DocFG>
+              <div style={{marginTop:12}}>
+                <label className="form-label">이미지</label>
+                <SectionImages sectionId={`venueItem_${activeVenueItemObj._id}`} images={activeVenueItemObj.images||[]} onUpdate={imgs=>updateVenueItem(activeVenueItemObj._id,"images",imgs)}/>
+              </div>
+            </div>
+          )}
         </div>
       );
     }
@@ -9218,52 +9500,193 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
       );
     }
 
-    if (activeSection === "program") {
-      const pgList = getList("program","timeline",{time:"",duration:"",content:"",note:""});
-      return (
-        <div>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-            <label className="form-label" style={{margin:0}}>타임테이블 / 진행순서</label>
-            <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("program","timeline",{time:"",duration:"",content:"",note:""})}>+ 항목 추가</button>
+      if (activeSection === "program") {
+        const pr = sd("program");
+        const pgList = getList("program","timeline",{startTime:"",endTime:"",duration:"",content:"",note:""});
+
+        // ── 기존 데이터 마이그레이션 (time → startTime/endTime) ──
+        // Note: setTimeout을 사용하여 렌더 사이클 밖에서 state 업데이트 (useEffect 대신 — 조건부 hook 금지)
+        (() => {
+          const tl = sd("program").timeline || [];
+          const needsMigration = tl.some(t => t.time && !t.startTime);
+          if (needsMigration) {
+            const migrated = tl.map(t => {
+              if (t.time && !t.startTime) {
+                const parts = t.time.split(/[~\-]/);
+                return {...t, startTime: parts[0]?.trim()||"", endTime: parts[1]?.trim()||"", time: undefined};
+              }
+              return t;
+            });
+            setTimeout(() => updateDoc("program","timeline",migrated), 0);
+          }
+        })();
+
+        // ── 큐시트 ──
+        const SESSION_PRESETS = ["사전설치","세팅","리허설","스탠바이","오프닝","환영사","국민의례","시상","개회사","축사","공연","촬영","발표","폐회선언","만찬","철수"];
+        const csList = getList("program","cueSheet",{session:"",content:"",startTime:"",endTime:"",duration:"",details:"",reference:"",screen:"",bgm:"",mic:"",staffEpic:"",staffClient:"",staffProtocol:""});
+        const csClientName = pr._cueSheetClientName || "주최주관사";
+
+        // ── 프로그램 아이템 ──
+        const getProgramItems = () => sd("program").programItems || [];
+        const addProgramItem = () => {
+          updateDoc("program","programItems",[...getProgramItems(),{_id:Date.now(),itemName:"새 프로그램",timeSlot:"",notes:"",images:[]}]);
+        };
+        const removeProgramItem = (id) => {
+          updateDoc("program","programItems",getProgramItems().filter(p=>p._id!==id));
+          if (activeProgramTab===id) setActiveProgramTab("timetable");
+        };
+        const updateProgramItem = (id,field,value) => {
+          updateDoc("program","programItems",getProgramItems().map(p=>p._id===id?{...p,[field]:value}:p));
+        };
+        const programItemsList = getProgramItems();
+        const activeProgramItemObj = typeof activeProgramTab==="number" ? programItemsList.find(p=>p._id===activeProgramTab) : null;
+
+        return (
+          <div>
+            {/* 서브탭 */}
+            <div style={{display:"flex",gap:4,overflowX:"auto",marginBottom:16,paddingBottom:8,borderBottom:"1px solid var(--border)"}}>
+              <button onClick={()=>setActiveProgramTab("timetable")} style={{
+                padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:activeProgramTab==="timetable"?700:500,
+                background:activeProgramTab==="timetable"?"rgba(99,102,241,.15)":"transparent",color:activeProgramTab==="timetable"?"#a5b4fc":"var(--txt3)"
+              }}>📋 타임테이블</button>
+              <button onClick={()=>setActiveProgramTab("cuesheet")} style={{
+                padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:activeProgramTab==="cuesheet"?700:500,
+                background:activeProgramTab==="cuesheet"?"rgba(99,102,241,.15)":"transparent",color:activeProgramTab==="cuesheet"?"#a5b4fc":"var(--txt3)"
+              }}>🎬 큐시트</button>
+              {programItemsList.map(item=>(
+                <button key={item._id} onClick={()=>setActiveProgramTab(item._id)} style={{
+                  padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:activeProgramTab===item._id?700:500,
+                  background:activeProgramTab===item._id?"rgba(99,102,241,.15)":"transparent",color:activeProgramTab===item._id?"#a5b4fc":"var(--txt3)"
+                }}>{item.itemName}</button>
+              ))}
+              <button onClick={addProgramItem} style={{padding:"8px 14px",borderRadius:8,border:"1px dashed rgba(255,255,255,.15)",background:"transparent",color:"var(--txt4)",cursor:"pointer",fontSize:12}}>+ 프로그램 추가</button>
+            </div>
+
+            {/* ── 타임테이블 탭 ── */}
+            {activeProgramTab === "timetable" && (
+              <div>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                  <label className="form-label" style={{margin:0}}>타임테이블 / 진행순서</label>
+                  <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("program","timeline",{startTime:"",endTime:"",duration:"",content:"",note:""})}>+ 항목 추가</button>
+                </div>
+                <div style={{overflowX:"auto",marginBottom:16}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                    <thead><tr style={{background:"rgba(99,102,241,.1)"}}>
+                      {["#","시작","종료","소요(분)","내용","비고",""].map((h,i)=>(
+                        <th key={i} style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:i===0?30:i===1?90:i===2?90:i===3?60:i===6?36:undefined}}>{h}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {pgList.map((item,idx)=>{
+                        const autoDur = calcDuration(item.startTime, item.endTime);
+                        return (
+                          <tr key={idx}>
+                            <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
+                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{updateListItem("program","timeline",idx,"startTime",e.target.value);const d=calcDuration(e.target.value,item.endTime);if(d)updateListItem("program","timeline",idx,"duration",d);}} style={{padding:"4px 8px",fontSize:12}}/></td>
+                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{updateListItem("program","timeline",idx,"endTime",e.target.value);const d=calcDuration(item.startTime,e.target.value);if(d)updateListItem("program","timeline",idx,"duration",d);}} style={{padding:"4px 8px",fontSize:12}}/></td>
+                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={autoDur||item.duration||""} onChange={e=>updateListItem("program","timeline",idx,"duration",e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:"center",color:autoDur?"#10b981":"inherit",fontWeight:autoDur?700:400}} placeholder="분"/></td>
+                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.content||""} onChange={e=>updateListItem("program","timeline",idx,"content",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="순서 내용"/></td>
+                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.note||""} onChange={e=>updateListItem("program","timeline",idx,"note",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
+                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("program","timeline",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <DocFG label="MC / 진행 메모">
+                  <textarea className="form-input" rows={2} value={pr.mcInfo||""} onChange={e=>updateDoc("program","mcInfo",e.target.value)} placeholder="MC 진행 관련 특이사항" style={{resize:"vertical"}}/>
+                </DocFG>
+                {!isPlan && (
+                  <DocFG label="프로그램 결과 메모">
+                    <textarea className="form-input" rows={2} value={pr.resultNotes||""} onChange={e=>updateDoc("program","resultNotes",e.target.value)} placeholder="실제 진행 결과 메모" style={{resize:"vertical"}}/>
+                  </DocFG>
+                )}
+              </div>
+            )}
+
+            {/* ── 큐시트 탭 ── */}
+            {activeProgramTab === "cuesheet" && (
+              <div>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                  <div style={{display:"flex",alignItems:"center",gap:12}}>
+                    <label className="form-label" style={{margin:0}}>큐시트 (Cue Sheet)</label>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span style={{fontSize:10,color:"var(--txt4)"}}>주최측 이름:</span>
+                      <input className="form-input" value={csClientName} onChange={e=>updateDoc("program","_cueSheetClientName",e.target.value)} style={{padding:"2px 8px",fontSize:11,width:80}} placeholder="주최주관사"/>
+                    </div>
+                  </div>
+                  <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("program","cueSheet",{session:"",content:"",startTime:"",endTime:"",duration:"",details:"",reference:"",screen:"",bgm:"",mic:"",staffEpic:"",staffClient:"",staffProtocol:""})}>+ 항목 추가</button>
+                </div>
+                <div style={{overflowX:"auto",marginBottom:16}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:1200}}>
+                    <thead><tr style={{background:"rgba(99,102,241,.1)"}}>
+                      {["#","세션","내용","시작","종료","경과","상세내용","참고","화면","BGM","MIC","에픽",""+csClientName,"의전",""].map((h,i)=>(
+                        <th key={i} style={{padding:"5px 6px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",fontSize:10,whiteSpace:"nowrap",width:i===0?26:i===3||i===4?60:i===5?40:i===14?30:undefined}}>{h}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {csList.map((item,idx)=>{
+                        const autoDur = calcDuration(item.startTime, item.endTime);
+                        const durDisplay = autoDur ? (parseInt(autoDur)>=60 ? Math.floor(parseInt(autoDur)/60)+":"+String(parseInt(autoDur)%60).padStart(2,"0") : autoDur+"분") : item.duration||"";
+                        return (
+                          <tr key={idx}>
+                            <td style={{padding:"3px 4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:10}}>{idx+1}</td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}>
+                              <select className="form-input" value={SESSION_PRESETS.includes(item.session)?item.session:"_custom"} onChange={e=>{const v=e.target.value;if(v!=="_custom")updateListItem("program","cueSheet",idx,"session",v);}} style={{padding:"2px 4px",fontSize:10}}>
+                                {SESSION_PRESETS.map(s=><option key={s} value={s}>{s}</option>)}
+                                <option value="_custom">직접입력</option>
+                              </select>
+                              {!SESSION_PRESETS.includes(item.session) && <input className="form-input" value={item.session||""} onChange={e=>updateListItem("program","cueSheet",idx,"session",e.target.value)} style={{padding:"2px 4px",fontSize:10,marginTop:2}} placeholder="세션명"/>}
+                            </td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.content||""} onChange={e=>updateListItem("program","cueSheet",idx,"content",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="내용"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{updateListItem("program","cueSheet",idx,"startTime",e.target.value);const d=calcDuration(e.target.value,item.endTime);if(d)updateListItem("program","cueSheet",idx,"duration",d);}} style={{padding:"2px 4px",fontSize:10}}/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{updateListItem("program","cueSheet",idx,"endTime",e.target.value);const d=calcDuration(item.startTime,e.target.value);if(d)updateListItem("program","cueSheet",idx,"duration",d);}} style={{padding:"2px 4px",fontSize:10}}/></td>
+                            <td style={{padding:"2px 4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",fontSize:10,color:autoDur?"#10b981":"var(--txt3)",fontWeight:autoDur?700:400}}>{durDisplay}</td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.details||""} onChange={e=>updateListItem("program","cueSheet",idx,"details",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="상세"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.reference||""} onChange={e=>updateListItem("program","cueSheet",idx,"reference",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="참고"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.screen||""} onChange={e=>updateListItem("program","cueSheet",idx,"screen",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="화면파일"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.bgm||""} onChange={e=>updateListItem("program","cueSheet",idx,"bgm",e.target.value)} style={{padding:"2px 4px",fontSize:10,width:50}} placeholder="BGM"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.mic||""} onChange={e=>updateListItem("program","cueSheet",idx,"mic",e.target.value)} style={{padding:"2px 4px",fontSize:10,width:50}} placeholder="MIC"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.staffEpic||""} onChange={e=>updateListItem("program","cueSheet",idx,"staffEpic",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="에픽 담당"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.staffClient||""} onChange={e=>updateListItem("program","cueSheet",idx,"staffClient",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder={csClientName+" 담당"}/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.staffProtocol||""} onChange={e=>updateListItem("program","cueSheet",idx,"staffProtocol",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="의전"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("program","cueSheet",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"2px 5px",cursor:"pointer",fontSize:10}}>✕</button></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* ── 프로그램 아이템 탭 ── */}
+            {activeProgramItemObj && (
+              <div>
+                <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+                  <span style={{fontSize:18,fontWeight:800,color:"var(--txt)"}}>{activeProgramItemObj.itemName}</span>
+                  <button onClick={()=>removeProgramItem(activeProgramItemObj._id)} style={{background:"rgba(239,68,68,.1)",border:"1px solid rgba(239,68,68,.2)",color:"#f87171",borderRadius:6,padding:"4px 12px",cursor:"pointer",fontSize:11,fontWeight:700}}>삭제</button>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:4}}>
+                  <DocFG label="프로그램명"><input className="form-input" value={activeProgramItemObj.itemName||""} onChange={e=>updateProgramItem(activeProgramItemObj._id,"itemName",e.target.value)} placeholder="프로그램명"/></DocFG>
+                  <DocFG label="시간대"><input className="form-input" value={activeProgramItemObj.timeSlot||""} onChange={e=>updateProgramItem(activeProgramItemObj._id,"timeSlot",e.target.value)} placeholder="예) 14:00~14:30"/></DocFG>
+                </div>
+                <DocFG label="메모">
+                  <textarea className="form-input" rows={3} value={activeProgramItemObj.notes||""} onChange={e=>updateProgramItem(activeProgramItemObj._id,"notes",e.target.value)} placeholder="운영 사항, 비고 등" style={{resize:"vertical"}}/>
+                </DocFG>
+                <div style={{marginTop:12}}>
+                  <label className="form-label">이미지</label>
+                  <SectionImages sectionId={`programItem_${activeProgramItemObj._id}`} images={activeProgramItemObj.images||[]} onUpdate={imgs=>updateProgramItem(activeProgramItemObj._id,"images",imgs)}/>
+                </div>
+              </div>
+            )}
           </div>
-          <div style={{overflowX:"auto",marginBottom:16}}>
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-              <thead><tr style={{background:"rgba(99,102,241,.1)"}}>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:30}}>#</th>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:120}}>시간</th>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:60}}>소요(분)</th>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)"}}>내용</th>
-                <th style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)"}}>비고</th>
-                <th style={{width:36,border:"1px solid rgba(255,255,255,.07)"}}></th>
-              </tr></thead>
-              <tbody>
-                {pgList.map((item,idx)=>(
-                  <tr key={idx}>
-                    <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.time||""} onChange={e=>updateListItem("program","timeline",idx,"time",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="10:30~10:35"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.duration||""} onChange={e=>updateListItem("program","timeline",idx,"duration",e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="5"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.content||""} onChange={e=>updateListItem("program","timeline",idx,"content",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="순서 내용"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.note||""} onChange={e=>updateListItem("program","timeline",idx,"note",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("program","timeline",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <DocFG label="MC / 진행 메모">
-            <textarea className="form-input" rows={2} value={pr.mcInfo||""} onChange={e=>updateDoc("program","mcInfo",e.target.value)} placeholder="MC 진행 관련 특이사항" style={{resize:"vertical"}}/>
-          </DocFG>
-          {!isPlan && (
-            <DocFG label="프로그램 결과 메모">
-              <textarea className="form-input" rows={2} value={pr.resultNotes||""} onChange={e=>updateDoc("program","resultNotes",e.target.value)} placeholder="실제 진행 결과 메모" style={{resize:"vertical"}}/>
-            </DocFG>
-          )}
-        </div>
-      );
-    }
+        );
+      }
 
     if (activeSection === "operation") {
-      const sfList = getList("operation","staffList",{role:"",name:"",contact:"",note:""});
+      const sfList = getList("operation","staffList",{division:"에픽",role:"",name:"",contact:"",count:1,note:""});
       const prList = getList("operation","prizeList",{grade:"",item:"",qty:"",note:""});
       return (
         <div>
@@ -9287,31 +9710,59 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
               </DocFG>
             </div>
           )}
+          {/* 경품 토글 */}
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12,padding:"10px 14px",background:"rgba(99,102,241,.04)",border:"1px solid rgba(99,102,241,.12)",borderRadius:8}}>
+            <span style={{fontSize:12,fontWeight:700,color:"var(--txt2)"}}>경품 목록</span>
+            <div onClick={()=>updateDoc("operation","showPrize",!(op.showPrize!==false))} style={{
+              width:40,height:22,borderRadius:11,cursor:"pointer",position:"relative",transition:"all .2s",
+              background:(op.showPrize!==false)?"rgba(99,102,241,.6)":"rgba(255,255,255,.12)",border:"1px solid",borderColor:(op.showPrize!==false)?"rgba(99,102,241,.8)":"rgba(255,255,255,.15)"
+            }}>
+              <div style={{width:16,height:16,borderRadius:"50%",background:"#fff",position:"absolute",top:2,transition:"all .2s",
+                left:(op.showPrize!==false)?20:2,boxShadow:"0 1px 3px rgba(0,0,0,.2)"}}/>
+            </div>
+            <span style={{fontSize:11,color:"var(--txt4)"}}>{(op.showPrize!==false)?"경품 섹션 표시":"경품 섹션 숨김"}</span>
+          </div>
           <DocFG label="운영 특이사항">
             <textarea className="form-input" rows={2} value={op.notes||""} onChange={e=>updateDoc("operation","notes",e.target.value)} placeholder="운영 관련 특이사항" style={{resize:"vertical"}}/>
           </DocFG>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
             <label className="form-label" style={{margin:0}}>스태프 배치</label>
-            <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("operation","staffList",{role:"",name:"",contact:"",note:""})}>+ 추가</button>
+            <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("operation","staffList",{division:"에픽",role:"",name:"",contact:"",count:1,note:""})}>+ 추가</button>
           </div>
           <div style={{overflowX:"auto",marginBottom:16}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
               <thead><tr style={{background:"rgba(99,102,241,.1)"}}>
-                {["#","역할","이름","연락처","비고",""].map((h,i)=><th key={i} style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:i===0?30:i===5?36:undefined}}>{h}</th>)}
+                {["#","구분","역할","이름","연락처","인원","비고",""].map((h,i)=>(
+                  <th key={i} style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",fontSize:11,width:i===0?30:i===5?50:i===7?36:undefined}}>{h}</th>
+                ))}
               </tr></thead>
               <tbody>
                 {sfList.map((item,idx)=>(
                   <tr key={idx}>
                     <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
-                    {["role","name","contact","note"].map(f=>(
-                      <td key={f} style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item[f]||""} onChange={e=>updateListItem("operation","staffList",idx,f,e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder={{role:"역할",name:"이름",contact:"연락처",note:"비고"}[f]}/></td>
-                    ))}
+                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}>
+                      <select className="form-input" value={item.division||"에픽"} onChange={e=>updateListItem("operation","staffList",idx,"division",e.target.value)} style={{padding:"4px 6px",fontSize:11}}>
+                        <option value="에픽">에픽</option>
+                        <option value="주최주관사">주최주관사</option>
+                        <option value="외주">외주</option>
+                      </select>
+                    </td>
+                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.role||""} onChange={e=>updateListItem("operation","staffList",idx,"role",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="역할"/></td>
+                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.name||""} onChange={e=>updateListItem("operation","staffList",idx,"name",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="이름"/></td>
+                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.contact||""} onChange={e=>updateListItem("operation","staffList",idx,"contact",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="연락처"/></td>
+                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" type="number" min={1} value={item.count||1} onChange={e=>updateListItem("operation","staffList",idx,"count",parseInt(e.target.value)||1)} style={{padding:"4px 8px",fontSize:12,textAlign:"center",width:50}}/></td>
+                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.note||""} onChange={e=>updateListItem("operation","staffList",idx,"note",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
                     <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("operation","staffList",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          <div style={{display:"flex",justifyContent:"flex-end",padding:"8px 12px",background:"rgba(99,102,241,.05)",borderRadius:6,marginTop:-8,marginBottom:16}}>
+            <span style={{fontSize:12,fontWeight:700,color:"var(--txt2)"}}>총 인원: <span style={{color:"#818cf8",fontSize:14}}>{sfList.reduce((sum,s)=>sum+(parseInt(s.count)||1),0)}명</span></span>
+          </div>
+          {(op.showPrize !== false) && (
+            <>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
             <label className="form-label" style={{margin:0}}>경품 목록</label>
             <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("operation","prizeList",{grade:"",item:"",qty:"",note:""})}>+ 추가</button>
@@ -9334,6 +9785,8 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
               </tbody>
             </table>
           </div>
+            </>
+          )}
         </div>
       );
     }
@@ -9491,7 +9944,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
           <div style={{display:"flex",alignItems:"center",gap:6,marginRight:4}}>
             <div style={{width:8,height:8,borderRadius:"50%",background:saveStatus==="saved"?"#10b981":saveStatus==="saving"?"#f59e0b":"#ef4444"}}/>
-            <span style={{fontSize:11,color:"var(--txt4)"}}>{saveStatus==="saved"?"저장됨":saveStatus==="saving"?"저장 중...":"변경됨"}</span>
+            <span style={{fontSize:11,color:"var(--txt4)"}}>{saveStatus==="saved"?"저장됨":saveStatus==="saving"?"저장 중...":"변경됨"}{lastSavedAt && saveStatus==="saved" && <span style={{marginLeft:4,opacity:.7}}>({lastSavedAt})</span>}</span>
           </div>
           <button onClick={()=>{setShowCoverEdit(!showCoverEdit);if(showSectionMgr)setShowSectionMgr(false);}} className="btn" style={{background:"rgba(99,102,241,.06)",border:"1px solid rgba(99,102,241,.15)",color:"#818cf8",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
             표지 설정
@@ -9547,6 +10000,29 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
             <DocFG label="Contact Point 연락처">
               <input className="form-input" value={cv.contactPointPhone||""} onChange={e=>updateCover("contactPointPhone",e.target.value)} placeholder="Contact Point 전화번호"/>
             </DocFG>
+          </div>
+          {/* 커버 배경 스타일 */}
+          <div style={{borderTop:"1px solid var(--border)",paddingTop:12,marginTop:4,marginBottom:12}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+              <span style={{fontSize:12,fontWeight:700,color:"var(--txt2)"}}>커버 배경</span>
+              <span style={{fontSize:11,color:"var(--txt4)"}}>PDF/PPT 표지 배경 스타일</span>
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8}}>
+              {COVER_BG_PRESETS.map(preset=>(
+                <div key={preset.id} onClick={()=>updateCover("bgStyle",preset.id)}
+                  style={{width:64,height:40,borderRadius:6,cursor:"pointer",background:preset.gradient,
+                    border:(cv.bgStyle||"dark-blue")===preset.id?"3px solid #818cf8":"2px solid rgba(255,255,255,.15)",
+                    display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:preset.textColor,fontWeight:600,transition:"all .15s"}}>
+                  {preset.label}
+                </div>
+              ))}
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:11,color:"var(--txt4)"}}>커스텀:</span>
+              <input type="color" value={cv.bgCustomColor||"#0f1623"} onChange={e=>{updateCover("bgCustomColor",e.target.value);updateCover("bgStyle","custom");}}
+                style={{width:28,height:28,border:"none",padding:0,cursor:"pointer",borderRadius:4}}/>
+              {cv.bgStyle==="custom" && <span style={{fontSize:11,color:"var(--txt4)",fontFamily:"monospace"}}>{cv.bgCustomColor}</span>}
+            </div>
           </div>
           {/* 키컬러 설정 */}
           <div style={{borderTop:"1px solid var(--border)",paddingTop:12,marginTop:4}}>
@@ -9689,7 +10165,7 @@ ${secEnabled("timeline") ? `<!-- 06 TIME LINE -->
                 <div style={{fontSize:15,fontWeight:800,color:"var(--txt)"}}>{curSec?.num} {curSec?.title}</div>
                 <div style={{fontSize:11,color:"var(--txt3)"}}>{docLabel} · {proj?.name||""}</div>
               </div>
-              <div style={{marginLeft:"auto",fontSize:11,color:saveStatus==="saved"?"#10b981":"var(--txt4)"}}>{saveStatus==="saved"?"✓ 자동 저장 완료":"수정 내용 자동 저장 중..."}</div>
+              <div style={{marginLeft:"auto",fontSize:11,color:saveStatus==="saved"?"#10b981":"var(--txt4)"}}>{saveStatus==="saved"?`✓ 마지막 저장: ${lastSavedAt||"방금"}`:"수정 내용 저장 중..."}</div>
             </div>
             {renderSection()}
             {(activeSection !== "design" || !activeDesignItem) && (
