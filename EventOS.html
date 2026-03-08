@@ -8167,45 +8167,29 @@ function FilesPage({projects}) {
       );
     }
 
-/* ── Draggable Table Rows Hook ─────────────────────────────────────────────── */
-function useDraggableRows(items, onReorder) {
-  const [dragRowIdx, setDragRowIdx] = React.useState(null);
-  const [overRowIdx, setOverRowIdx] = React.useState(null);
-  const handleRowDragStart = (e, idx) => {
-    setDragRowIdx(idx);
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", String(idx));
-  };
-  const handleRowDragOver = (e, idx) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    if (overRowIdx !== idx) setOverRowIdx(idx);
-  };
-  const handleRowDragEnd = () => {
-    if (dragRowIdx !== null && overRowIdx !== null && dragRowIdx !== overRowIdx) {
-      const n = [...items];
-      const [moved] = n.splice(dragRowIdx, 1);
-      n.splice(overRowIdx, 0, moved);
-      onReorder(n);
-    }
-    setDragRowIdx(null);
-    setOverRowIdx(null);
-  };
+/* ── Draggable Table Rows (No Hooks) ───────────────────────────────────────── */
+function makeDraggableRows(items, onReorder) {
+  let _dragIdx = null;
   const rowDragProps = (idx) => ({
-    onDragOver: e => handleRowDragOver(e, idx),
-    style: {
-      opacity: dragRowIdx === idx ? 0.35 : 1,
-      background: overRowIdx === idx && dragRowIdx !== null ? "rgba(99,102,241,.12)" : undefined,
-      transition: "background .15s, opacity .15s"
-    }
+    onDragOver: e => { e.preventDefault(); e.dataTransfer.dropEffect = "move";
+      const tr = e.currentTarget; tr.style.background = "rgba(99,102,241,.12)"; },
+    onDragLeave: e => { e.currentTarget.style.background = ""; },
+    onDrop: e => { e.preventDefault(); e.currentTarget.style.background = "";
+      const from = parseInt(e.dataTransfer.getData("text/plain"));
+      if (!isNaN(from) && from !== idx) { const n=[...items]; const [m]=n.splice(from,1); n.splice(idx,0,m); onReorder(n); }
+      _dragIdx = null; }
   });
   const dragHandleProps = (idx) => ({
     draggable: true,
-    onDragStart: e => handleRowDragStart(e, idx),
-    onDragEnd: handleRowDragEnd,
+    onDragStart: e => { _dragIdx = idx; e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", String(idx));
+      setTimeout(()=>{ if(e.target.closest) { const tr=e.target.closest("tr"); if(tr) tr.style.opacity="0.35"; }},0); },
+    onDragEnd: e => { _dragIdx = null;
+      if(e.target.closest) { const tr=e.target.closest("tr"); if(tr) tr.style.opacity="1"; }
+      document.querySelectorAll("tr").forEach(r=>r.style.background=""); },
     style: { cursor:"grab", padding:"4px 4px", color:"var(--txt4)", fontSize:14, userSelect:"none" }
   });
-  return { dragRowIdx, overRowIdx, rowDragProps, dragHandleProps };
+  return { rowDragProps, dragHandleProps };
 }
 
 /* ── Section Image Uploader ────────────────────────────────────────────────── */
@@ -9679,8 +9663,8 @@ ${secEnabled("timeline") ? (()=>{
         const csExtraCols = pr._cueSheetExtraCols || [];
 
         // ── 드래그 앤 드롭 (타임테이블 / 큐시트) ──
-        const tlDrag = useDraggableRows(pgList, (n)=>setList("program","timeline",n));
-        const csDrag = useDraggableRows(csList, (n)=>setList("program","cueSheet",n));
+        const tlDrag = makeDraggableRows(pgList, (n)=>setList("program","timeline",n));
+        const csDrag = makeDraggableRows(csList, (n)=>setList("program","cueSheet",n));
 
         // ── 타임테이블 → 큐시트 불러오기 ──
         const importTimelineToCueSheet = () => {
@@ -9757,7 +9741,7 @@ ${secEnabled("timeline") ? (()=>{
                         const tlDurDisplay = autoDur ? Math.floor(parseInt(autoDur)/60)+":"+String(parseInt(autoDur)%60).padStart(2,"0") : item.duration||"";
                         const rdp = tlDrag.rowDragProps(idx);
                         return (
-                          <tr key={item._id||idx} onDragOver={rdp.onDragOver} style={{...rdp.style}}>
+                          <tr key={item._id||idx} {...rdp}>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><span {...tlDrag.dragHandleProps(idx)}>⠿</span></td>
                             <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
                             <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(v,item.endTime);updateListItemMulti("program","timeline",idx,{startTime:v,...(d?{duration:d}:{})});}} style={{padding:"4px 8px",fontSize:12}}/></td>
@@ -9822,7 +9806,7 @@ ${secEnabled("timeline") ? (()=>{
                         const durDisplay = autoDur ? Math.floor(parseInt(autoDur)/60)+":"+String(parseInt(autoDur)%60).padStart(2,"0") : item.duration||"";
                         const crdp = csDrag.rowDragProps(idx);
                         return (
-                          <tr key={item._id||idx} onDragOver={crdp.onDragOver} style={{...crdp.style}}>
+                          <tr key={item._id||idx} {...crdp}>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><span {...csDrag.dragHandleProps(idx)}>⠿</span></td>
                             <td style={{padding:"3px 4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:10}}>{idx+1}</td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}>
