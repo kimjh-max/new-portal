@@ -888,12 +888,20 @@ function BackupPanel({onClose}) {
       if (b.expenses) localStorage.setItem("eventos_expenses", JSON.stringify(b.expenses));
       if (b.laborCosts) localStorage.setItem("eventos_laborCosts", JSON.stringify(b.laborCosts));
       if (b.purchases) localStorage.setItem("eventos_purchases", JSON.stringify(b.purchases));
-      // ── 보고서 데이터 복원 ──
+      // ── 보고서 데이터 복원 (구버전 docs 호환 + 신버전 docKeys→IDB) ──
       if (b.docs && typeof b.docs === "object") {
         Object.entries(b.docs).forEach(([key, val]) => {
           try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
         });
-        console.log("[Backup] 보고서 데이터 " + Object.keys(b.docs).length + "건 복원");
+        console.log("[Backup] 보고서 데이터 " + Object.keys(b.docs).length + "건 복원 (localStorage)");
+      }
+      if (b.docKeys && Array.isArray(b.docKeys)) {
+        b.docKeys.forEach(key => {
+          loadFromIDB(key).then(data => {
+            if (data) try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
+          }).catch(()=>{});
+        });
+        console.log("[Backup] 보고서 데이터 " + b.docKeys.length + "건 IDB→localStorage 복원 시도");
       }
       window.location.reload();
     } catch (e) {
@@ -4535,35 +4543,48 @@ function toast(msg, type="default") {
 // 앱 시작 전 선제적 용량 확보
 (function preCleanup() {
   try {
-    let usedKB = 0;
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      usedKB += (k.length + localStorage.getItem(k).length) * 2 / 1024;
-    }
-    if (usedKB > 4 * 1024) { // 4MB 이상이면 선제 정리
-      console.log("[EventOS] ⚡ 스토리지 " + (usedKB/1024).toFixed(1) + "MB → 선제 정리 시작");
-      // 자동 백업 → 최신 1개만
-      try {
-        const b = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
-        if (b.length > 1) localStorage.setItem("eventos_autoBackups", JSON.stringify(b.slice(0, 1)));
-      } catch {}
-      // 버전 이력 → 최신 3개만
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith("eventos_docVersions_")) {
-          try {
-            const v = JSON.parse(localStorage.getItem(key) || "[]");
-            if (v.length > 3) localStorage.setItem(key, JSON.stringify(v.slice(0, 3)));
-          } catch {}
-        }
-      }
-      let afterKB = 0;
+    const calcUsed = () => {
+      let kb = 0;
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        afterKB += (k.length + localStorage.getItem(k).length) * 2 / 1024;
+        kb += (k.length + localStorage.getItem(k).length) * 2 / 1024;
       }
-      console.log("[EventOS] ✅ 선제 정리 완료: " + (usedKB/1024).toFixed(1) + "MB → " + (afterKB/1024).toFixed(1) + "MB");
+      return kb;
+    };
+    let usedKB = calcUsed();
+    if (usedKB < 3 * 1024) return; // 3MB 미만이면 정리 불필요
+    console.log("[EventOS] ⚡ 스토리지 " + (usedKB/1024).toFixed(1) + "MB → 선제 정리 시작");
+
+    // 1단계: 자동 백업 완전 삭제 (가장 큰 용량 차지)
+    try { localStorage.removeItem("eventos_autoBackups"); } catch {}
+
+    // 2단계: 버전 이력 → 최신 2개만 유지
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("eventos_docVersions_")) {
+        try {
+          const v = JSON.parse(localStorage.getItem(key) || "[]");
+          if (v.length > 2) localStorage.setItem(key, JSON.stringify(v.slice(0, 2)));
+        } catch {}
+      }
     }
+
+    // 3단계: 아직 4MB 넘으면 → 프로젝트 내 quoteHistory, logs 정리
+    if (calcUsed() > 4 * 1024) {
+      try {
+        const projects = JSON.parse(localStorage.getItem("eventos_projects") || "[]");
+        let trimmed = false;
+        projects.forEach(p => {
+          if (p.quoteHistory && p.quoteHistory.length > 3) { p.quoteHistory = p.quoteHistory.slice(0, 3); trimmed = true; }
+          if (p.logs && p.logs.length > 20) { p.logs = p.logs.slice(0, 20); trimmed = true; }
+          if (p.taskOrderHistory && p.taskOrderHistory.length > 5) { p.taskOrderHistory = p.taskOrderHistory.slice(0, 5); trimmed = true; }
+        });
+        if (trimmed) localStorage.setItem("eventos_projects", JSON.stringify(projects));
+      } catch {}
+    }
+
+    const afterKB = calcUsed();
+    console.log("[EventOS] ✅ 선제 정리 완료: " + (usedKB/1024).toFixed(1) + "MB → " + (afterKB/1024).toFixed(1) + "MB (" + ((usedKB-afterKB)/1024).toFixed(1) + "MB 확보)");
   } catch(e) { console.warn("[EventOS] 선제 정리 실패:", e); }
 })();
 
@@ -11588,10 +11609,17 @@ function App() {
               localStorage.setItem("eventos_projects", JSON.stringify(backups[0].projects));
               if (backups[0].users) localStorage.setItem("eventos_users", JSON.stringify(backups[0].users));
               if (backups[0].priceList) localStorage.setItem("eventos_priceList", JSON.stringify(backups[0].priceList));
-              // 보고서 데이터 복구
+              // 보고서 데이터 복구 (구버전 docs 호환 + 신버전 docKeys→IDB)
               if (backups[0].docs && typeof backups[0].docs === "object") {
                 Object.entries(backups[0].docs).forEach(([key, val]) => {
                   try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+                });
+              }
+              if (backups[0].docKeys && Array.isArray(backups[0].docKeys)) {
+                backups[0].docKeys.forEach(key => {
+                  loadFromIDB(key).then(data => {
+                    if (data) try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
+                  }).catch(()=>{});
                 });
               }
               toast("⚠️ 데이터 오류 감지 → 자동 백업에서 복구했습니다", "warn");
@@ -11633,22 +11661,23 @@ function App() {
   useEffect(() => {
     const createAutoBackup = () => {
       const { projects, users, priceList, expenses, laborCosts, purchases } = backupDataRef.current;
-      // ── 보고서 데이터(eventos_doc_*, eventos_docVersions_*) 수집 ──
-      const docs = {};
+      // ── 보고서 데이터 → IndexedDB에만 백업 (localStorage 용량 절약) ──
+      const docKeys = [];
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
         if (key.startsWith("eventos_doc_") || key.startsWith("eventos_docVersions_")) {
-          try { docs[key] = JSON.parse(localStorage.getItem(key)); } catch {}
+          docKeys.push(key);
+          try { saveToIDB(key, JSON.parse(localStorage.getItem(key))).catch(()=>{}); } catch {}
         }
       }
       const snapshot = {
         projects, users, priceList, expenses, laborCosts, purchases,
-        docs,
+        docKeys,
         backupAt: new Date().toISOString(),
         type: "auto"
       };
       // JSON 비교로 변경 없으면 스킵
-      const json = JSON.stringify({p:projects,u:users,pl:priceList,e:expenses,l:laborCosts,pu:purchases,d:docs});
+      const json = JSON.stringify({p:projects,u:users,pl:priceList,e:expenses,l:laborCosts,pu:purchases,dk:docKeys});
       if (lastBackupRef.current === json) {
         console.log("[EventOS] 자동 백업 스킵 (변경 없음):", new Date().toLocaleTimeString("ko-KR"));
         return;
