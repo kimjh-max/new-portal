@@ -481,6 +481,49 @@ const CloudSync = {
       return [];
     }
   },
+
+  // ── 문서(보고서) 데이터 저장 ──
+  async saveDoc(key, data) {
+    if (!CLOUD_CONFIG.ENABLED) return null;
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/doc`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, data }),
+      });
+      return await res.json();
+    } catch (err) {
+      console.error("[CloudSync] saveDoc:", err);
+      return null;
+    }
+  },
+
+  // ── 문서(보고서) 데이터 로드 ──
+  async loadDoc(key) {
+    if (!CLOUD_CONFIG.ENABLED) return null;
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/doc?key=${encodeURIComponent(key)}`);
+      const result = await res.json();
+      if (result.success && result.found) return result.data;
+      return null;
+    } catch (err) {
+      console.error("[CloudSync] loadDoc:", err);
+      return null;
+    }
+  },
+
+  // ── 문서(보고서) 키 목록 ──
+  async listDocs() {
+    if (!CLOUD_CONFIG.ENABLED) return [];
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/docs`);
+      const result = await res.json();
+      return result.success ? result.docs : [];
+    } catch (err) {
+      console.error("[CloudSync] listDocs:", err);
+      return [];
+    }
+  },
 };
 
 /* ── localStorage 영속화 + Google Drive 동기화 모듈 ────────────────────────── */
@@ -531,6 +574,8 @@ const SyncManager = {
             await CloudSync.saveProject(data.project);
           } else if (action === "saveBackup") {
             await CloudSync.createBackup(data.data);
+          } else if (action.startsWith("saveDoc_")) {
+            await CloudSync.saveDoc(data.key, data.data);
           }
           success = true;
           console.log("[CloudSync] ✅", action);
@@ -541,21 +586,29 @@ const SyncManager = {
 
       // 2) Google Drive GAS (폴백 또는 동시 백업)
       if (DRIVE_CONFIG.ENABLED) {
-        try {
-          const res = await fetch(DRIVE_CONFIG.GAS_URL, {
-            method: "POST",
-            headers: { "Content-Type": "text/plain" },
-            body: JSON.stringify({ action, ...data }),
-            redirect: "follow",
-          });
-          const text = await res.text();
-          let result;
-          try { result = JSON.parse(text); } catch { result = { ok: true }; }
-          if (result.error) throw new Error(result.error);
-          success = true;
-          console.log("[DriveSync] ✅", action);
-        } catch (err) {
-          console.error("[DriveSync]", action, err);
+        // GAS에서 지원하는 액션만 전송 (saveAppData, saveProject)
+        const gasAction = action.startsWith("saveProject_") ? "saveProject" : action.startsWith("saveDoc_") ? "saveDoc" : action;
+        const gasSupported = ["saveAppData","saveProject","saveDoc","loadAll"].includes(gasAction);
+        if (gasSupported) {
+          try {
+            const res = await fetch(DRIVE_CONFIG.GAS_URL, {
+              method: "POST",
+              headers: { "Content-Type": "text/plain" },
+              body: JSON.stringify({ action: gasAction, ...data }),
+              redirect: "follow",
+            });
+            const text = await res.text();
+            let result;
+            try { result = JSON.parse(text); } catch { result = { ok: true }; }
+            if (result.error) throw new Error(result.error);
+            success = true;
+            console.log("[DriveSync] ✅", action);
+          } catch (err) {
+            console.error("[DriveSync]", action, err);
+          }
+        } else {
+          // GAS 미지원 액션은 조용히 스킵 (Cloudflare에서 처리)
+          console.log("[DriveSync] ⏭️ 스킵 (GAS 미지원):", action);
         }
       }
 
@@ -8666,34 +8719,79 @@ function DocEditorPanel({docType, project}) {
   };
 
   const [docData, setDocData] = React.useState(() => loadDocFromStorage());
-  // IndexedDB에서 우선 로딩 (더 최신 데이터일 수 있음)
+  // 로컬 스토리지 우선 로딩 (IDB → 클라우드 순)
   React.useEffect(() => {
-    loadFromIDB(storageKey).then(data => {
-      if (data && Object.keys(data).length) {
+    let cancelled = false;
+    (async () => {
+      // ① IndexedDB에서 먼저 시도
+      let localData = null;
+      try {
+        const idbData = await loadFromIDB(storageKey);
+        if (idbData && Object.keys(idbData).length) localData = idbData;
+      } catch {}
+
+      // ② 클라우드에서 로드 시도 (Cloudflare D1)
+      let cloudData = null;
+      try {
+        cloudData = await CloudSync.loadDoc(storageKey);
+      } catch (err) {
+        console.warn("[DocEditor] 클라우드 로드 실패:", err);
+      }
+
+      if (cancelled) return;
+
+      // ③ 더 큰(더 최신) 데이터를 선택
+      const localSize = localData ? JSON.stringify(localData).length : 0;
+      const cloudSize = cloudData ? JSON.stringify(cloudData).length : 0;
+      const bestData = cloudSize > localSize ? cloudData : localData;
+
+      if (bestData && Object.keys(bestData).length) {
         setDocData(prev => {
-          // IDB 데이터가 더 크면 (더 최신) IDB 사용
           const prevSize = JSON.stringify(prev).length;
-          const idbSize = JSON.stringify(data).length;
-          if (idbSize >= prevSize) return data;
+          const bestSize = JSON.stringify(bestData).length;
+          if (bestSize >= prevSize) {
+            // 클라우드에서 온 데이터라면 로컬에도 저장
+            if (cloudSize > localSize && cloudData) {
+              saveToIDB(storageKey, cloudData).catch(()=>{});
+              try { localStorage.setItem(storageKey, JSON.stringify(cloudData)); } catch {}
+              console.log("[DocEditor] ☁️ 클라우드 데이터가 최신 → 로컬에 동기화");
+            }
+            return bestData;
+          }
           return prev;
         });
+      } else if (!localData && !cloudData) {
+        // 둘 다 없으면 빈 상태 유지
+        console.log("[DocEditor] 로컬 & 클라우드 모두 데이터 없음");
       }
-    }).catch(() => {});
+    })();
+    return () => { cancelled = true; };
   }, [storageKey]);
 
   const [versions, setVersions] = React.useState(() => {
     try { const v = localStorage.getItem(versionsKey); return v ? JSON.parse(v) : []; } catch { return []; }
   });
-  // IndexedDB에서 버전 로딩
+  // IndexedDB + 클라우드에서 버전 로딩
   React.useEffect(() => {
-    if (versionsKey) {
-      loadFromIDB(versionsKey).then(data => {
-        if (data && Array.isArray(data) && data.length > 0) {
-          setVersions(data);
-          console.log("[DocEditor] IndexedDB에서 버전 " + data.length + "개 복구");
-        }
-      }).catch(()=>{});
-    }
+    if (!versionsKey) return;
+    (async () => {
+      let localVer = null;
+      try {
+        const idbVer = await loadFromIDB(versionsKey);
+        if (idbVer && Array.isArray(idbVer) && idbVer.length > 0) localVer = idbVer;
+      } catch {}
+      let cloudVer = null;
+      try {
+        const cv = await CloudSync.loadDoc(versionsKey);
+        if (cv && Array.isArray(cv) && cv.length > 0) cloudVer = cv;
+      } catch {}
+      const best = (cloudVer && (!localVer || cloudVer.length > localVer.length)) ? cloudVer : localVer;
+      if (best) {
+        setVersions(best);
+        console.log("[DocEditor] 버전 " + best.length + "개 복구" + (best === cloudVer ? " (☁️ 클라우드)" : " (IndexedDB)"));
+        if (best === cloudVer) { saveToIDB(versionsKey, cloudVer).catch(()=>{}); }
+      }
+    })();
   }, [versionsKey]);
   const [showVersions, setShowVersions] = React.useState(false);
   const [showSectionMgr, setShowSectionMgr] = React.useState(false);
@@ -8723,7 +8821,7 @@ function DocEditorPanel({docType, project}) {
     try { const v = localStorage.getItem(versionsKey); setVersions(v ? JSON.parse(v) : []); } catch { setVersions([]); }
   }, [docKey]);
 
-  // ── Smart Save (IndexedDB 기본 + localStorage 보조) ──
+  // ── Smart Save (IndexedDB 기본 + localStorage 보조 + 클라우드 동기화) ──
   const performSave = React.useCallback((data) => {
     const now = new Date();
     const ts = now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
@@ -8741,6 +8839,8 @@ function DocEditorPanel({docType, project}) {
       // localStorage 용량 초과 → 조용히 무시 (IDB에 이미 저장됨)
       console.log("[DocEditor] localStorage 보조 저장 스킵 (IDB에 저장 완료)");
     }
+    // ③ 클라우드 동기화 (Cloudflare D1 + GAS — 디바운스로 부하 제어)
+    SyncManager.queueSync("saveDoc_" + storageKey, { key: storageKey, data });
   }, [storageKey]);
 
   // 디바운스 1초 저장
@@ -8839,6 +8939,8 @@ function DocEditorPanel({docType, project}) {
     });
     // localStorage에도 시도 (보조, 실패해도 OK)
     try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch {}
+    // 클라우드에도 버전 데이터 동기화
+    SyncManager.queueSync("saveDoc_" + versionsKey, { key: versionsKey, data: updated });
     toast(`"${displayName}" 버전 저장 완료`, "success");
     // ── 로컬 파일 자동 백업 다운로드 ──
     try {
