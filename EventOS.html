@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260309v3";
+  var CODE_VER = "20260309v4";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -279,11 +279,11 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
     try {
       var db = await openIDB();
       var localKeys = await getAllKeys(db);
-      var localDocKeys = localKeys.filter(function(k){ return String(k).indexOf("eventos_doc_") === 0; });
+      var localDocKeys = localKeys.filter(function(k){ var s = String(k); return s.indexOf("eventos_doc_") === 0 || s.indexOf("eventos_docVersions_") === 0; });
 
       // ① 클라우드 doc 목록 가져오기
       var cloudDocs = await listCloudDocs();
-      var cloudDocKeys = cloudDocs.filter(function(d){ return d.doc_key.indexOf("eventos_doc_") === 0 && d.doc_key.indexOf("__r2_test") === -1; });
+      var cloudDocKeys = cloudDocs.filter(function(d){ var k = d.doc_key; return (k.indexOf("eventos_doc_") === 0 || k.indexOf("eventos_docVersions_") === 0) && k.indexOf("__r2_test") === -1; });
       console.log("[Sync] 로컬 IDB 키:" + localDocKeys.length + " | 클라우드 키:" + cloudDocKeys.length);
 
       var uploaded = 0, downloaded = 0;
@@ -293,7 +293,9 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
         var key = localDocKeys[i];
         try {
           var data = await getData(db, key);
-          if(!data || typeof data !== "object" || !Object.keys(data).length) continue;
+          if(!data) continue;
+          if(Array.isArray(data)){ if(!data.length) continue; }
+          else if(typeof data !== "object" || !Object.keys(data).length) continue;
           var localSize = JSON.stringify(data).length;
           var cloudDoc = cloudDocs.find(function(d){ return d.doc_key === key; });
           var cloudSize = cloudDoc ? cloudDoc.size : 0;
