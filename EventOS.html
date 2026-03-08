@@ -786,7 +786,7 @@ function usePersistedState(key, defaultValue) {
   const setPersistedState = useCallback((valOrFn) => {
     setState(prev => {
       const next = typeof valOrFn === "function" ? valOrFn(prev) : valOrFn;
-      try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+      try { localStorage.setItem(key, JSON.stringify(next)); } catch(e) { console.warn("[usePersistedState] localStorage 저장 실패:", key, e); showStorageUpgradeAlert(); }
       return next;
     });
   }, [key]);
@@ -892,6 +892,7 @@ function BackupPanel({onClose}) {
     } catch (e) {
       setRestoring(false);
       alert("복원 실패: " + e.message);
+      showStorageUpgradeAlert();
     }
   };
 
@@ -8485,7 +8486,7 @@ function DocEditorPanel({docType, project}) {
 
   // 탭 닫기/새로고침 시 즉시 저장
   React.useEffect(() => {
-    const handler = () => { try { localStorage.setItem(storageKey, JSON.stringify(docDataLatestRef.current)); } catch{} };
+    const handler = () => { try { localStorage.setItem(storageKey, JSON.stringify(docDataLatestRef.current)); } catch(e) { console.warn("[DocEditor] beforeunload 저장 실패:", e); } };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [storageKey]);
@@ -8535,7 +8536,7 @@ function DocEditorPanel({docType, project}) {
   const loadVersion = (ver) => {
     if (!window.confirm(`"${ver.name}" 버전을 불러오시겠습니까?\n현재 작성 중인 내용이 대체됩니다.`)) return;
     setDocData(ver.data);
-    try { localStorage.setItem(storageKey, JSON.stringify(ver.data)); } catch {}
+    try { localStorage.setItem(storageKey, JSON.stringify(ver.data)); } catch(e) { console.warn("[DocEditor] 버전 복원 localStorage 실패:", e); showStorageUpgradeAlert(); }
     saveToIDB(storageKey, ver.data).catch(()=>{});
     setShowVersions(false);
     toast(`"${ver.name}" 버전을 불러왔습니다`, "success");
@@ -8545,7 +8546,7 @@ function DocEditorPanel({docType, project}) {
   const deleteVersion = (verId) => {
     const updated = versions.filter(v => v.id !== verId);
     setVersions(updated);
-    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch {}
+    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch(e) { console.warn("[DocEditor] 버전 삭제 localStorage 실패:", e); showStorageUpgradeAlert(); }
   };
 
   // 현재 섹션 데이터
@@ -11554,7 +11555,7 @@ function App() {
       localStorage.setItem("eventos_lastEmailNotify", JSON.stringify({
         date: today, sent, failed, noEmail, at: new Date().toISOString()
       }));
-    } catch {}
+    } catch(e) { console.warn("[EmailNotify] localStorage 저장 실패:", e); showStorageUpgradeAlert(); }
 
     console.log(`[EmailNotify] ${msg}`);
     return { sent, failed, noEmail };
