@@ -214,8 +214,8 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
 
   function openIDB(){
     return new Promise(function(resolve, reject){
-      var req = indexedDB.open(DB_NAME, 1);
-      req.onupgradeneeded = function(e){ e.target.result.createObjectStore(STORE); };
+      var req = indexedDB.open(DB_NAME);
+      req.onupgradeneeded = function(e){ if(!e.target.result.objectStoreNames.contains(STORE)) e.target.result.createObjectStore(STORE); };
       req.onsuccess = function(e){ resolve(e.target.result); };
       req.onerror = function(){ reject(req.error); };
     });
