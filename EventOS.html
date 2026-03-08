@@ -8456,12 +8456,22 @@ function DocEditorPanel({docType, project}) {
     try { const v = localStorage.getItem(versionsKey); setVersions(v ? JSON.parse(v) : []); } catch { setVersions([]); }
   }, [docKey]);
 
-  // ── Smart Save (localStorage + IndexedDB 폴백) ──
+  // ── Smart Save (localStorage + IndexedDB 이중 저장 + 검증) ──
   const performSave = React.useCallback((data) => {
     const now = new Date();
     const ts = now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+    const json = JSON.stringify(data);
     try {
-      localStorage.setItem(storageKey, JSON.stringify(data));
+      localStorage.setItem(storageKey, json);
+      // ── 저장 검증 (read-back) ──
+      const readBack = localStorage.getItem(storageKey);
+      if (!readBack || readBack.length !== json.length) {
+        console.error("[DocEditor] ❌ 저장 검증 실패! 저장된 크기:", readBack?.length, "원본:", json.length);
+        toast("⚠️ 저장 검증 실패! 데이터가 정상 저장되지 않았습니다.", "error");
+        setSaveStatus("unsaved");
+        showStorageUpgradeAlert();
+        return;
+      }
       setSaveStatus("saved"); setLastSavedAt(ts);
       // IndexedDB에도 이중 저장 (안전망)
       saveToIDB(storageKey, data).catch(()=>{});
@@ -8494,6 +8504,37 @@ function DocEditorPanel({docType, project}) {
   // docData ref 업데이트 (주기적 저장에서 최신 값 사용)
   const docDataLatestRef = React.useRef(docData);
   React.useEffect(() => { docDataLatestRef.current = docData; }, [docData]);
+
+  // ── 3분 주기 무결성 체크 (메모리 ↔ 저장소 비교) ──
+  React.useEffect(() => {
+    if (!storageKey) return;
+    const integrityCheck = setInterval(() => {
+      const memData = docDataLatestRef.current;
+      if (!memData || Object.keys(memData).length === 0) return;
+      const memJson = JSON.stringify(memData);
+      // localStorage 체크
+      const lsData = localStorage.getItem(storageKey);
+      const lsOk = lsData && lsData.length > 10;
+      // IndexedDB 체크
+      loadFromIDB(storageKey).then(idbData => {
+        const idbOk = idbData && Object.keys(idbData).length > 0;
+        if (!lsOk && !idbOk) {
+          console.error("[DocEditor] 🚨 무결성 위반! localStorage & IndexedDB 모두 데이터 없음");
+          toast("🚨 보고서 데이터 유실 감지! 긴급 복구 중...", "error");
+          // 긴급 복구: 현재 메모리 데이터를 다시 저장
+          performSave(memData);
+        } else if (!lsOk && idbOk) {
+          console.warn("[DocEditor] ⚠️ localStorage 데이터 유실 → IndexedDB에서 복구");
+          try { localStorage.setItem(storageKey, JSON.stringify(idbData)); } catch {}
+          toast("localStorage 복구 완료 (IndexedDB 원본 사용)", "info");
+        } else if (lsOk && !idbOk) {
+          // IDB만 없으면 조용히 재저장
+          saveToIDB(storageKey, memData).catch(()=>{});
+        }
+      }).catch(()=>{});
+    }, 3 * 60 * 1000); // 3분
+    return () => clearInterval(integrityCheck);
+  }, [storageKey, performSave]);
 
   // 탭 닫기/새로고침 시 즉시 저장
   React.useEffect(() => {
@@ -8543,6 +8584,42 @@ function DocEditorPanel({docType, project}) {
       return;
     }
     toast(`"${displayName}" 버전 저장 완료`, "success");
+    // ── 로컬 파일 자동 백업 다운로드 ──
+    try {
+      const backupData = { version: displayName, timestamp: ts, project: proj?.name || "unknown", docType, data: JSON.parse(JSON.stringify(docData)) };
+      const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const safeName = (proj?.name || "report").replace(/[^a-zA-Z0-9가-힣_-]/g, "_");
+      const dateStr = now.toISOString().slice(0,10);
+      a.href = url; a.download = `${safeName}_${dateStr}_${displayName}.json`; a.click();
+      URL.revokeObjectURL(url);
+      console.log("[DocEditor] 📥 로컬 파일 백업 다운로드 완료:", a.download);
+    } catch(e) { console.warn("[DocEditor] 파일 백업 다운로드 실패:", e); }
+  };
+
+  // ── 파일에서 보고서 복원 ──
+  const restoreFromFile = () => {
+    const input = document.createElement("input");
+    input.type = "file"; input.accept = ".json";
+    input.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const parsed = JSON.parse(ev.target.result);
+          const restoreData = parsed.data || parsed;
+          if (!restoreData || typeof restoreData !== "object") { toast("유효하지 않은 백업 파일입니다", "error"); return; }
+          if (!window.confirm(`"${parsed.version || file.name}" 백업을 복원하시겠습니까?\n현재 작성 중인 내용이 대체됩니다.`)) return;
+          setDocData(restoreData);
+          performSave(restoreData);
+          toast(`"${parsed.version || file.name}" 복원 완료`, "success");
+        } catch(err) { toast("파일 파싱 실패: " + err.message, "error"); }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
   };
 
   // ── 버전 불러오기 ──
@@ -10312,7 +10389,12 @@ ${secEnabled("timeline") ? (()=>{
         <div className="card" style={{marginBottom:16,border:"1px solid rgba(245,158,11,.2)",background:"rgba(245,158,11,.03)"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
             <div style={{fontWeight:800,fontSize:14,color:"var(--txt)"}}>📂 저장된 버전 ({versions.length}개)</div>
-            <button onClick={()=>setShowVersions(false)} style={{background:"none",border:"none",color:"var(--txt4)",cursor:"pointer",fontSize:18}}>×</button>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <button onClick={restoreFromFile} style={{background:"rgba(16,185,129,.08)",border:"1px solid rgba(16,185,129,.2)",color:"#34d399",borderRadius:6,padding:"5px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}} title="JSON 파일에서 복원">
+                📥 파일 복원
+              </button>
+              <button onClick={()=>setShowVersions(false)} style={{background:"none",border:"none",color:"var(--txt4)",cursor:"pointer",fontSize:18}}>×</button>
+            </div>
           </div>
           {versions.length === 0 ? (
             <div style={{textAlign:"center",color:"var(--txt4)",fontSize:13,padding:"20px 0",border:"1px dashed rgba(255,255,255,.08)",borderRadius:8}}>
