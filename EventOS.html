@@ -888,6 +888,13 @@ function BackupPanel({onClose}) {
       if (b.expenses) localStorage.setItem("eventos_expenses", JSON.stringify(b.expenses));
       if (b.laborCosts) localStorage.setItem("eventos_laborCosts", JSON.stringify(b.laborCosts));
       if (b.purchases) localStorage.setItem("eventos_purchases", JSON.stringify(b.purchases));
+      // ── 보고서 데이터 복원 ──
+      if (b.docs && typeof b.docs === "object") {
+        Object.entries(b.docs).forEach(([key, val]) => {
+          try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+        });
+        console.log("[Backup] 보고서 데이터 " + Object.keys(b.docs).length + "건 복원");
+      }
       window.location.reload();
     } catch (e) {
       setRestoring(false);
@@ -8157,9 +8164,11 @@ function FilesPage({projects}) {
 
   // ── IndexedDB 폴백 (localStorage 용량 초과 대비) ──
   const IDB_NAME = "eventos_docs";
-  const IDB_VER = 1;
+  const IDB_VER = 2;
   const IDB_STORE = "documents";
   function openIDB(){return new Promise((res,rej)=>{const r=indexedDB.open(IDB_NAME,IDB_VER);r.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains(IDB_STORE))db.createObjectStore(IDB_STORE)};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+  // 옛 IDB(EventOS_DocEditor) 정리
+  try{indexedDB.deleteDatabase("EventOS_DocEditor")}catch(e){}
   async function saveToIDB(key,data){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readwrite");tx.objectStore(IDB_STORE).put(data,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
   async function loadFromIDB(key){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
 
@@ -8454,6 +8463,8 @@ function DocEditorPanel({docType, project}) {
     try {
       localStorage.setItem(storageKey, JSON.stringify(data));
       setSaveStatus("saved"); setLastSavedAt(ts);
+      // IndexedDB에도 이중 저장 (안전망)
+      saveToIDB(storageKey, data).catch(()=>{});
     } catch(e) {
       console.warn("[DocEditor] localStorage full, IndexedDB 폴백:", e);
       saveToIDB(storageKey, data).then(()=>{ setSaveStatus("saved"); setLastSavedAt(ts); toast("용량 초과 → IndexedDB 저장","info"); })
@@ -8518,6 +8529,8 @@ function DocEditorPanel({docType, project}) {
     setVersions(updated);
     try {
       localStorage.setItem(versionsKey, JSON.stringify(updated));
+      // IndexedDB에도 이중 저장 (안전망)
+      saveToIDB(versionsKey, updated).catch(()=>{});
     } catch(e) {
       console.warn("[DocEditor] 버전 localStorage 저장 실패, IndexedDB 폴백:", e);
       saveToIDB(versionsKey, updated).then(()=>{
@@ -11366,6 +11379,12 @@ function App() {
               localStorage.setItem("eventos_projects", JSON.stringify(backups[0].projects));
               if (backups[0].users) localStorage.setItem("eventos_users", JSON.stringify(backups[0].users));
               if (backups[0].priceList) localStorage.setItem("eventos_priceList", JSON.stringify(backups[0].priceList));
+              // 보고서 데이터 복구
+              if (backups[0].docs && typeof backups[0].docs === "object") {
+                Object.entries(backups[0].docs).forEach(([key, val]) => {
+                  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+                });
+              }
               toast("⚠️ 데이터 오류 감지 → 자동 백업에서 복구했습니다", "warn");
               window.location.reload();
               return false;
@@ -11405,13 +11424,22 @@ function App() {
   useEffect(() => {
     const createAutoBackup = () => {
       const { projects, users, priceList, expenses, laborCosts, purchases } = backupDataRef.current;
+      // ── 보고서 데이터(eventos_doc_*, eventos_docVersions_*) 수집 ──
+      const docs = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key.startsWith("eventos_doc_") || key.startsWith("eventos_docVersions_")) {
+          try { docs[key] = JSON.parse(localStorage.getItem(key)); } catch {}
+        }
+      }
       const snapshot = {
         projects, users, priceList, expenses, laborCosts, purchases,
+        docs,
         backupAt: new Date().toISOString(),
         type: "auto"
       };
       // JSON 비교로 변경 없으면 스킵
-      const json = JSON.stringify({p:projects,u:users,pl:priceList,e:expenses,l:laborCosts,pu:purchases});
+      const json = JSON.stringify({p:projects,u:users,pl:priceList,e:expenses,l:laborCosts,pu:purchases,d:docs});
       if (lastBackupRef.current === json) {
         console.log("[EventOS] 자동 백업 스킵 (변경 없음):", new Date().toLocaleTimeString("ko-KR"));
         return;
