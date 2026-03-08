@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260309v6";
+  var CODE_VER = "20260309v7";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -9068,35 +9068,46 @@ function DocEditorPanel({docType, project}) {
   const [versions, setVersions] = React.useState(() => {
     try { const v = localStorage.getItem(versionsKey); return v ? JSON.parse(v) : []; } catch { return []; }
   });
-  // IndexedDB + 클라우드에서 버전 로딩 (preloaded 캐시 우선)
+  // IndexedDB + 클라우드에서 버전 로딩 (IDB 즉시 적용 → 클라우드 백그라운드)
   React.useEffect(() => {
     if (!versionsKey) return;
+    let cancelled = false;
     (async () => {
       // ⓪ 독립 스크립트가 미리 로드한 preloaded 데이터 확인
       const preloaded = window.__preloadedDocs?.[versionsKey];
       if (preloaded && Array.isArray(preloaded) && preloaded.length > 0) {
-        setVersions(preloaded);
+        if (!cancelled) setVersions(preloaded);
         console.log("[DocEditor] ✅ preloaded 버전 " + preloaded.length + "개 사용");
         saveToIDB(versionsKey, preloaded).catch(()=>{});
         return;
       }
+      // ① IDB에서 먼저 로드 → 즉시 적용
       let localVer = null;
       try {
         const idbVer = await loadFromIDB(versionsKey);
-        if (idbVer && Array.isArray(idbVer) && idbVer.length > 0) localVer = idbVer;
+        if (idbVer && Array.isArray(idbVer) && idbVer.length > 0) {
+          localVer = idbVer;
+          if (!cancelled) {
+            setVersions(idbVer);
+            console.log("[DocEditor] 📂 IDB 버전 " + idbVer.length + "개 즉시 적용");
+          }
+        }
       } catch {}
-      let cloudVer = null;
+      // ② 클라우드에서 백그라운드 로드 (더 많으면 업데이트)
       try {
         const cv = await CloudSync.loadDoc(versionsKey);
-        if (cv && Array.isArray(cv) && cv.length > 0) cloudVer = cv;
+        if (cv && Array.isArray(cv) && cv.length > 0) {
+          if (!localVer || cv.length > localVer.length) {
+            if (!cancelled) {
+              setVersions(cv);
+              console.log("[DocEditor] ☁️ 클라우드 버전 " + cv.length + "개 (IDB보다 최신)");
+            }
+            saveToIDB(versionsKey, cv).catch(()=>{});
+          }
+        }
       } catch {}
-      const best = (cloudVer && (!localVer || cloudVer.length > localVer.length)) ? cloudVer : localVer;
-      if (best) {
-        setVersions(best);
-        console.log("[DocEditor] 버전 " + best.length + "개 복구" + (best === cloudVer ? " (☁️ 클라우드)" : " (IndexedDB)"));
-        if (best === cloudVer) { saveToIDB(versionsKey, cloudVer).catch(()=>{}); }
-      }
     })();
+    return () => { cancelled = true; };
   }, [versionsKey]);
   const [showVersions, setShowVersions] = React.useState(false);
   const [showSectionMgr, setShowSectionMgr] = React.useState(false);
