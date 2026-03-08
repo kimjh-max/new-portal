@@ -9161,13 +9161,13 @@ body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-si
 .cover .contact{font-size:12px;color:${_bg.textColor==="#1e293b"?"#475569":"#94a3b8"};margin-top:16px}
 .cover .contact-point{font-size:11px;color:${_bg.textColor==="#1e293b"?"#64748b":"#64748b"};margin-top:6px}
 /* Section page */
-.sec-page{background:#fff;padding:0;display:flex;flex-direction:column}
+.sec-page{background:#fff;padding:0;display:flex;flex-direction:column;height:210mm}
 .sec-header{background:${_bg.gradient};color:${_bg.textColor};padding:24px 40px;display:flex;align-items:center;gap:16px;border-left:5px solid ${_kc};flex-shrink:0}
 .sec-num{font-size:48px;font-weight:900;color:${_kc};opacity:.5;line-height:1;min-width:60px}
 .sec-title-block{display:flex;flex-direction:column}
 .sec-title{font-size:24px;font-weight:900;color:#fff;letter-spacing:2px}
 .sec-sub{font-size:11px;color:${_kc}cc;letter-spacing:1px;margin-top:2px}
-.sec-body{padding:28px 40px 36px;flex:1;overflow:hidden}
+.sec-body{padding:28px 40px 8px;flex:1;overflow:hidden}
 /* 공통 테이블 */
 table{width:100%;border-collapse:collapse;margin-bottom:16px}
 th{background:${_kc}15;color:${_kc};font-size:10px;font-weight:700;padding:7px 10px;text-align:left;border:1px solid ${_kc}33;white-space:nowrap}
@@ -9183,8 +9183,8 @@ tr:nth-child(even) td{background:#f8fafc}
 .box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:12px}
 .box-title{font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
 .box-val{font-size:13px;color:#1e293b;white-space:pre-wrap;line-height:1.6}
-/* Footer */
-.footer{position:absolute;bottom:0;left:0;right:0;padding:8px 32px;text-align:right;font-size:10px;color:#94a3b8}
+/* Footer — flex 기반 (absolute 제거, 항상 페이지 바닥에 고정) */
+.footer{flex-shrink:0;padding:8px 32px;text-align:right;font-size:10px;color:#94a3b8;margin-top:auto}
 .pill{display:inline-block}
 /* Photo placeholder */
 .photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
@@ -9203,8 +9203,8 @@ tr:nth-child(even) td{background:#f8fafc}
   .page.sec-page{display:flex;flex-direction:column;height:210mm}
   .page.cover{height:210mm;display:flex;flex-direction:column}
   .sec-header{flex-shrink:0}
-  .sec-body{flex:1;overflow:hidden;padding-bottom:36px}
-  .footer{position:absolute;bottom:0;left:0;right:0}
+  .sec-body{flex:1;overflow:hidden}
+  .footer{flex-shrink:0;margin-top:auto}
   .img-page{page-break-before:always;height:210mm;overflow:hidden;box-sizing:border-box}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
