@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260309v8";
+  var CODE_VER = "20260309v9";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -215,7 +215,7 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
 
   function openIDB(){
     return new Promise(function(resolve, reject){
-      var req = indexedDB.open(DB_NAME);
+      var req = indexedDB.open(DB_NAME, 2);
       req.onupgradeneeded = function(e){ if(!e.target.result.objectStoreNames.contains(STORE)) e.target.result.createObjectStore(STORE); };
       req.onsuccess = function(e){ resolve(e.target.result); };
       req.onerror = function(){ reject(req.error); };
@@ -412,6 +412,8 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
         window.__cloudSyncDownloaded = true;
         window.__cloudSyncCount = downloaded;
       }
+      // DB 연결 닫기 (React openIDB의 버전 업그레이드 블로킹 방지)
+      try { db.close(); } catch(e){}
     } catch(err){
       console.log("[Sync] IDB 초기화:", err.message || err);
     }
@@ -12411,13 +12413,31 @@ function App() {
 
   // ── 클라우드-퍼스트 초기 로드 (로딩 화면 → 클라우드 → 렌더) ──
   useEffect(() => {
+    let cloudLoaded = false;
+
+    // 안전 타임아웃 (5초): init() 또는 클라우드 로드 hang 시 로컬 폴백
+    const timeout = setTimeout(() => {
+      if (!cloudLoaded) {
+        console.warn("[App] ⏰ 클라우드 로드 타임아웃 → 로컬 캐시 사용");
+        toast("⚠️ 클라우드 응답 지연 — 로컬 캐시 사용 중", "warn");
+        [usersCloud, projectsCloud, priceListCloud, expensesCloud, laborCostsCloud, purchasesCloud]
+          .forEach(c => c.markInitialized());
+        setAppReady(true);
+      }
+    }, 5000);
+
     (async () => {
-      // 오프라인 큐 초기화
-      await CloudDataStore.init();
+      // 오프라인 큐 초기화 (타임아웃 3초 — IDB 버전 충돌 방지)
+      try {
+        await Promise.race([
+          CloudDataStore.init(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("init timeout")), 3000))
+        ]);
+      } catch (e) { console.warn("[App] CloudDataStore.init skip:", e.message); }
 
       const anyCloudEnabled = CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED;
       if (!anyCloudEnabled) {
-        // 클라우드 비활성 → 로컬 캐시 그대로 사용
+        cloudLoaded = true; clearTimeout(timeout);
         [usersCloud, projectsCloud, priceListCloud, expensesCloud, laborCostsCloud, purchasesCloud]
           .forEach(c => c.markInitialized());
         setAppReady(true);
@@ -12425,18 +12445,6 @@ function App() {
       }
 
       setLoadingMsg("☁️ 클라우드에서 데이터를 불러오는 중...");
-
-      // 타임아웃 (5초): 클라우드 실패 시 로컬 캐시로 폴백
-      let cloudLoaded = false;
-      const timeout = setTimeout(() => {
-        if (!cloudLoaded) {
-          console.warn("[App] ⏰ 클라우드 로드 타임아웃 → 로컬 캐시 사용");
-          toast("⚠️ 클라우드 응답 지연 — 로컬 캐시 사용 중", "warn");
-          [usersCloud, projectsCloud, priceListCloud, expensesCloud, laborCostsCloud, purchasesCloud]
-            .forEach(c => c.markInitialized());
-          setAppReady(true);
-        }
-      }, 5000);
 
       try {
         const cloud = await SyncManager.loadFromCloud();
