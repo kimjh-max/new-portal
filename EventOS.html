@@ -8731,7 +8731,7 @@ function DocEditorPanel({docType, project}) {
         if (idbData && Object.keys(idbData).length) localData = idbData;
       } catch {}
 
-      // ② 클라우드에서 로드 시도 (Cloudflare D1)
+      // ② 클라우드에서 로드 시도 (R2)
       let cloudData = null;
       try {
         cloudData = await CloudSync.loadDoc(storageKey);
@@ -8744,29 +8744,27 @@ function DocEditorPanel({docType, project}) {
       // ③ 더 큰(더 최신) 데이터를 선택
       const localSize = localData ? JSON.stringify(localData).length : 0;
       const cloudSize = cloudData ? JSON.stringify(cloudData).length : 0;
-      console.log("[DocEditor] 로컬:" + localSize + " vs 클라우드:" + cloudSize);
+      console.log("[DocEditor] 로컬:" + localSize + " vs 클라우드:" + cloudSize + " key:" + storageKey);
       const bestData = cloudSize > localSize ? cloudData : localData;
 
       if (bestData && Object.keys(bestData).length) {
-        setDocData(prev => {
-          const prevSize = JSON.stringify(prev).length;
-          const bestSize = JSON.stringify(bestData).length;
-          if (bestSize >= prevSize) {
-            if (cloudSize > localSize && cloudData) {
-              // 클라우드가 최신 → 로컬에 동기화
-              saveToIDB(storageKey, cloudData).catch(()=>{});
-              try { localStorage.setItem(storageKey, JSON.stringify(cloudData)); } catch {}
-              console.log("[DocEditor] ☁️→📱 클라우드 데이터 로컬에 동기화");
-            } else if (localSize > cloudSize && localData) {
-              // 로컬이 최신 → 클라우드에 업로드 (빈 클라우드 덮어쓰기)
-              CloudSync.saveDoc(storageKey, localData).then(() => {
-                console.log("[DocEditor] 📱→☁️ 로컬 데이터 클라우드에 동기화 (" + localSize + " chars)");
-              }).catch(()=>{});
-            }
-            return bestData;
-          }
-          return prev;
-        });
+        setDocData(bestData);
+      }
+
+      // ④ 동기화 (상태 업데이터 밖에서 직접 실행)
+      if (cloudSize > localSize && cloudData) {
+        // 클라우드가 최신 → 로컬에 동기화
+        saveToIDB(storageKey, cloudData).catch(()=>{});
+        try { localStorage.setItem(storageKey, JSON.stringify(cloudData)); } catch {}
+        console.log("[DocEditor] ☁️→📱 클라우드→로컬 동기화 완료");
+      } else if (localSize > cloudSize && localData) {
+        // 로컬이 최신 → 클라우드에 직접 업로드
+        try {
+          const result = await CloudSync.saveDoc(storageKey, localData);
+          console.log("[DocEditor] 📱→☁️ 로컬→클라우드 업로드 완료 (" + localSize + " chars)", result);
+        } catch (err) {
+          console.error("[DocEditor] 클라우드 업로드 실패:", err);
+        }
       } else if (!localData && !cloudData) {
         console.log("[DocEditor] 로컬 & 클라우드 모두 데이터 없음");
       }
