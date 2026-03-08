@@ -4523,6 +4523,46 @@ function toast(msg, type="default") {
   setTimeout(()=>{t.style.opacity="0";t.style.transform="translateY(8px)";t.style.transition=".3s";setTimeout(()=>t.remove(),300)},2500);
 }
 
+// ── 스토리지 용량 부족 결제 안내 ──
+let _storageAlertShown = false;
+function showStorageUpgradeAlert() {
+  if (_storageAlertShown) return; // 세션 당 한 번만 표시
+  _storageAlertShown = true;
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;animation:fadeIn .2s";
+  const modal = document.createElement("div");
+  modal.style.cssText = "background:#fff;border-radius:16px;padding:32px 36px;max-width:420px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.3);text-align:center;font-family:var(--font)";
+  modal.innerHTML = `
+    <div style="font-size:48px;margin-bottom:12px">💾</div>
+    <h3 style="margin:0 0 8px;font-size:18px;color:#1e293b">스토리지 용량이 부족합니다</h3>
+    <p style="margin:0 0 20px;font-size:14px;color:#64748b;line-height:1.6">
+      현재 무료 저장 용량을 모두 사용하였습니다.<br>
+      데이터 유실을 방지하려면 <strong>요금제를 업그레이드</strong>해주세요.
+    </p>
+    <div style="display:flex;gap:10px;justify-content:center">
+      <button id="_storageUpgradeBtn" style="padding:10px 24px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:transform .15s">
+        💳 요금제 업그레이드
+      </button>
+      <button id="_storageDismissBtn" style="padding:10px 20px;background:#f1f5f9;color:#64748b;border:none;border-radius:8px;font-size:14px;cursor:pointer">
+        나중에
+      </button>
+    </div>
+    <p style="margin:16px 0 0;font-size:11px;color:#94a3b8">
+      ⚠️ 용량 부족 시 보고서 데이터가 저장되지 않을 수 있습니다
+    </p>
+  `;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  document.getElementById("_storageDismissBtn").onclick = () => { overlay.remove(); };
+  document.getElementById("_storageUpgradeBtn").onclick = () => {
+    toast("결제 페이지로 이동합니다", "info");
+    // TODO: 실제 결제 페이지 URL로 교체
+    window.open("https://eventos.co.kr/pricing", "_blank");
+    overlay.remove();
+  };
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+}
+
 /* ══ 컴포넌트 ════════════════════════════════════════════════════════════════ */
 
 // ─ Topbar ─
@@ -8416,7 +8456,7 @@ function DocEditorPanel({docType, project}) {
     } catch(e) {
       console.warn("[DocEditor] localStorage full, IndexedDB 폴백:", e);
       saveToIDB(storageKey, data).then(()=>{ setSaveStatus("saved"); setLastSavedAt(ts); toast("용량 초과 → IndexedDB 저장","info"); })
-        .catch(err=>{ console.error("[DocEditor] IndexedDB 실패:", err); setSaveStatus("unsaved"); toast("저장 실패! 데이터를 백업하세요","error"); });
+        .catch(err=>{ console.error("[DocEditor] IndexedDB 실패:", err); setSaveStatus("unsaved"); toast("⚠️ 저장 실패! 스토리지 용량이 부족합니다. 요금제를 업그레이드해주세요.","error"); showStorageUpgradeAlert(); });
     }
   }, [storageKey]);
 
@@ -8483,7 +8523,8 @@ function DocEditorPanel({docType, project}) {
         toast(`"${displayName}" 버전 저장 완료 (IndexedDB)`, "success");
       }).catch(err=>{
         console.error("[DocEditor] 버전 IndexedDB 저장 실패:", err);
-        toast("⚠️ 버전 저장 실패! 용량 부족", "error");
+        toast("⚠️ 버전 저장 실패! 스토리지 용량이 부족합니다. 요금제를 업그레이드해주세요.", "error");
+        showStorageUpgradeAlert();
       });
       return;
     }
@@ -11382,7 +11423,7 @@ function App() {
         backups.unshift(snapshot);
         if (backups.length > DRIVE_CONFIG.MAX_LOCAL_BACKUPS) backups.length = DRIVE_CONFIG.MAX_LOCAL_BACKUPS;
         localStorage.setItem("eventos_autoBackups", JSON.stringify(backups));
-      } catch (e) { console.error("[EventOS] 자동 백업 저장 실패:", e); }
+      } catch (e) { console.error("[EventOS] 자동 백업 저장 실패:", e); showStorageUpgradeAlert(); }
 
       // 클라우드 백업 (Cloudflare D1 + Drive, 둘 다 활성 시 모두 저장)
       if (CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED) {
