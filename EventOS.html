@@ -9177,7 +9177,48 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   const vActualCols = Math.min(vImgs.length, vCols);
   const vRows = vImgs.length ? Math.ceil(vImgs.length / vActualCols) : 0;
   const vHasDesc = !!vItem.description;
-  const vMaxH = vRows <= 1 ? (vHasDesc ? '55vh' : '70vh') : vRows <= 2 ? (vHasDesc ? '26vh' : '33vh') : '18vh';
+  // 텍스트 길이 기반 페이지 분리 판단 (줄바꿈 수 + 글자 수)
+  const descLines = (vItem.description||"").split(/\\n|\n/).length;
+  const descLen = (vItem.description||"").length;
+  const needsSplit = vHasDesc && vImgs.length > 0 && (descLines > 5 || descLen > 150);
+  const vMaxH = needsSplit ? '65vh' : (vRows <= 1 ? (vHasDesc ? '55vh' : '70vh') : vRows <= 2 ? (vHasDesc ? '26vh' : '33vh') : '18vh');
+
+  if (needsSplit) {
+    // 텍스트 페이지 + 이미지 페이지 분리
+    return `
+<div class="page sec-page">
+  <div class="sec-header">
+    <div class="sec-num">${secNum("venue")}</div>
+    <div class="sec-title-block">
+      <div class="sec-title">${vItem.itemName||"Venue Detail"}</div>
+      <div class="sec-sub">장소 상세 | VENUE DETAIL</div>
+    </div>
+  </div>
+  <div class="sec-body">
+    ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
+  </div>
+  <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
+</div>
+<div class="page sec-page">
+  <div class="sec-header">
+    <div class="sec-num">${secNum("venue")}</div>
+    <div class="sec-title-block">
+      <div class="sec-title">${vItem.itemName||"Venue Detail"}</div>
+      <div class="sec-sub">장소 상세 | VENUE DETAIL</div>
+    </div>
+  </div>
+  <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
+    <div class="inline-imgs">
+      <div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
+        ${vImgs.map(img=>\`<img src="\${img.data}" style="max-height:${vMaxH}"/>\`).join("")}
+      </div>
+    </div>
+  </div>
+  <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
+</div>`;
+  }
+
+  // 기본: 한 페이지에 텍스트 + 이미지
   return `
 <div class="page sec-page">
   <div class="sec-header">
@@ -9191,7 +9232,7 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
     ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
     ${vImgs.length ? `<div class="inline-imgs">
       <div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
-        ${vImgs.map(img=>`<img src="${img.data}" style="max-height:${vMaxH}"/>`).join("")}
+        ${vImgs.map(img=>\`<img src="\${img.data}" style="max-height:${vMaxH}"/>\`).join("")}
       </div>
     </div>` : ""}
   </div>
