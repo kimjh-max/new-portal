@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260309v9";
+  var CODE_VER = "20260309v10";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -815,18 +815,27 @@ const CloudDataStore = {
   _isOnline: navigator.onLine,
   IDB_QUEUE_KEY: "eventos_offline_queue",
 
-  // 앱 시작 시 초기화 (IDB에서 오프라인 큐 복원)
+  // 앱 시작 시 초기화 (IDB에서 오프라인 큐 복원, 실패 시 localStorage 폴백)
   async init() {
+    let queue = [];
     try {
-      const queue = await loadFromIDB(this.IDB_QUEUE_KEY);
-      if (Array.isArray(queue) && queue.length) {
-        this._offlineQueue = queue;
-        console.log("[CloudDataStore] 📦 오프라인 큐 복원:", queue.length + "건");
-        if (navigator.onLine) this.flushQueue();
-      }
-    } catch {}
+      queue = await loadFromIDB(this.IDB_QUEUE_KEY) || [];
+    } catch (err) {
+      console.error("[CloudDataStore] IDB 큐 읽기 실패:", err.message);
+      // localStorage 폴백
+      try {
+        const fallback = localStorage.getItem("__eventos_offline_queue_backup");
+        if (fallback) queue = JSON.parse(fallback);
+      } catch (e) { console.error("[CloudDataStore] 큐 복원 완전 실패"); }
+    }
+    if (Array.isArray(queue) && queue.length) {
+      this._offlineQueue = queue;
+      console.log("[CloudDataStore] 📦 오프라인 큐 복원:", queue.length + "건");
+      if (navigator.onLine) this.flushQueue();
+    }
     window.addEventListener("online", () => { this._isOnline = true; this.flushQueue(); });
     window.addEventListener("offline", () => { this._isOnline = false; });
+    this.startAutoRetry();
   },
 
   // ── 시스템 데이터 저장 (클라우드 우선) ──
@@ -940,6 +949,8 @@ const CloudDataStore = {
 
   async _persistQueue() {
     try { await saveToIDB(this.IDB_QUEUE_KEY, this._offlineQueue); } catch {}
+    // localStorage 백업 (IDB 실패 시 복원용)
+    try { localStorage.setItem("__eventos_offline_queue_backup", JSON.stringify(this._offlineQueue)); } catch {}
   },
 
   async flushQueue() {
@@ -975,6 +986,18 @@ const CloudDataStore = {
 
   // 큐 상태
   getQueueLength() { return this._offlineQueue.length; },
+
+  // 30초마다 미전송 큐 자동 재시도
+  _retryTimer: null,
+  startAutoRetry() {
+    if (this._retryTimer) return;
+    this._retryTimer = setInterval(() => {
+      if (this._offlineQueue.length > 0 && navigator.onLine) {
+        console.log("[CloudDataStore] 🔄 큐 자동 재시도 (" + this._offlineQueue.length + "건)");
+        this.flushQueue();
+      }
+    }, 30000);
+  },
 };
 
 /* ── localStorage 영속화 + Google Drive 동기화 모듈 ────────────────────────── */
@@ -1357,6 +1380,28 @@ function useCloudState(key, defaultValue, opts) {
     }, debounceMs);
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [state, key, debounceMs]);
+
+  // ── beforeunload: 탭 닫을 때 미저장 데이터 강제 전송 ──
+  useEffect(() => {
+    const handler = () => {
+      if (!isInitializedRef.current) return;
+      // 디바운스 대기 중인 데이터가 있으면 즉시 전송
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+        const payload = JSON.stringify({ data: { [key]: stateRef.current } });
+        // sendBeacon: 브라우저 종료 중에도 전송 보장
+        try {
+          navigator.sendBeacon(
+            CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "") + "/api/data",
+            new Blob([payload], { type: "application/json" })
+          );
+        } catch (e) { console.error("[useCloudState] sendBeacon fail:", e); }
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [key]);
 
   // setFromCloud: 클라우드 데이터 적용 (write-back 안 함)
   const setFromCloud = useCallback((value) => {
@@ -9375,14 +9420,16 @@ function DocEditorPanel({docType, project}) {
     // ② 로컬 캐시 (IDB + localStorage)
     try { await saveToIDB(storageKey, data); } catch {}
     try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
-    // ③ 상태 업데이트
+    // ③ 상태 업데이트 + 실패 시 명확한 경고
     if (cloudResult.success) {
       setSaveStatus("saved"); setLastSavedAt(ts + " ☁️");
       SyncManager.setStatus("success"); SyncManager._lastSyncTime = new Date(); SyncManager._notify();
     } else if (cloudResult.queued) {
       setSaveStatus("saved"); setLastSavedAt(ts + " 📤");
+      toast("⚠️ 클라우드 저장 대기 중 — 인터넷 연결 시 자동 전송됩니다", "warn");
     } else {
-      setSaveStatus("saved"); setLastSavedAt(ts);
+      setSaveStatus("saved"); setLastSavedAt(ts + " ⚠️");
+      toast("❌ 클라우드 저장 실패! 로컬에만 저장됨 — 네트워크를 확인하세요", "error");
     }
     // Drive 백업 (기존 호환)
     if (DRIVE_CONFIG.ENABLED) {
@@ -9444,12 +9491,23 @@ function DocEditorPanel({docType, project}) {
     return () => clearInterval(integrityCheck);
   }, [storageKey, performSave]);
 
-  // 탭 닫기/새로고침 시 즉시 저장
+  // 탭 닫기/새로고침 시 즉시 저장 (로컬 + 클라우드 sendBeacon)
   React.useEffect(() => {
     const handler = () => {
       const data = docDataLatestRef.current;
-      saveToIDB(storageKey, data).catch(()=>{});
+      if (!data || Object.keys(data).length === 0) return;
+      // ① 로컬 즉시 저장
       try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
+      saveToIDB(storageKey, data).catch(()=>{});
+      // ② 클라우드로 sendBeacon (브라우저 종료 중에도 전송 보장)
+      if (CLOUD_CONFIG.ENABLED) {
+        try {
+          navigator.sendBeacon(
+            CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "") + "/api/doc",
+            new Blob([JSON.stringify({ key: storageKey, data })], { type: "application/json" })
+          );
+        } catch (e) { console.error("[DocEditor] sendBeacon fail:", e); }
+      }
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
