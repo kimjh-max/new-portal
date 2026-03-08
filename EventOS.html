@@ -8604,6 +8604,41 @@ const ALL_DOC_SECTIONS = [
   {id:"timeline", title:"Time Line", icon:"📅", desc:"일정 계획"},
 ];
 
+function StorageIndicator() {
+  const [info, setInfo] = React.useState(null);
+  React.useEffect(() => {
+    const check = async () => {
+      let lsKB = 0;
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        lsKB += (k.length + localStorage.getItem(k).length) * 2 / 1024;
+      }
+      let idbMB = 0;
+      try {
+        if (navigator.storage && navigator.storage.estimate) {
+          const est = await navigator.storage.estimate();
+          idbMB = est.usage / (1024 * 1024);
+        }
+      } catch {}
+      setInfo({ lsMB: (lsKB / 1024).toFixed(1), lsPct: Math.min(100, (lsKB / (5 * 1024) * 100)).toFixed(0), idbMB: idbMB.toFixed(1) });
+    };
+    check();
+    const timer = setInterval(check, 30000); // 30초마다 갱신
+    return () => clearInterval(timer);
+  }, []);
+  if (!info) return null;
+  const pct = parseInt(info.lsPct);
+  const color = pct > 90 ? "#ef4444" : pct > 70 ? "#f59e0b" : "#10b981";
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:"var(--txt4)"}} title={`localStorage: ${info.lsMB}MB/5MB (${info.lsPct}%)\nIndexedDB: ${info.idbMB}MB`}>
+      <div style={{width:40,height:4,background:"rgba(255,255,255,.1)",borderRadius:2,overflow:"hidden"}}>
+        <div style={{width:info.lsPct+"%",height:"100%",background:color,borderRadius:2}}/>
+      </div>
+      <span style={{opacity:.7}}>{info.lsPct}%</span>
+    </div>
+  );
+}
+
 function DocEditorPanel({docType, project}) {
   // docType: "plan" | "report"
   const isPlan = docType === "plan";
@@ -10502,6 +10537,7 @@ ${secEnabled("timeline") ? (()=>{
             <div style={{width:8,height:8,borderRadius:"50%",background:saveStatus==="saved"?"#10b981":saveStatus==="saving"?"#f59e0b":"#ef4444"}}/>
             <span style={{fontSize:11,color:"var(--txt4)"}}>{saveStatus==="saved"?"저장됨":saveStatus==="saving"?"저장 중...":"변경됨"}{lastSavedAt && saveStatus==="saved" && <span style={{marginLeft:4,opacity:.7}}>({lastSavedAt})</span>}</span>
           </div>
+          <StorageIndicator />
           <button onClick={()=>{setShowCoverEdit(!showCoverEdit);if(showSectionMgr)setShowSectionMgr(false);}} className="btn" style={{background:"rgba(99,102,241,.06)",border:"1px solid rgba(99,102,241,.15)",color:"#818cf8",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
             표지 설정
           </button>
