@@ -4532,6 +4532,41 @@ function toast(msg, type="default") {
 }
 
 // ── 스토리지 자동 정리 + 용량 부족 안내 ──
+// 앱 시작 전 선제적 용량 확보
+(function preCleanup() {
+  try {
+    let usedKB = 0;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      usedKB += (k.length + localStorage.getItem(k).length) * 2 / 1024;
+    }
+    if (usedKB > 4 * 1024) { // 4MB 이상이면 선제 정리
+      console.log("[EventOS] ⚡ 스토리지 " + (usedKB/1024).toFixed(1) + "MB → 선제 정리 시작");
+      // 자동 백업 → 최신 1개만
+      try {
+        const b = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
+        if (b.length > 1) localStorage.setItem("eventos_autoBackups", JSON.stringify(b.slice(0, 1)));
+      } catch {}
+      // 버전 이력 → 최신 3개만
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("eventos_docVersions_")) {
+          try {
+            const v = JSON.parse(localStorage.getItem(key) || "[]");
+            if (v.length > 3) localStorage.setItem(key, JSON.stringify(v.slice(0, 3)));
+          } catch {}
+        }
+      }
+      let afterKB = 0;
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        afterKB += (k.length + localStorage.getItem(k).length) * 2 / 1024;
+      }
+      console.log("[EventOS] ✅ 선제 정리 완료: " + (usedKB/1024).toFixed(1) + "MB → " + (afterKB/1024).toFixed(1) + "MB");
+    }
+  } catch(e) { console.warn("[EventOS] 선제 정리 실패:", e); }
+})();
+
 function cleanupStorage() {
   let freedKB = 0;
   // 1단계: 자동 백업 → 최신 1개만 유지
