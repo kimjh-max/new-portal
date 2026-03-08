@@ -9061,7 +9061,7 @@ body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-si
 .sec-title-block{display:flex;flex-direction:column}
 .sec-title{font-size:24px;font-weight:900;color:#fff;letter-spacing:2px}
 .sec-sub{font-size:11px;color:${_kc}cc;letter-spacing:1px;margin-top:2px}
-.sec-body{padding:28px 40px;flex:1;overflow:hidden}
+.sec-body{padding:28px 40px 36px;flex:1;overflow:hidden}
 /* 공통 테이블 */
 table{width:100%;border-collapse:collapse;margin-bottom:16px}
 th{background:${_kc}15;color:${_kc};font-size:10px;font-weight:700;padding:7px 10px;text-align:left;border:1px solid ${_kc}33;white-space:nowrap}
@@ -9078,7 +9078,7 @@ tr:nth-child(even) td{background:#f8fafc}
 .box-title{font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
 .box-val{font-size:13px;color:#1e293b;white-space:pre-wrap;line-height:1.6}
 /* Footer */
-.footer{padding:8px 32px;text-align:right;font-size:10px;color:#94a3b8;flex-shrink:0;margin-top:auto}
+.footer{position:absolute;bottom:0;left:0;right:0;padding:8px 32px;text-align:right;font-size:10px;color:#94a3b8}
 .pill{display:inline-block}
 /* Photo placeholder */
 .photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
@@ -9097,8 +9097,8 @@ tr:nth-child(even) td{background:#f8fafc}
   .page.sec-page{display:flex;flex-direction:column;height:210mm}
   .page.cover{height:210mm;display:flex;flex-direction:column}
   .sec-header{flex-shrink:0}
-  .sec-body{flex:1;overflow:hidden}
-  .footer{flex-shrink:0;margin-top:auto}
+  .sec-body{flex:1;overflow:hidden;padding-bottom:36px}
+  .footer{position:absolute;bottom:0;left:0;right:0}
   .img-page{page-break-before:always;height:210mm;overflow:hidden;box-sizing:border-box}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
@@ -9334,17 +9334,15 @@ ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).len
   const csClientLabel = pr._cueSheetClientName||"주최측";
   const csAllRows = csFiltered.map((c,i)=>{
     const dur = c.duration ? Math.floor(parseInt(c.duration)/60)+":"+String(parseInt(c.duration)%60).padStart(2,"0") : "";
-    const audioArr = [c.bgm,c.mic].filter(Boolean);
-    const audioStr = audioArr.join(" / ");
     const exTds = csExCols.map((_,ci)=>"<td>"+(c["extra_"+ci]||"")+"</td>").join("");
-    return `<tr><td style="text-align:center;width:22px">${i+1}</td><td style="font-weight:600;white-space:nowrap">${c.session||""}</td><td>${c.content||""}</td><td style="white-space:nowrap">${c.startTime||""}${c.startTime&&c.endTime?"~":""}${c.endTime||""}</td><td style="text-align:center;white-space:nowrap">${dur}</td><td>${c.details||""}</td><td>${c.reference||""}</td><td>${c.screen||""}</td><td>${audioStr}</td><td>${c.staffEpic||""}</td><td>${c.staffClient||""}</td>${exTds}</tr>`;
+    return `<tr><td style="text-align:center;width:22px">${i+1}</td><td style="font-weight:600;white-space:nowrap">${c.session||""}</td><td>${c.content||""}</td><td style="white-space:nowrap">${c.startTime||""}${c.startTime&&c.endTime?"~":""}${c.endTime||""}</td><td style="text-align:center;white-space:nowrap">${dur}</td><td>${c.details||""}</td><td>${c.reference||""}</td><td>${c.screen||""}</td><td>${c.bgm||""}</td><td>${c.mic||""}</td><td>${c.staffEpic||""}</td><td>${c.staffClient||""}</td>${exTds}</tr>`;
   });
   const csRowsPerPage = 15;
   const csPages = [];
   for(let i=0;i<csAllRows.length;i+=csRowsPerPage) csPages.push(csAllRows.slice(i,i+csRowsPerPage));
   if(!csPages.length) csPages.push([]);
   const exThStr = csExCols.map(col=>"<th>"+col+"</th>").join("");
-  const csThead = `<thead><tr><th style="width:22px">#</th><th>세션</th><th>내용</th><th>시간</th><th>경과</th><th>상세</th><th>참고</th><th>화면</th><th>음향</th><th>에픽</th><th>${csClientLabel}</th>${exThStr}</tr></thead>`;
+  const csThead = `<thead><tr><th style="width:22px">#</th><th>세션</th><th>내용</th><th>시간</th><th>경과</th><th>상세</th><th>참고</th><th>화면</th><th>BGM</th><th>MIC</th><th>에픽</th><th>${csClientLabel}</th>${exThStr}</tr></thead>`;
   return csPages.map((rows,pi)=>`
 <div class="page sec-page" style="page-break-before:always">
   <div class="sec-header">
