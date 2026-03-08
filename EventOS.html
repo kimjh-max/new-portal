@@ -9160,19 +9160,23 @@ body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-si
 .cover .year{font-size:13px;color:${_bg.textColor==="#1e293b"?"#475569":"#94a3b8"};letter-spacing:1px}
 .cover .contact{font-size:12px;color:${_bg.textColor==="#1e293b"?"#475569":"#94a3b8"};margin-top:16px}
 .cover .contact-point{font-size:11px;color:${_bg.textColor==="#1e293b"?"#64748b":"#64748b"};margin-top:6px}
-/* Section page */
-.sec-page{background:#fff;padding:0;display:flex;flex-direction:column;height:210mm}
-.sec-header{background:${_bg.gradient};color:${_bg.textColor};padding:24px 40px;display:flex;align-items:center;gap:16px;border-left:5px solid ${_kc};flex-shrink:0}
+/* Section page — CSS Grid: header / body / footer 3행 고정 */
+.sec-page{background:#fff;padding:0;display:grid;grid-template-rows:auto 1fr auto;height:210mm}
+.sec-header{background:${_bg.gradient};color:${_bg.textColor};padding:24px 40px;display:flex;align-items:center;gap:16px;border-left:5px solid ${_kc}}
 .sec-num{font-size:48px;font-weight:900;color:${_kc};opacity:.5;line-height:1;min-width:60px}
 .sec-title-block{display:flex;flex-direction:column}
 .sec-title{font-size:24px;font-weight:900;color:#fff;letter-spacing:2px}
 .sec-sub{font-size:11px;color:${_kc}cc;letter-spacing:1px;margin-top:2px}
-.sec-body{padding:28px 40px 8px;flex:1;overflow:hidden}
+.sec-body{padding:28px 40px 8px;overflow:hidden;min-height:0}
 /* 공통 테이블 */
 table{width:100%;border-collapse:collapse;margin-bottom:16px}
 th{background:${_kc}15;color:${_kc};font-size:10px;font-weight:700;padding:7px 10px;text-align:left;border:1px solid ${_kc}33;white-space:nowrap}
 td{border:1px solid #e2e8f0;padding:6px 10px;font-size:11px;vertical-align:top}
 tr:nth-child(even) td{background:#f8fafc}
+/* 큐시트 테이블 — 자동 폰트 축소, 줄바꿈 방지 */
+.cs-table td{font-size:8px;white-space:nowrap;padding:4px 5px;line-height:1.3}
+.cs-table th{font-size:8px;padding:5px 5px}
+.cs-table td.cs-wrap{white-space:normal;font-size:8px}
 /* Info grid */
 .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
 .info-box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px}
@@ -9183,8 +9187,8 @@ tr:nth-child(even) td{background:#f8fafc}
 .box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:12px}
 .box-title{font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
 .box-val{font-size:13px;color:#1e293b;white-space:pre-wrap;line-height:1.6}
-/* Footer — flex 기반 (absolute 제거, 항상 페이지 바닥에 고정) */
-.footer{flex-shrink:0;padding:8px 32px;text-align:right;font-size:10px;color:#94a3b8;margin-top:auto}
+/* Footer — Grid 3번째 행 (항상 페이지 바닥 고정) */
+.footer{padding:6px 32px;text-align:right;font-size:10px;color:#94a3b8}
 .pill{display:inline-block}
 /* Photo placeholder */
 .photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
@@ -9200,11 +9204,9 @@ tr:nth-child(even) td{background:#f8fafc}
 @media print{
   .page{width:297mm;height:210mm;margin:0;page-break-after:always;overflow:hidden;box-sizing:border-box}
   .page:last-child{page-break-after:auto}
-  .page.sec-page{display:flex;flex-direction:column;height:210mm}
+  .page.sec-page{display:grid;grid-template-rows:auto 1fr auto;height:210mm}
   .page.cover{height:210mm;display:flex;flex-direction:column}
-  .sec-header{flex-shrink:0}
-  .sec-body{flex:1;overflow:hidden}
-  .footer{flex-shrink:0;margin-top:auto}
+  .sec-body{overflow:hidden;min-height:0}
   .img-page{page-break-before:always;height:210mm;overflow:hidden;box-sizing:border-box}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
@@ -9441,7 +9443,7 @@ ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).len
   const csAllRows = csFiltered.map((c,i)=>{
     const dur = c.duration ? Math.floor(parseInt(c.duration)/60)+":"+String(parseInt(c.duration)%60).padStart(2,"0") : "";
     const exTds = csExCols.map((_,ci)=>"<td>"+(c["extra_"+ci]||"")+"</td>").join("");
-    return `<tr><td style="text-align:center;width:22px">${i+1}</td><td style="font-weight:600;white-space:nowrap">${c.session||""}</td><td>${c.content||""}</td><td style="white-space:nowrap">${c.startTime||""}${c.startTime&&c.endTime?"~":""}${c.endTime||""}</td><td style="text-align:center;white-space:nowrap">${dur}</td><td>${c.details||""}</td><td>${c.reference||""}</td><td>${c.screen||""}</td><td>${c.bgm||""}</td><td>${c.mic||""}</td><td>${c.staffEpic||""}</td><td>${c.staffClient||""}</td>${exTds}</tr>`;
+    return `<tr><td style="text-align:center;width:18px">${i+1}</td><td style="font-weight:600">${c.session||""}</td><td class="cs-wrap">${c.content||""}</td><td>${c.startTime||""}${c.startTime&&c.endTime?"~":""}${c.endTime||""}</td><td style="text-align:center">${dur}</td><td class="cs-wrap">${c.details||""}</td><td>${c.reference||""}</td><td>${c.screen||""}</td><td>${c.bgm||""}</td><td>${c.mic||""}</td><td>${c.staffEpic||""}</td><td>${c.staffClient||""}</td>${exTds}</tr>`;
   });
   const csRowsPerPage = 15;
   const csPages = [];
@@ -9459,7 +9461,7 @@ ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).len
     </div>
   </div>
   <div class="sec-body">
-    <table>${csThead}<tbody>${rows.join("")}</tbody></table>
+    <table class="cs-table">${csThead}<tbody>${rows.join("")}</tbody></table>
   </div>
   <div class="footer">${p.name||""} ${docTitle} · Cue Sheet${csPages.length>1?" ("+(pi+1)+"/"+csPages.length+")":""}</div>
 </div>`).join("\n");
@@ -11926,16 +11928,16 @@ function App() {
       }
       setDriveLoaded(true);
 
-      // 3) 로컬 문서 데이터 → 클라우드 일괄 마이그레이션 (앱 시작 시 1회)
+      // 3) 로컬 문서 데이터 → 클라우드 자동 동기화 (매 로드 시)
       if (CLOUD_CONFIG.ENABLED) {
-        try {
-          const migrated = sessionStorage.getItem("_docCloudMigrated");
-          if (!migrated) {
-            sessionStorage.setItem("_docCloudMigrated", "1");
-            // 클라우드에 이미 있는 doc 키 목록
+        setTimeout(async () => {
+          try {
+            console.log("[DocSync] 🔍 로컬→클라우드 동기화 시작...");
+            // 클라우드에 이미 있는 doc 키 + 크기 맵
             const cloudDocs = await CloudSync.listDocs();
             const cloudKeySet = new Set(cloudDocs.map(d => d.doc_key));
-            // ① IndexedDB에서 모든 doc 키 수집 (핵심! localStorage에 없을 수 있음)
+            console.log("[DocSync] 클라우드 doc " + cloudDocs.length + "개 확인");
+            // ① IndexedDB에서 모든 doc 키 수집
             const docKeySet = new Set();
             try {
               const allIDBKeys = await getAllIDBKeys();
@@ -11944,53 +11946,52 @@ function App() {
                   docKeySet.add(k);
                 }
               });
-              console.log("[DocSync] IndexedDB doc 키 " + docKeySet.size + "개 발견");
-            } catch (e) { console.warn("[DocSync] IDB 키 목록 실패:", e); }
-            // ② localStorage에서도 doc 키 수집 (IDB에 없는 것도 있을 수 있음)
+              console.log("[DocSync] IndexedDB doc 키 " + docKeySet.size + "개");
+            } catch (e) { console.warn("[DocSync] IDB getAllKeys 실패:", e); }
+            // ② localStorage에서도 수집
             for (let i = 0; i < localStorage.length; i++) {
               const k = localStorage.key(i);
               if (k && (k.startsWith("eventos_doc_") || k.startsWith("eventos_docVersions_"))) {
                 docKeySet.add(k);
               }
             }
-            console.log("[DocSync] 총 doc 키 " + docKeySet.size + "개 (IDB+localStorage)");
-            // ③ 각 키에 대해 로컬 데이터 로드 → 클라우드 업로드
+            console.log("[DocSync] 로컬 총 doc 키 " + docKeySet.size + "개");
+            // ③ 클라우드에 없는 것만 업로드
             let uploadCount = 0;
             for (const key of docKeySet) {
+              if (cloudKeySet.has(key)) continue; // 이미 있으면 스킵
               let localData = null;
-              // IDB 우선
               try {
                 const idbData = await loadFromIDB(key);
-                if (idbData && (Array.isArray(idbData) ? idbData.length > 0 : Object.keys(idbData).length > 0)) {
-                  localData = idbData;
+                if (idbData) {
+                  const isArr = Array.isArray(idbData);
+                  if (isArr ? idbData.length > 0 : typeof idbData === "object" && Object.keys(idbData).length > 0) {
+                    localData = idbData;
+                  }
                 }
               } catch {}
-              // localStorage 폴백
               if (!localData) {
                 try { const ls = localStorage.getItem(key); if (ls && ls.length > 2) localData = JSON.parse(ls); } catch {}
               }
               if (!localData) continue;
               const localSize = JSON.stringify(localData).length;
-              if (localSize <= 2) continue; // 빈 데이터 스킵
-              // 클라우드에 없거나, 로컬이 더 크면 업로드
-              if (!cloudKeySet.has(key) || localSize > 10) {
-                try {
-                  await CloudSync.saveDoc(key, localData);
-                  uploadCount++;
-                  console.log("[DocSync] ⬆️ 업로드:", key, "(" + localSize + " chars)");
-                } catch (e) { console.error("[DocSync] 업로드 실패:", key, e); }
-              }
+              if (localSize <= 2) continue;
+              try {
+                await CloudSync.saveDoc(key, localData);
+                uploadCount++;
+                console.log("[DocSync] ⬆️ " + key + " (" + localSize + " chars)");
+              } catch (e) { console.error("[DocSync] 실패:", key, e); }
             }
             if (uploadCount > 0) {
-              console.log("[DocSync] ☁️ 로컬 문서 " + uploadCount + "건 클라우드 마이그레이션 완료");
+              console.log("[DocSync] ☁️ " + uploadCount + "건 클라우드 업로드 완료");
               toast("☁️ 보고서 " + uploadCount + "건 클라우드 동기화 완료", "success");
             } else {
-              console.log("[DocSync] 마이그레이션 대상 없음 (이미 동기화됨 또는 로컬 데이터 없음)");
+              console.log("[DocSync] ✅ 동기화 완료 (업로드 대상 없음)");
             }
+          } catch (err) {
+            console.error("[DocSync] 동기화 오류:", err);
           }
-        } catch (err) {
-          console.error("[DocSync] 마이그레이션 실패:", err);
-        }
+        }, 3000); // 앱 로드 3초 후 실행 (UI 블로킹 방지)
       }
     })();
   }, []);
