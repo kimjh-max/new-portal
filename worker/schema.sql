@@ -37,8 +37,16 @@ CREATE TABLE IF NOT EXISTS files_meta (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- 보고서/문서 데이터 (에디터 저장 내용)
+CREATE TABLE IF NOT EXISTS doc_data (
+  doc_key TEXT PRIMARY KEY,
+  data TEXT NOT NULL,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
 -- 인덱스
 CREATE INDEX IF NOT EXISTS idx_backups_created ON backups(created_at);
 CREATE INDEX IF NOT EXISTS idx_backups_type ON backups(backup_type);
 CREATE INDEX IF NOT EXISTS idx_files_project ON files_meta(project_id);
 CREATE INDEX IF NOT EXISTS idx_project_name ON project_data(project_name);
+CREATE INDEX IF NOT EXISTS idx_doc_updated ON doc_data(updated_at);
