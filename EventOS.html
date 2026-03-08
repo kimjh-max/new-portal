@@ -9064,8 +9064,8 @@ body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-si
 .sec-body{padding:28px 40px;flex:1;overflow:hidden}
 /* 공통 테이블 */
 table{width:100%;border-collapse:collapse;margin-bottom:16px}
-th{background:${_kc}15;color:${_kc};font-size:11px;font-weight:700;padding:8px 10px;text-align:left;border:1px solid ${_kc}33}
-td{border:1px solid #e2e8f0;padding:7px 10px;font-size:12px;vertical-align:top}
+th{background:${_kc}15;color:${_kc};font-size:10px;font-weight:700;padding:7px 10px;text-align:left;border:1px solid ${_kc}33;white-space:nowrap}
+td{border:1px solid #e2e8f0;padding:6px 10px;font-size:11px;vertical-align:top}
 tr:nth-child(even) td{background:#f8fafc}
 /* Info grid */
 .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
@@ -9078,7 +9078,7 @@ tr:nth-child(even) td{background:#f8fafc}
 .box-title{font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
 .box-val{font-size:13px;color:#1e293b;white-space:pre-wrap;line-height:1.6}
 /* Footer */
-.footer{padding:8px 32px;text-align:right;font-size:10px;color:#94a3b8;flex-shrink:0}
+.footer{padding:8px 32px;text-align:right;font-size:10px;color:#94a3b8;flex-shrink:0;margin-top:auto}
 .pill{display:inline-block}
 /* Photo placeholder */
 .photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
@@ -9328,40 +9328,38 @@ ${secEnabled("program") ? `<!-- 04 PROGRAM -->
 </div>
 ${imgHtml("program")}` : ""}
 
-${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).length ? `
+${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).length ? (()=>{
+  const csFiltered = (pr.cueSheet||[]).filter(c=>c.content||c.session);
+  const csExCols = pr._cueSheetExtraCols||[];
+  const csClientLabel = pr._cueSheetClientName||"주최측";
+  const csAllRows = csFiltered.map((c,i)=>{
+    const dur = c.duration ? Math.floor(parseInt(c.duration)/60)+":"+String(parseInt(c.duration)%60).padStart(2,"0") : "";
+    const audioArr = [c.bgm,c.mic].filter(Boolean);
+    const audioStr = audioArr.join(" / ");
+    const exTds = csExCols.map((_,ci)=>"<td>"+(c["extra_"+ci]||"")+"</td>").join("");
+    return `<tr><td style="text-align:center;width:22px">${i+1}</td><td style="font-weight:600;white-space:nowrap">${c.session||""}</td><td>${c.content||""}</td><td style="white-space:nowrap">${c.startTime||""}${c.startTime&&c.endTime?"~":""}${c.endTime||""}</td><td style="text-align:center;white-space:nowrap">${dur}</td><td>${c.details||""}</td><td>${c.reference||""}</td><td>${c.screen||""}</td><td>${audioStr}</td><td>${c.staffEpic||""}</td><td>${c.staffClient||""}</td>${exTds}</tr>`;
+  });
+  const csRowsPerPage = 15;
+  const csPages = [];
+  for(let i=0;i<csAllRows.length;i+=csRowsPerPage) csPages.push(csAllRows.slice(i,i+csRowsPerPage));
+  if(!csPages.length) csPages.push([]);
+  const exThStr = csExCols.map(col=>"<th>"+col+"</th>").join("");
+  const csThead = `<thead><tr><th style="width:22px">#</th><th>세션</th><th>내용</th><th>시간</th><th>경과</th><th>상세</th><th>참고</th><th>화면</th><th>음향</th><th>에픽</th><th>${csClientLabel}</th>${exThStr}</tr></thead>`;
+  return csPages.map((rows,pi)=>`
 <div class="page sec-page" style="page-break-before:always">
   <div class="sec-header">
     <div class="sec-num">${secNum("program")}</div>
     <div class="sec-title-block">
       <div class="sec-title">Cue Sheet</div>
-      <div class="sec-sub">큐시트 | OPERATIONAL CUE SHEET</div>
+      <div class="sec-sub">큐시트 | OPERATIONAL CUE SHEET${pi>0?" (continued)":""}</div>
     </div>
   </div>
   <div class="sec-body">
-    <table style="font-size:9px">
-      <thead><tr><th style="width:20px">#</th><th>세션</th><th>내용</th><th>시간</th><th>경과</th><th>상세</th><th>화면</th><th>음향</th><th>에픽</th><th>${pr._cueSheetClientName||"주최측"}</th><th>의전</th></tr></thead>
-      <tbody>
-        ${(pr.cueSheet||[]).filter(c=>c.content||c.session).map((c,i)=>{
-          const dur = c.duration ? Math.floor(parseInt(c.duration)/60)+":"+String(parseInt(c.duration)%60).padStart(2,"0") : "";
-          return `<tr>
-            <td style="text-align:center">${i+1}</td>
-            <td style="font-weight:600">${c.session||""}</td>
-            <td>${c.content||""}</td>
-            <td style="white-space:nowrap;font-size:8px">${c.startTime||""}${c.startTime&&c.endTime?"~":""}${c.endTime||""}</td>
-            <td style="text-align:center">${dur}</td>
-            <td style="font-size:8px">${c.details||""}</td>
-            <td style="font-size:8px">${c.screen||""}${c.bgm?" / "+c.bgm:""}${c.mic?" / "+c.mic:""}</td>
-            <td style="font-size:8px">${c.reference||""}</td>
-            <td style="font-size:8px">${c.staffEpic||""}</td>
-            <td style="font-size:8px">${c.staffClient||""}</td>
-            <td style="font-size:8px">${c.staffProtocol||""}</td>
-          </tr>`;
-        }).join("")}
-      </tbody>
-    </table>
+    <table>${csThead}<tbody>${rows.join("")}</tbody></table>
   </div>
-  <div class="footer">${p.name||""} ${docTitle} · Cue Sheet</div>
-</div>` : ""}
+  <div class="footer">${p.name||""} ${docTitle} · Cue Sheet${csPages.length>1?" ("+(pi+1)+"/"+csPages.length+")":""}</div>
+</div>`).join("\n");
+})() : ""}
 
 ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   const pImgs = (pItem.images||[]);
@@ -9427,7 +9425,7 @@ ${secEnabled("timeline") ? (()=>{
     const rs = m.isSubtask?"background:#f8fafc;":"";
     const ts = m.isSubtask?"padding-left:20px;color:#64748b;":"font-weight:600;";
     const pp = m.progress||0;
-    return `<tr style="${rs}"><td style="text-align:center;width:28px;white-space:nowrap">${i+1}</td><td style="white-space:nowrap;font-size:11px;color:#64748b">${m.division||""}</td><td style="${ts}">${m.task||""}</td><td style="white-space:nowrap;font-size:11px">${m.startDate||""}</td><td style="white-space:nowrap;font-size:11px">${m.endDate||""}</td><td style="width:80px"><div style="display:flex;align-items:center;gap:4px"><div style="flex:1;height:5px;background:#e2e8f0;border-radius:99px;overflow:hidden"><div style="width:${pp}%;height:100%;background:${sc};border-radius:99px"></div></div><span style="font-size:10px;color:${sc};font-weight:700;min-width:24px">${pp}%</span></div></td><td style="text-align:center;white-space:nowrap"><span style="background:${sc}22;color:${sc};border:1px solid ${sc}44;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;white-space:nowrap">${m.status||"예정"}</span></td></tr>`;
+    return `<tr style="${rs}"><td style="text-align:center;width:28px;white-space:nowrap">${i+1}</td><td style="white-space:nowrap;color:#64748b">${m.division||""}</td><td style="${ts}">${m.task||""}</td><td style="white-space:nowrap">${m.startDate||""}</td><td style="white-space:nowrap">${m.endDate||""}</td><td style="width:80px"><div style="display:flex;align-items:center;gap:4px"><div style="flex:1;height:5px;background:#e2e8f0;border-radius:99px;overflow:hidden"><div style="width:${pp}%;height:100%;background:${sc};border-radius:99px"></div></div><span style="font-size:10px;color:${sc};font-weight:700;min-width:24px">${pp}%</span></div></td><td style="text-align:center;white-space:nowrap"><span style="background:${sc}22;color:${sc};border:1px solid ${sc}44;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;white-space:nowrap">${m.status||"예정"}</span></td></tr>`;
   });
   const rowsPerPage = 17;
   const tlPages = [];
