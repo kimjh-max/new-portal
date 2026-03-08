@@ -9116,12 +9116,7 @@ function DocEditorPanel({docType, project}) {
         const actualCols = Math.min(pageImgs.length, cols);
         const rows = Math.ceil(pageImgs.length / actualCols);
         const mh = rows <= 1 ? '80vh' : rows <= 2 ? '38vh' : '24vh';
-        return `
-        <div class="img-page">
-          <div class="img-grid" style="grid-template-columns:repeat(${actualCols},1fr)">
-            ${pageImgs.map(img => `<img src="${img.data}" style="max-height:${mh}"/>`).join("")}
-          </div>
-        </div>`;
+        return `<div class="page img-page"><div class="img-grid" style="grid-template-columns:repeat(${actualCols},1fr)">${pageImgs.map(img => `<img src="${img.data}" style="max-height:${mh}"/>`).join("")}</div></div>`;
       }).join("");
     };
 
@@ -9146,8 +9141,8 @@ function DocEditorPanel({docType, project}) {
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700;900&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-size:13px}
-.page{width:297mm;height:210mm;padding:0;margin:0 auto;page-break-after:always;position:relative;overflow:hidden}
+body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-size:0}
+.page{width:297mm;height:210mm;padding:0;margin:0 auto;page-break-after:always;position:relative;overflow:hidden;font-size:13px}
 .page:last-child{page-break-after:auto}
 /* Cover */
 .cover{background:${_bg.gradient};color:${_bg.textColor};display:flex;flex-direction:column;align-items:center;justify-content:center;height:210mm;text-align:center;padding:40px;position:relative;overflow:hidden}
@@ -9198,7 +9193,7 @@ tr:nth-child(even) td{background:#f8fafc}
 .inline-imgs .img-grid{display:grid;gap:12px;align-items:center}
 .inline-imgs img{width:100%;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block}
 /* 독립 이미지 페이지 (섹션 레벨) */
-.img-page{page-break-before:always;padding:30px 40px;box-sizing:border-box;overflow:hidden}
+.img-page{padding:30px 40px;box-sizing:border-box;overflow:hidden}
 .img-page .img-grid{display:grid;gap:12px;align-items:center;align-content:center}
 .img-page img{width:100%;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block}
 @media print{
@@ -9207,7 +9202,7 @@ tr:nth-child(even) td{background:#f8fafc}
   .page.sec-page{display:grid;grid-template-rows:auto 1fr;height:210mm}
   .page.cover{height:210mm;display:flex;flex-direction:column}
   .sec-body{overflow:hidden;min-height:0}
-  .img-page{page-break-before:always;height:210mm;overflow:hidden;box-sizing:border-box}
+  .img-page{height:210mm;overflow:hidden;box-sizing:border-box}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style></head><body>
@@ -9352,7 +9347,7 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
 </div>`;
-}).join("\\n") : ""}
+}).join("") : ""}
 
 ${secEnabled("design") ? `<!-- 03 DESIGN -->
 <div class="page sec-page">
@@ -9413,7 +9408,7 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
 </div>`;
-}).join("\n") : ""}
+}).join("") : ""}
 
 ${secEnabled("program") ? `<!-- 04 PROGRAM -->
 <div class="page sec-page">
@@ -9452,7 +9447,7 @@ ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).len
   const exThStr = csExCols.map(col=>"<th>"+col+"</th>").join("");
   const csThead = `<thead><tr><th style="width:22px">#</th><th>세션</th><th>내용</th><th>시간</th><th>경과</th><th>상세</th><th>참고</th><th>화면</th><th>BGM</th><th>MIC</th><th>에픽</th><th>${csClientLabel}</th>${exThStr}</tr></thead>`;
   return csPages.map((rows,pi)=>`
-<div class="page sec-page" style="page-break-before:always">
+<div class="page sec-page">
   <div class="sec-header">
     <div class="sec-num">${secNum("program")}</div>
     <div class="sec-title-block">
@@ -9464,7 +9459,7 @@ ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).len
     <table class="cs-table">${csThead}<tbody>${rows.join("")}</tbody></table>
   </div>
   <div class="footer">${p.name||""} ${docTitle} · Cue Sheet${csPages.length>1?" ("+(pi+1)+"/"+csPages.length+")":""}</div>
-</div>`).join("\n");
+</div>`).join("");
 })() : ""}
 
 ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
@@ -9493,7 +9488,7 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>
 </div>`;
-}).join("\\n") : ""}
+}).join("") : ""}
 
 ${secEnabled("operation") ? `<!-- 05 OPERATION -->
 <div class="page sec-page">
@@ -9552,7 +9547,7 @@ ${secEnabled("timeline") ? (()=>{
     ${pi===tlPages.length-1 && tl.ganttNotes ? `<div class="box"><div class="box-title">일정 메모</div><div class="box-val">${tl.ganttNotes}</div></div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
-</div>`).join("\n") + imgHtml("timeline");
+</div>`).join("") + imgHtml("timeline");
 })() : ""}
 
 </body></html>`;
