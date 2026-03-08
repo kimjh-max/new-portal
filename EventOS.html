@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260309v10";
+  var CODE_VER = "20260309v11";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -5433,7 +5433,14 @@ function Topbar({page, setPage, user, onLogout, onExport, onImport}) {
       </div>
       <nav>
         {pages.map(p=>(
-          <button key={p.id} className={page===p.id?"active":""} onClick={()=>setPage(p.id)}
+          <button key={p.id} className={page===p.id?"active":""} onClick={()=>{
+            if (window.__docEditorUnsaved && page !== p.id) {
+              if (window.confirm("저장되지 않은 변경사항이 있습니다.\n저장 후 이동하시겠습니까?")) {
+                if (typeof window.__forceDocEditorSave === "function") window.__forceDocEditorSave();
+                setTimeout(() => setPage(p.id), 300);
+              }
+            } else { setPage(p.id); }
+          }}
             style={p.id==="admin"?{color:"#c084fc"}:{}}>
             {p.label}
           </button>
@@ -8386,7 +8393,14 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
 
   return (
     <div>
-      <button onClick={onBack} style={{background:"transparent",border:"none",color:"#6366f1",fontSize:13,marginBottom:20,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
+      <button onClick={()=>{
+        if (window.__docEditorUnsaved) {
+          if (window.confirm("저장되지 않은 변경사항이 있습니다.\n저장 후 이동하시겠습니까?")) {
+            if (typeof window.__forceDocEditorSave === "function") window.__forceDocEditorSave();
+            setTimeout(onBack, 300);
+          }
+        } else { onBack(); }
+      }} style={{background:"transparent",border:"none",color:"#6366f1",fontSize:13,marginBottom:20,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
         ← 프로젝트 목록
       </button>
       {/* 헤더 */}
@@ -8413,7 +8427,14 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
       {/* 탭 */}
       <div className="tab-bar">
         {tabs.map(t=>(
-          <button key={t.id} className={`tab-btn${tab===t.id?" active":""}`} onClick={()=>setTab(t.id)}>{t.label}</button>
+          <button key={t.id} className={`tab-btn${tab===t.id?" active":""}`} onClick={()=>{
+            if (window.__docEditorUnsaved && tab !== t.id) {
+              if (window.confirm("저장되지 않은 변경사항이 있습니다.\n저장 후 이동하시겠습니까?")) {
+                if (typeof window.__forceDocEditorSave === "function") window.__forceDocEditorSave();
+                setTimeout(() => setTab(t.id), 300);
+              }
+            } else { setTab(t.id); }
+          }}>{t.label}</button>
         ))}
       </div>
       {/* 탭 콘텐츠 */}
@@ -9437,12 +9458,16 @@ function DocEditorPanel({docType, project}) {
     }
   }, [storageKey]);
 
-  // 디바운스 1초 저장
+  // 디바운스 0.5초 저장 (프로듀서 입력 즉시 반영)
   React.useEffect(() => {
     if (!docKey || Object.keys(docData).length === 0) return;
     setSaveStatus("unsaved");
+    window.__docEditorUnsaved = true; // 탭 전환 감지용 플래그
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => performSave(docData), 1000);
+    saveTimerRef.current = setTimeout(() => {
+      performSave(docData);
+      window.__docEditorUnsaved = false;
+    }, 500);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [docData, docKey, performSave]);
 
@@ -9459,6 +9484,18 @@ function DocEditorPanel({docType, project}) {
   // docData ref 업데이트 (주기적 저장에서 최신 값 사용)
   const docDataLatestRef = React.useRef(docData);
   React.useEffect(() => { docDataLatestRef.current = docData; }, [docData]);
+
+  // 외부에서 호출 가능한 글로벌 강제 저장 함수 등록 (탭 전환 시 사용)
+  React.useEffect(() => {
+    window.__forceDocEditorSave = () => {
+      const data = docDataLatestRef.current;
+      if (!data || Object.keys(data).length === 0) return;
+      if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
+      performSave(data);
+      window.__docEditorUnsaved = false;
+    };
+    return () => { delete window.__forceDocEditorSave; };
+  }, [performSave]);
 
   // ── 3분 주기 무결성 체크 (메모리 ↔ 저장소 비교) ──
   React.useEffect(() => {
@@ -9512,6 +9549,28 @@ function DocEditorPanel({docType, project}) {
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [storageKey]);
+
+  // ── 탭/창 이동 감지: 즉시 강제 저장 + 복귀 시 알림 ──
+  React.useEffect(() => {
+    let savedOnHide = false;
+    const handler = () => {
+      if (document.hidden) {
+        // 탭/창 이동 시 → 즉시 강제 저장
+        const data = docDataLatestRef.current;
+        if (!data || Object.keys(data).length === 0) return;
+        if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
+        performSave(data);
+        savedOnHide = true;
+        window.__docEditorUnsaved = false;
+      } else if (savedOnHide) {
+        // 복귀 시 → 저장 완료 알림
+        savedOnHide = false;
+        toast("✅ 이전 작업 내용이 자동 저장되었습니다", "success");
+      }
+    };
+    document.addEventListener("visibilitychange", handler);
+    return () => document.removeEventListener("visibilitychange", handler);
+  }, [performSave]);
 
   const updateDoc = (sectionId, field, value) => {
     setDocData(prev => ({
