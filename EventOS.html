@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260309v7";
+  var CODE_VER = "20260309v8";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -176,6 +176,7 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
 
 /* ─ Sync spinner ─ */
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes loading-bar{0%{transform:translateX(-100%)}50%{transform:translateX(0)}100%{transform:translateX(100%)}}
 
 /* ══ RESPONSIVE ══ */
 @media(max-width:768px){
@@ -806,6 +807,174 @@ const CloudSync = {
   },
 };
 
+/* ── CloudDataStore: 클라우드-퍼스트 데이터 저장소 (오프라인 큐 포함) ─────── */
+const CloudDataStore = {
+  _offlineQueue: [],
+  _isOnline: navigator.onLine,
+  IDB_QUEUE_KEY: "eventos_offline_queue",
+
+  // 앱 시작 시 초기화 (IDB에서 오프라인 큐 복원)
+  async init() {
+    try {
+      const queue = await loadFromIDB(this.IDB_QUEUE_KEY);
+      if (Array.isArray(queue) && queue.length) {
+        this._offlineQueue = queue;
+        console.log("[CloudDataStore] 📦 오프라인 큐 복원:", queue.length + "건");
+        if (navigator.onLine) this.flushQueue();
+      }
+    } catch {}
+    window.addEventListener("online", () => { this._isOnline = true; this.flushQueue(); });
+    window.addEventListener("offline", () => { this._isOnline = false; });
+  },
+
+  // ── 시스템 데이터 저장 (클라우드 우선) ──
+  async writeAppData(payload) {
+    if (!this._isOnline || !CLOUD_CONFIG.ENABLED) {
+      this._enqueue({ type: "appData", payload, queuedAt: new Date().toISOString() });
+      return { success: false, queued: true };
+    }
+    try {
+      const result = await CloudSync.saveAppData(payload);
+      if (result && result.success) return { success: true, savedAt: result.savedAt };
+      throw new Error("Save failed");
+    } catch (err) {
+      console.error("[CloudDataStore] writeAppData 실패, 큐잉:", err.message);
+      this._enqueue({ type: "appData", payload, queuedAt: new Date().toISOString() });
+      return { success: false, queued: true };
+    }
+  },
+
+  // ── 프로젝트 벌크 저장 (클라우드 우선) ──
+  async writeProjectsBulk(projects) {
+    if (!this._isOnline || !CLOUD_CONFIG.ENABLED) {
+      this._enqueue({ type: "projectsBulk", projects, queuedAt: new Date().toISOString() });
+      return { success: false, queued: true };
+    }
+    try {
+      const res = await fetch(`${CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "")}/api/projects/bulk`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projects }),
+      });
+      const result = await res.json();
+      if (result && result.success) return { success: true, savedAt: result.savedAt };
+      throw new Error("Bulk save failed");
+    } catch (err) {
+      console.error("[CloudDataStore] writeProjectsBulk 실패, 큐잉:", err.message);
+      this._enqueue({ type: "projectsBulk", projects, queuedAt: new Date().toISOString() });
+      return { success: false, queued: true };
+    }
+  },
+
+  // ── 프로젝트 개별 저장 ──
+  async writeProject(project) {
+    if (!this._isOnline || !CLOUD_CONFIG.ENABLED) {
+      this._enqueue({ type: "project", project, queuedAt: new Date().toISOString() });
+      return { success: false, queued: true };
+    }
+    try {
+      const result = await CloudSync.saveProject(project);
+      if (result && result.success) return { success: true, savedAt: result.savedAt };
+      throw new Error("Save failed");
+    } catch (err) {
+      this._enqueue({ type: "project", project, queuedAt: new Date().toISOString() });
+      return { success: false, queued: true };
+    }
+  },
+
+  // ── 문서(보고서) 저장 (클라우드 우선, 대용량 시 PUT 스트리밍) ──
+  async writeDoc(key, data) {
+    // 오프라인이면 IDB에만 저장 후 큐잉
+    if (!this._isOnline || !CLOUD_CONFIG.ENABLED) {
+      this._enqueue({ type: "doc", key, queuedAt: new Date().toISOString() });
+      try { await saveToIDB(key, data); } catch {}
+      return { success: false, queued: true };
+    }
+    try {
+      const jsonStr = JSON.stringify(data);
+      const sizeBytes = jsonStr.length;
+      let result;
+      if (sizeBytes > 4 * 1024 * 1024) {
+        // 4MB 이상: PUT 스트리밍
+        const res = await fetch(
+          `${CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "")}/api/doc?key=${encodeURIComponent(key)}`,
+          { method: "PUT", headers: { "Content-Type": "application/json" }, body: jsonStr }
+        );
+        result = await res.json();
+      } else {
+        const res = await fetch(`${CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "")}/api/doc`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key, data }),
+        });
+        result = await res.json();
+      }
+      if (result && result.success) {
+        try { await saveToIDB(key, data); } catch {}
+        return { success: true, savedAt: result.savedAt, size: result.size };
+      }
+      throw new Error("Doc save failed");
+    } catch (err) {
+      console.error("[CloudDataStore] writeDoc 실패:", key, err.message);
+      this._enqueue({ type: "doc", key, queuedAt: new Date().toISOString() });
+      try { await saveToIDB(key, data); } catch {}
+      return { success: false, queued: true };
+    }
+  },
+
+  // ── 전체 데이터 로드 (앱 시작 시) ──
+  async loadAll() {
+    return await CloudSync.loadAll();
+  },
+
+  // ── 문서 로드 (클라우드 우선) ──
+  async loadDoc(key) {
+    return await CloudSync.loadDoc(key);
+  },
+
+  // ── 오프라인 큐 관리 ──
+  _enqueue(item) {
+    this._offlineQueue.push(item);
+    this._persistQueue();
+  },
+
+  async _persistQueue() {
+    try { await saveToIDB(this.IDB_QUEUE_KEY, this._offlineQueue); } catch {}
+  },
+
+  async flushQueue() {
+    if (!this._offlineQueue.length || !navigator.onLine) return;
+    console.log("[CloudDataStore] 📤 오프라인 큐 전송 시작:", this._offlineQueue.length + "건");
+    const queue = [...this._offlineQueue];
+    this._offlineQueue = [];
+    await this._persistQueue();
+
+    for (const item of queue) {
+      try {
+        if (item.type === "appData") {
+          await CloudSync.saveAppData(item.payload);
+        } else if (item.type === "projectsBulk") {
+          await fetch(`${CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "")}/api/projects/bulk`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projects: item.projects }),
+          });
+        } else if (item.type === "project") {
+          await CloudSync.saveProject(item.project);
+        } else if (item.type === "doc") {
+          // doc 큐잉은 key만 저장 → IDB에서 최신 데이터를 가져와서 업로드
+          const data = await loadFromIDB(item.key);
+          if (data) await CloudSync.saveDoc(item.key, data);
+        }
+        console.log("[CloudDataStore] ✅ 큐 항목 전송:", item.type, item.key || "");
+      } catch (err) {
+        console.error("[CloudDataStore] ❌ 큐 항목 실패, 재큐잉:", err.message);
+        this._enqueue(item);
+      }
+    }
+  },
+
+  // 큐 상태
+  getQueueLength() { return this._offlineQueue.length; },
+};
+
 /* ── localStorage 영속화 + Google Drive 동기화 모듈 ────────────────────────── */
 
 // SyncManager: 디바운스 동기화 큐 (Cloudflare 우선 → Google Drive 폴백)
@@ -845,22 +1014,24 @@ const SyncManager = {
       this.setStatus("syncing");
       let success = false;
 
-      // 1) Cloudflare D1 (우선)
+      // 1) Cloudflare D1 — saveAppData/saveProject는 useCloudState/CloudDataStore가 처리
+      //    saveBackup과 saveDoc만 여기서 처리 (Drive 전용 호출 시에도 Cloudflare 백업)
       if (CLOUD_CONFIG.ENABLED) {
         try {
-          if (action === "saveAppData") {
-            await CloudSync.saveAppData(data.data);
-          } else if (action.startsWith("saveProject_")) {
-            await CloudSync.saveProject(data.project);
-          } else if (action === "saveBackup") {
+          if (action === "saveBackup") {
             await CloudSync.createBackup(data.data);
+            success = true;
           } else if (action.startsWith("saveDoc_")) {
             await CloudSync.saveDoc(data.key, data.data);
+            success = true;
           }
-          success = true;
-          console.log("[CloudSync] ✅", action);
+          // saveAppData, saveProject_* → useCloudState/CloudDataStore가 처리 (중복 방지)
+          if (action === "saveAppData" || action.startsWith("saveProject_")) {
+            success = true; // 이미 처리됨
+          }
+          if (success) console.log("[SyncManager] ✅", action);
         } catch (err) {
-          console.error("[CloudSync]", action, err);
+          console.error("[SyncManager]", action, err);
         }
       }
 
@@ -1128,6 +1299,75 @@ function usePersistedState(key, defaultValue) {
   }, [key]);
 
   return [state, setPersistedState];
+}
+
+// useCloudState: 클라우드-퍼스트 상태 훅 (usePersistedState 대체)
+// - 초기화: localStorage 캐시로 빠른 렌더
+// - 변경 시: 클라우드 저장 (디바운스) → 로컬 캐시 갱신
+// - setFromCloud(): 클라우드 데이터 적용 (write-back 없음)
+// - markInitialized(): 초기 로드 완료 후 쓰기 활성화
+function useCloudState(key, defaultValue, opts) {
+  const lsKey = "eventos_" + key;
+  const debounceMs = (opts && opts.debounceMs) || 1500;
+
+  const [state, setState] = useState(() => {
+    try {
+      const saved = localStorage.getItem(lsKey);
+      if (saved !== null) return JSON.parse(saved);
+    } catch {}
+    return defaultValue;
+  });
+
+  const isInitializedRef = useRef(false);
+  const timerRef = useRef(null);
+  const stateRef = useRef(state);
+
+  // state가 변경될 때마다 ref 업데이트
+  useEffect(() => { stateRef.current = state; }, [state]);
+
+  const setCloudState = useCallback((valOrFn) => {
+    setState(prev => {
+      const next = typeof valOrFn === "function" ? valOrFn(prev) : valOrFn;
+      // 로컬 캐시 즉시 업데이트 (optimistic)
+      try { localStorage.setItem(lsKey, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, [lsKey]);
+
+  // 디바운스 클라우드 저장 (초기화 완료 후만)
+  useEffect(() => {
+    if (!isInitializedRef.current) return;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      CloudDataStore.writeAppData({ [key]: stateRef.current }).then(result => {
+        if (result.success) {
+          SyncManager.setStatus("success");
+          SyncManager._lastSyncTime = new Date();
+          SyncManager._notify();
+        } else if (result.queued) {
+          console.log("[useCloudState] 📤 " + key + " 큐잉됨 (오프라인)");
+        }
+      });
+      // Drive 백업도 전송
+      if (DRIVE_CONFIG.ENABLED) {
+        SyncManager.queueSync("saveAppData", { data: { [key]: stateRef.current } });
+      }
+    }, debounceMs);
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [state, key, debounceMs]);
+
+  // setFromCloud: 클라우드 데이터 적용 (write-back 안 함)
+  const setFromCloud = useCallback((value) => {
+    setState(value);
+    try { localStorage.setItem(lsKey, JSON.stringify(value)); } catch {}
+  }, [lsKey]);
+
+  // markInitialized: 클라우드 초기 로드 완료 후 호출
+  const markInitialized = useCallback(() => {
+    isInitializedRef.current = true;
+  }, []);
+
+  return [state, setCloudState, { setFromCloud, markInitialized }];
 }
 
 // useSyncStatus: SyncManager 상태를 React 상태로 연결
@@ -9000,66 +9240,52 @@ function DocEditorPanel({docType, project}) {
   };
 
   const [docData, setDocData] = React.useState(() => loadDocFromStorage());
-  // 로컬 스토리지 우선 로딩 (preloaded → IDB → 클라우드 순)
+  // 클라우드-퍼스트 로딩 (캐시 즉시 렌더 → 클라우드 데이터로 교체)
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
-      // ⓪ 독립 스크립트가 미리 다운로드한 데이터 확인 (window 캐시)
+      // ⓪ preloaded 캐시 확인
       const preloaded = window.__preloadedDocs?.[storageKey];
       if (preloaded && typeof preloaded === "object" && Object.keys(preloaded).length) {
-        console.log("[DocEditor] ✅ preloaded 데이터 사용:", storageKey, "(" + JSON.stringify(preloaded).length + " chars)");
         if (!cancelled) setDocData(preloaded);
         saveToIDB(storageKey, preloaded).catch(()=>{});
-        return;
+        console.log("[DocEditor] ✅ preloaded 데이터 사용:", storageKey);
       }
 
-      // ① IndexedDB에서 먼저 시도
-      let localData = null;
-      try {
-        const idbData = await loadFromIDB(storageKey);
-        if (idbData && Object.keys(idbData).length) localData = idbData;
-      } catch {}
-
-      // ② 클라우드에서 로드 시도 (R2) — 최대 2회 재시도
-      let cloudData = null;
-      for (let attempt = 0; attempt < 2; attempt++) {
+      // ① IDB 캐시로 즉시 렌더 (클라우드 응답 전 UX)
+      if (!preloaded) {
         try {
-          cloudData = await CloudSync.loadDoc(storageKey);
-          if (cloudData) break;
-        } catch (err) {
-          console.warn("[DocEditor] 클라우드 로드 시도 " + (attempt+1) + " 실패:", err);
-          if (attempt === 0) await new Promise(r => setTimeout(r, 1000));
-        }
+          const idbData = await loadFromIDB(storageKey);
+          if (idbData && Object.keys(idbData).length && !cancelled) {
+            setDocData(idbData);
+            console.log("[DocEditor] 📂 IDB 캐시 적용:", storageKey);
+          }
+        } catch {}
       }
 
-      if (cancelled) return;
-
-      // ③ 더 큰(더 최신) 데이터를 선택
-      const localSize = localData ? JSON.stringify(localData).length : 0;
-      const cloudSize = cloudData ? JSON.stringify(cloudData).length : 0;
-      console.log("[DocEditor] 로컬:" + localSize + " vs 클라우드:" + cloudSize + " key:" + storageKey);
-      const bestData = cloudSize > localSize ? cloudData : localData;
-
-      if (bestData && Object.keys(bestData).length) {
-        setDocData(bestData);
-      }
-
-      // ④ 동기화 (상태 업데이터 밖에서 직접 실행)
-      if (cloudSize > localSize && cloudData) {
-        // 클라우드가 최신 → 로컬에 동기화
-        saveToIDB(storageKey, cloudData).catch(()=>{});
-        try { localStorage.setItem(storageKey, JSON.stringify(cloudData)); } catch {}
-        console.log("[DocEditor] ☁️→📱 클라우드→로컬 동기화 완료");
-      } else if (localSize > cloudSize && localData) {
-        // 로컬이 최신 → 클라우드에 직접 업로드
+      // ② 클라우드에서 로드 (source of truth)
+      if (CLOUD_CONFIG.ENABLED) {
         try {
-          const result = await CloudSync.saveDoc(storageKey, localData);
-          console.log("[DocEditor] 📱→☁️ 로컬→클라우드 업로드 완료 (" + localSize + " chars)", result);
+          const cloudData = await CloudSync.loadDoc(storageKey);
+          if (cancelled) return;
+          if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
+            setDocData(cloudData);
+            // 로컬 캐시 갱신
+            saveToIDB(storageKey, cloudData).catch(()=>{});
+            try { localStorage.setItem(storageKey, JSON.stringify(cloudData)); } catch {}
+            console.log("[DocEditor] ☁️ 클라우드 데이터 적용:", storageKey);
+          } else {
+            // 클라우드에 데이터 없음 → 로컬 데이터를 클라우드에 업로드
+            const localData = await loadFromIDB(storageKey);
+            if (localData && Object.keys(localData).length) {
+              CloudDataStore.writeDoc(storageKey, localData).then(() => {
+                console.log("[DocEditor] 📱→☁️ 첫 동기화 완료:", storageKey);
+              });
+            }
+          }
         } catch (err) {
-          console.error("[DocEditor] 클라우드 업로드 실패:", err);
+          console.warn("[DocEditor] 클라우드 로드 실패 (캐시 사용):", err.message);
         }
-      } else if (!localData && !cloudData) {
-        console.log("[DocEditor] 로컬 & 클라우드 모두 데이터 없음");
       }
     })();
     return () => { cancelled = true; };
@@ -9138,25 +9364,28 @@ function DocEditorPanel({docType, project}) {
   }, [docKey]);
 
   // ── Smart Save (IndexedDB 기본 + localStorage 보조 + 클라우드 동기화) ──
-  const performSave = React.useCallback((data) => {
+  const performSave = React.useCallback(async (data) => {
     const now = new Date();
     const ts = now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-    // ① IndexedDB에 먼저 저장 (기본 저장소, 용량 제한 없음)
-    saveToIDB(storageKey, data).then(() => {
+    setSaveStatus("saving");
+    // ① 클라우드 저장 먼저 (source of truth)
+    const cloudResult = await CloudDataStore.writeDoc(storageKey, data);
+    // ② 로컬 캐시 (IDB + localStorage)
+    try { await saveToIDB(storageKey, data); } catch {}
+    try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
+    // ③ 상태 업데이트
+    if (cloudResult.success) {
+      setSaveStatus("saved"); setLastSavedAt(ts + " ☁️");
+      SyncManager.setStatus("success"); SyncManager._lastSyncTime = new Date(); SyncManager._notify();
+    } else if (cloudResult.queued) {
+      setSaveStatus("saved"); setLastSavedAt(ts + " 📤");
+    } else {
       setSaveStatus("saved"); setLastSavedAt(ts);
-    }).catch(err => {
-      console.error("[DocEditor] IndexedDB 저장 실패:", err);
-      setSaveStatus("unsaved");
-    });
-    // ② localStorage에도 저장 시도 (보조, 실패해도 무시)
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(data));
-    } catch(e) {
-      // localStorage 용량 초과 → 조용히 무시 (IDB에 이미 저장됨)
-      console.log("[DocEditor] localStorage 보조 저장 스킵 (IDB에 저장 완료)");
     }
-    // ③ 클라우드 동기화 (Cloudflare D1 + GAS — 디바운스로 부하 제어)
-    SyncManager.queueSync("saveDoc_" + storageKey, { key: storageKey, data });
+    // Drive 백업 (기존 호환)
+    if (DRIVE_CONFIG.ENABLED) {
+      SyncManager.queueSync("saveDoc_" + storageKey, { key: storageKey, data });
+    }
   }, [storageKey]);
 
   // 디바운스 1초 저장
@@ -9242,22 +9471,20 @@ function DocEditorPanel({docType, project}) {
   };
 
   // ── 버전 저장 ──
-  const saveVersion = (label) => {
+  const saveVersion = async (label) => {
     const now = new Date();
     const ts = now.toISOString();
     const displayName = label || `v${versions.length + 1} (${now.toLocaleDateString("ko-KR")} ${now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})})`;
     const newVersion = { id: Date.now(), name: displayName, timestamp: ts, data: JSON.parse(JSON.stringify(docData)) };
-    const updated = [newVersion, ...versions].slice(0, 30); // 최대 30개 버전
+    const updated = [newVersion, ...versions].slice(0, 30);
     setVersions(updated);
-    // IndexedDB에 먼저 저장 (기본)
-    saveToIDB(versionsKey, updated).catch(err => {
-      console.error("[DocEditor] 버전 IDB 저장 실패:", err);
-    });
-    // localStorage에도 시도 (보조, 실패해도 OK)
+    // ① 클라우드 저장 먼저 (source of truth)
+    const cloudResult = await CloudDataStore.writeDoc(versionsKey, updated);
+    // ② 로컬 캐시 (IDB + localStorage)
+    try { await saveToIDB(versionsKey, updated); } catch {}
     try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch {}
-    // 클라우드에도 버전 데이터 동기화
-    SyncManager.queueSync("saveDoc_" + versionsKey, { key: versionsKey, data: updated });
-    toast(`"${displayName}" 버전 저장 완료`, "success");
+    const suffix = cloudResult.success ? " ☁️" : cloudResult.queued ? " 📤" : "";
+    toast(`"${displayName}" 버전 저장 완료${suffix}`, "success");
     // ── 로컬 파일 자동 백업 다운로드 ──
     try {
       const backupData = { version: displayName, timestamp: ts, project: proj?.name || "unknown", docType, data: JSON.parse(JSON.stringify(docData)) };
@@ -12127,8 +12354,8 @@ function PurchasePanel({purchases, setPurchases, projects, users, currentUser}) 
 }
 
 function App() {
-  // ── localStorage 영속화 (새로고침해도 데이터 유지) ──
-  const [users, setUsers] = usePersistedState("eventos_users", INIT_USERS);
+  // ── 클라우드-퍼스트 상태 (로컬 캐시로 빠른 초기 렌더, 클라우드 = source of truth) ──
+  const [users, setUsers, usersCloud] = useCloudState("users", INIT_USERS);
   const [authedUser, setAuthedUser] = useState(() => {
     try {
       const saved = sessionStorage.getItem("eventos_session");
@@ -12150,110 +12377,110 @@ function App() {
     } catch {}
     return null;
   });
-  const [projects, setProjects] = usePersistedState("eventos_projects", INIT_PROJECTS);
-  const [priceList, setPriceList] = usePersistedState("eventos_priceList", INIT_PRICE_LIST);
-  const [expenses, setExpenses] = usePersistedState("eventos_expenses", []);
-  const [laborCosts, setLaborCosts] = usePersistedState("eventos_laborCosts", []);
-  const [purchases, setPurchases] = usePersistedState("eventos_purchases", []);
-  const [driveLoaded, setDriveLoaded] = useState(false);
+  const [projects, setProjects, projectsCloud] = useCloudState("projects", INIT_PROJECTS);
+  const [priceList, setPriceList, priceListCloud] = useCloudState("priceList", INIT_PRICE_LIST);
+  const [expenses, setExpenses, expensesCloud] = useCloudState("expenses", []);
+  const [laborCosts, setLaborCosts, laborCostsCloud] = useCloudState("laborCosts", []);
+  const [purchases, setPurchases, purchasesCloud] = useCloudState("purchases", []);
+  const [appReady, setAppReady] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState("클라우드에서 데이터를 불러오는 중...");
+  // driveLoaded 호환용 (기존 코드에서 참조하는 곳이 있을 수 있음)
+  const driveLoaded = appReady;
 
-  // ── 클라우드 동기화: 시스템 데이터 변경 시 저장 (Cloudflare D1 + Drive) ──
-  const appDataRef = useRef(null);
-  useEffect(() => {
-    if (!driveLoaded) return; // 초기 로드 완료 전에는 싱크하지 않음
-    const payload = { users, priceList, expenses, laborCosts, purchases };
-    // 이전과 같으면 스킵
-    const json = JSON.stringify(payload);
-    if (appDataRef.current === json) return;
-    appDataRef.current = json;
-    SyncManager.queueSync("saveAppData", { data: payload });
-  }, [users, priceList, expenses, laborCosts, purchases, driveLoaded]);
-
-  // ── 클라우드 동기화: 프로젝트 변경 시 각 프로젝트 개별 저장 ──
+  // ── 클라우드 동기화: 프로젝트 변경 시 벌크 저장 (CloudDataStore 사용) ──
   const projectsRef = useRef(null);
   useEffect(() => {
-    if (!driveLoaded) return;
+    if (!appReady) return;
     const json = JSON.stringify(projects);
     if (projectsRef.current === json) return;
     projectsRef.current = json;
-    projects.forEach(p => {
-      SyncManager.queueSync(`saveProject_${p.id}`, { project: p });
+    CloudDataStore.writeProjectsBulk(projects).then(result => {
+      if (result.success) {
+        SyncManager.setStatus("success");
+        SyncManager._lastSyncTime = new Date();
+        SyncManager._notify();
+      }
     });
-  }, [projects, driveLoaded]);
+    // Drive 백업도 전송 (기존 호환)
+    if (DRIVE_CONFIG.ENABLED) {
+      projects.forEach(p => {
+        SyncManager.queueSync(`saveProject_${p.id}`, { project: p });
+      });
+    }
+  }, [projects, appReady]);
 
-  // ── 클라우드 초기 로드 (Cloudflare D1 우선 → Drive 폴백) + 데이터 무결성 검증 ──
+  // ── 클라우드-퍼스트 초기 로드 (로딩 화면 → 클라우드 → 렌더) ──
   useEffect(() => {
     (async () => {
-      // 1) 데이터 무결성 검증
-      const validateData = () => {
-        try {
-          const p = JSON.parse(localStorage.getItem("eventos_projects") || "[]");
-          if (!Array.isArray(p)) throw new Error("projects is not array");
-          return true;
-        } catch (e) {
-          console.error("[EventOS] 데이터 무결성 검증 실패:", e);
-          // 자동 백업에서 복구 시도
-          try {
-            const backups = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
-            if (backups.length && backups[0].projects) {
-              localStorage.setItem("eventos_projects", JSON.stringify(backups[0].projects));
-              if (backups[0].users) localStorage.setItem("eventos_users", JSON.stringify(backups[0].users));
-              if (backups[0].priceList) localStorage.setItem("eventos_priceList", JSON.stringify(backups[0].priceList));
-              // 보고서 데이터 복구 (구버전 docs 호환 + 신버전 docKeys→IDB)
-              if (backups[0].docs && typeof backups[0].docs === "object") {
-                Object.entries(backups[0].docs).forEach(([key, val]) => {
-                  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
-                });
-              }
-              if (backups[0].docKeys && Array.isArray(backups[0].docKeys)) {
-                backups[0].docKeys.forEach(key => {
-                  loadFromIDB(key).then(data => {
-                    if (data) try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
-                  }).catch(()=>{});
-                });
-              }
-              toast("⚠️ 데이터 오류 감지 → 자동 백업에서 복구했습니다", "warn");
-              window.location.reload();
-              return false;
-            }
-          } catch {}
-          return true; // 복구 불가 시 기본값으로 진행
-        }
-      };
-      validateData();
+      // 오프라인 큐 초기화
+      await CloudDataStore.init();
 
-      // 2) 클라우드 로드 (Cloudflare D1 우선 → Google Drive 폴백)
       const anyCloudEnabled = CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED;
-      if (!anyCloudEnabled) { setDriveLoaded(true); return; }
-      const cloud = await SyncManager.loadFromCloud();
-      if (cloud && !cloud.error) {
-        if (cloud.users?.length) setUsers(cloud.users);
-        if (cloud.priceList?.length) setPriceList(cloud.priceList);
-        if (cloud.expenses) setExpenses(cloud.expenses);
-        if (cloud.laborCosts) setLaborCosts(cloud.laborCosts);
-        if (cloud.purchases) setPurchases(cloud.purchases);
-        if (cloud.projects?.length) setProjects(cloud.projects);
-        const source = CLOUD_CONFIG.ENABLED ? "Cloudflare D1" : "Google Drive";
-        toast(`☁️ ${source}에서 데이터를 불러왔습니다.`, "success");
+      if (!anyCloudEnabled) {
+        // 클라우드 비활성 → 로컬 캐시 그대로 사용
+        [usersCloud, projectsCloud, priceListCloud, expensesCloud, laborCostsCloud, purchasesCloud]
+          .forEach(c => c.markInitialized());
+        setAppReady(true);
+        return;
       }
-      setDriveLoaded(true);
 
-      // 3) 로컬 문서 데이터 → 클라우드 자동 동기화 (매 로드 시)
+      setLoadingMsg("☁️ 클라우드에서 데이터를 불러오는 중...");
+
+      // 타임아웃 (5초): 클라우드 실패 시 로컬 캐시로 폴백
+      let cloudLoaded = false;
+      const timeout = setTimeout(() => {
+        if (!cloudLoaded) {
+          console.warn("[App] ⏰ 클라우드 로드 타임아웃 → 로컬 캐시 사용");
+          toast("⚠️ 클라우드 응답 지연 — 로컬 캐시 사용 중", "warn");
+          [usersCloud, projectsCloud, priceListCloud, expensesCloud, laborCostsCloud, purchasesCloud]
+            .forEach(c => c.markInitialized());
+          setAppReady(true);
+        }
+      }, 5000);
+
+      try {
+        const cloud = await SyncManager.loadFromCloud();
+        cloudLoaded = true;
+        clearTimeout(timeout);
+
+        if (cloud && !cloud.error) {
+          // setFromCloud: 클라우드 데이터 적용 (write-back 없음!)
+          if (cloud.users?.length) usersCloud.setFromCloud(cloud.users);
+          if (cloud.projects?.length) projectsCloud.setFromCloud(cloud.projects);
+          if (cloud.priceList?.length) priceListCloud.setFromCloud(cloud.priceList);
+          if (cloud.expenses) expensesCloud.setFromCloud(cloud.expenses);
+          if (cloud.laborCosts) laborCostsCloud.setFromCloud(cloud.laborCosts);
+          if (cloud.purchases) purchasesCloud.setFromCloud(cloud.purchases);
+          const source = CLOUD_CONFIG.ENABLED ? "Cloudflare D1" : "Google Drive";
+          toast(`☁️ ${source}에서 데이터를 불러왔습니다.`, "success");
+        } else {
+          console.warn("[App] 클라우드 로드 실패 → 로컬 캐시 사용");
+          toast("⚠️ 클라우드 연결 실패 — 로컬 캐시 사용 중", "warn");
+        }
+      } catch (err) {
+        cloudLoaded = true;
+        clearTimeout(timeout);
+        console.error("[App] 클라우드 로드 오류:", err);
+        toast("⚠️ 클라우드 연결 실패 — 로컬 캐시 사용", "warn");
+      }
+
+      // 모든 훅 초기화 완료 → 이후 변경사항은 클라우드에 자동 저장됨
+      [usersCloud, projectsCloud, priceListCloud, expensesCloud, laborCostsCloud, purchasesCloud]
+        .forEach(c => c.markInitialized());
+      setAppReady(true);
+
+      // 로컬 문서 데이터 → 클라우드 백그라운드 동기화 (매 로드 시)
       if (CLOUD_CONFIG.ENABLED) {
         setTimeout(async () => {
           try {
             console.log("[DocSync] 🔍 로컬→클라우드 동기화 시작...");
-            // 클라우드 doc 키별 크기 조회 (빈 데이터 감지용)
             const cloudDocs = await CloudSync.listDocs();
             const cloudSizeMap = {};
             for (const cd of cloudDocs) {
-              try {
-                const cdData = await CloudSync.loadDoc(cd.doc_key);
-                cloudSizeMap[cd.doc_key] = cdData ? JSON.stringify(cdData).length : 0;
-              } catch { cloudSizeMap[cd.doc_key] = 0; }
+              cloudSizeMap[cd.doc_key] = cd.size || 0;
             }
-            console.log("[DocSync] 클라우드 doc " + cloudDocs.length + "개 (크기 확인 완료)");
-            // ① IndexedDB에서 모든 doc 키 수집
+            console.log("[DocSync] 클라우드 doc " + cloudDocs.length + "개");
+            // ① IndexedDB + localStorage에서 모든 doc 키 수집
             const docKeySet = new Set();
             try {
               const allIDBKeys = await getAllIDBKeys();
@@ -12262,17 +12489,14 @@ function App() {
                   docKeySet.add(k);
                 }
               });
-              console.log("[DocSync] IndexedDB doc 키 " + docKeySet.size + "개");
-            } catch (e) { console.warn("[DocSync] IDB getAllKeys 실패:", e); }
-            // ② localStorage에서도 수집
+            } catch {}
             for (let i = 0; i < localStorage.length; i++) {
               const k = localStorage.key(i);
               if (k && (k.startsWith("eventos_doc_") || k.startsWith("eventos_docVersions_"))) {
                 docKeySet.add(k);
               }
             }
-            console.log("[DocSync] 로컬 총 doc 키 " + docKeySet.size + "개");
-            // ③ 로컬이 클라우드보다 크면 업로드 (빈 클라우드 데이터 덮어쓰기)
+            // ② 로컬이 클라우드보다 크면 업로드
             let uploadCount = 0;
             for (const key of docKeySet) {
               let localData = null;
@@ -12292,10 +12516,7 @@ function App() {
               const localSize = JSON.stringify(localData).length;
               if (localSize <= 2) continue;
               const cloudSize = cloudSizeMap[key] || 0;
-              if (localSize <= cloudSize) {
-                console.log("[DocSync] ⏭️ " + key + " (클라우드 " + cloudSize + " >= 로컬 " + localSize + ")");
-                continue;
-              }
+              if (localSize <= cloudSize) continue;
               try {
                 await CloudSync.saveDoc(key, localData);
                 uploadCount++;
@@ -12303,7 +12524,6 @@ function App() {
               } catch (e) { console.error("[DocSync] 실패:", key, e); }
             }
             if (uploadCount > 0) {
-              console.log("[DocSync] ☁️ " + uploadCount + "건 클라우드 업로드 완료");
               toast("☁️ 보고서 " + uploadCount + "건 클라우드 동기화 완료", "success");
             } else {
               console.log("[DocSync] ✅ 동기화 완료 (모두 최신)");
@@ -12311,7 +12531,7 @@ function App() {
           } catch (err) {
             console.error("[DocSync] 동기화 오류:", err);
           }
-        }, 3000); // 앱 로드 3초 후 실행 (UI 블로킹 방지)
+        }, 3000);
       }
     })();
   }, []);
@@ -12578,6 +12798,19 @@ function App() {
     setProjects(prev => prev.filter(p => p.id !== projectId));
     if (detail?.id === projectId) { setDetail(null); setPage("projects"); }
   }, [detail]);
+
+  // ── 클라우드 로딩 중: 로딩 화면 ──
+  if (!appReady) {
+    return (
+      <div style={{position:"fixed",inset:0,background:"var(--bg,#0f0f23)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,zIndex:9999}}>
+        <div style={{width:56,height:56,borderRadius:14,background:"linear-gradient(135deg,#6366f1,#8b5cf6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,fontWeight:900,color:"#fff",animation:"pulse 1.5s ease-in-out infinite"}}>E</div>
+        <div style={{color:"var(--txt2,#94a3b8)",fontSize:14,marginTop:8}}>{loadingMsg}</div>
+        <div style={{width:200,height:3,borderRadius:2,background:"rgba(99,102,241,0.15)",overflow:"hidden",marginTop:4}}>
+          <div style={{width:"60%",height:"100%",background:"linear-gradient(90deg,#6366f1,#8b5cf6)",borderRadius:2,animation:"loading-bar 1.5s ease-in-out infinite"}}/>
+        </div>
+      </div>
+    );
+  }
 
   // ── 로그인 전: 로그인 페이지 ──
   if (!authedUser) {
