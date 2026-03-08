@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260309v5";
+  var CODE_VER = "20260309v6";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -260,7 +260,13 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
     return await res.json();
   }
 
-  async function loadFromCloud(key){
+  async function loadFromCloud(key, raw){
+    if(raw){
+      // 대용량 스트리밍 다운로드 (Worker가 R2에서 직접 전송, JSON 래핑 없음)
+      var res = await fetch(API_BASE + "/doc?key=" + encodeURIComponent(key) + "&raw=1");
+      if(!res.ok) return null;
+      try { return await res.json(); } catch(e){ return null; }
+    }
     var res = await fetch(API_BASE + "/doc?key=" + encodeURIComponent(key));
     var result = await res.json();
     if(result.success && result.found && result.data){
@@ -382,7 +388,7 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
             console.log("[Sync] 📦 청크 조합 시작: " + baseKey + " (" + chunks.length + "개)");
             var assembled = [];
             for(var ci = 0; ci < chunks.length; ci++){
-              var chunkData = await loadFromCloud(chunks[ci].doc_key);
+              var chunkData = await loadFromCloud(chunks[ci].doc_key, true);
               if(chunkData){
                 assembled.push(chunkData);
                 console.log("[Sync]   └ chunk_" + chunks[ci].idx + " 다운로드 완료");
@@ -765,10 +771,12 @@ const CloudSync = {
           console.log("[CloudSync] 📦 청크 " + chunks.length + "개 발견, 조합 시작:", key);
           const assembled = [];
           for (const ch of chunks) {
-            const chRes = await fetch(`${this._baseUrl()}/api/doc?key=${encodeURIComponent(ch.doc_key)}`);
-            const chResult = await chRes.json();
-            if (chResult.success && chResult.found && chResult.data) {
-              assembled.push(chResult.data);
+            const chRes = await fetch(`${this._baseUrl()}/api/doc?key=${encodeURIComponent(ch.doc_key)}&raw=1`);
+            if (chRes.ok) {
+              try {
+                const chData = await chRes.json();
+                if (chData) assembled.push(chData);
+              } catch(e) { console.error("[CloudSync] chunk parse error:", e); }
             }
           }
           if (assembled.length > 0) {
