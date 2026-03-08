@@ -9160,8 +9160,8 @@ body{font-family:'Noto Sans KR',sans-serif;background:#fff;color:#1e293b;font-si
 .cover .year{font-size:13px;color:${_bg.textColor==="#1e293b"?"#475569":"#94a3b8"};letter-spacing:1px}
 .cover .contact{font-size:12px;color:${_bg.textColor==="#1e293b"?"#475569":"#94a3b8"};margin-top:16px}
 .cover .contact-point{font-size:11px;color:${_bg.textColor==="#1e293b"?"#64748b":"#64748b"};margin-top:6px}
-/* Section page — CSS Grid: header / body / footer 3행 고정 */
-.sec-page{background:#fff;padding:0;display:grid;grid-template-rows:auto 1fr auto;height:210mm}
+/* Section page — header + body 2행 */
+.sec-page{background:#fff;padding:0;display:grid;grid-template-rows:auto 1fr;height:210mm}
 .sec-header{background:${_bg.gradient};color:${_bg.textColor};padding:24px 40px;display:flex;align-items:center;gap:16px;border-left:5px solid ${_kc}}
 .sec-num{font-size:48px;font-weight:900;color:${_kc};opacity:.5;line-height:1;min-width:60px}
 .sec-title-block{display:flex;flex-direction:column}
@@ -9187,8 +9187,8 @@ tr:nth-child(even) td{background:#f8fafc}
 .box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:12px}
 .box-title{font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
 .box-val{font-size:13px;color:#1e293b;white-space:pre-wrap;line-height:1.6}
-/* Footer — Grid 3번째 행 (항상 페이지 바닥 고정) */
-.footer{padding:6px 32px;text-align:right;font-size:10px;color:#94a3b8}
+/* Footer 제거됨 */
+.footer{display:none}
 .pill{display:inline-block}
 /* Photo placeholder */
 .photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
@@ -9204,7 +9204,7 @@ tr:nth-child(even) td{background:#f8fafc}
 @media print{
   .page{width:297mm;height:210mm;margin:0;page-break-after:always;overflow:hidden;box-sizing:border-box}
   .page:last-child{page-break-after:auto}
-  .page.sec-page{display:grid;grid-template-rows:auto 1fr auto;height:210mm}
+  .page.sec-page{display:grid;grid-template-rows:auto 1fr;height:210mm}
   .page.cover{height:210mm;display:flex;flex-direction:column}
   .sec-body{overflow:hidden;min-height:0}
   .img-page{page-break-before:always;height:210mm;overflow:hidden;box-sizing:border-box}
@@ -9445,7 +9445,7 @@ ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).len
     const exTds = csExCols.map((_,ci)=>"<td>"+(c["extra_"+ci]||"")+"</td>").join("");
     return `<tr><td style="text-align:center;width:18px">${i+1}</td><td style="font-weight:600">${c.session||""}</td><td class="cs-wrap">${c.content||""}</td><td>${c.startTime||""}${c.startTime&&c.endTime?"~":""}${c.endTime||""}</td><td style="text-align:center">${dur}</td><td class="cs-wrap">${c.details||""}</td><td>${c.reference||""}</td><td>${c.screen||""}</td><td>${c.bgm||""}</td><td>${c.mic||""}</td><td>${c.staffEpic||""}</td><td>${c.staffClient||""}</td>${exTds}</tr>`;
   });
-  const csRowsPerPage = 15;
+  const csRowsPerPage = 30;
   const csPages = [];
   for(let i=0;i<csAllRows.length;i+=csRowsPerPage) csPages.push(csAllRows.slice(i,i+csRowsPerPage));
   if(!csPages.length) csPages.push([]);
