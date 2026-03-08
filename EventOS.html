@@ -8167,6 +8167,47 @@ function FilesPage({projects}) {
       );
     }
 
+/* ── Draggable Table Rows Hook ─────────────────────────────────────────────── */
+function useDraggableRows(items, onReorder) {
+  const [dragRowIdx, setDragRowIdx] = React.useState(null);
+  const [overRowIdx, setOverRowIdx] = React.useState(null);
+  const handleRowDragStart = (e, idx) => {
+    setDragRowIdx(idx);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(idx));
+  };
+  const handleRowDragOver = (e, idx) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (overRowIdx !== idx) setOverRowIdx(idx);
+  };
+  const handleRowDragEnd = () => {
+    if (dragRowIdx !== null && overRowIdx !== null && dragRowIdx !== overRowIdx) {
+      const n = [...items];
+      const [moved] = n.splice(dragRowIdx, 1);
+      n.splice(overRowIdx, 0, moved);
+      onReorder(n);
+    }
+    setDragRowIdx(null);
+    setOverRowIdx(null);
+  };
+  const rowDragProps = (idx) => ({
+    onDragOver: e => handleRowDragOver(e, idx),
+    style: {
+      opacity: dragRowIdx === idx ? 0.35 : 1,
+      background: overRowIdx === idx && dragRowIdx !== null ? "rgba(99,102,241,.12)" : undefined,
+      transition: "background .15s, opacity .15s"
+    }
+  });
+  const dragHandleProps = (idx) => ({
+    draggable: true,
+    onDragStart: e => handleRowDragStart(e, idx),
+    onDragEnd: handleRowDragEnd,
+    style: { cursor:"grab", padding:"4px 4px", color:"var(--txt4)", fontSize:14, userSelect:"none" }
+  });
+  return { dragRowIdx, overRowIdx, rowDragProps, dragHandleProps };
+}
+
 /* ── Section Image Uploader ────────────────────────────────────────────────── */
 function SectionImages({sectionId, images, onUpdate, layoutMode, onLayoutChange}) {
   const fileRef = useRef(null);
@@ -8503,6 +8544,17 @@ function DocEditorPanel({docType, project}) {
     let cur = sd(sectionId)[field] || [];
     while (cur.length <= idx) cur = [...cur, {_id: Date.now() + cur.length}];
     const updated = cur.map((item,i) => i===idx ? {...item, ...updates} : item);
+    setList(sectionId, field, updated);
+  };
+  // 현재 행 + 다음 행을 한번에 업데이트 (시간 자동연결용, stale state 방지)
+  const updateListItemCascade = (sectionId, field, idx, updates, nextUpdates) => {
+    let cur = sd(sectionId)[field] || [];
+    while (cur.length <= idx + 1) cur = [...cur, {_id: Date.now() + cur.length}];
+    const updated = cur.map((item, i) => {
+      if (i === idx) return {...item, ...updates};
+      if (i === idx + 1 && nextUpdates) return {...item, ...nextUpdates};
+      return item;
+    });
     setList(sectionId, field, updated);
   };
 
@@ -9626,6 +9678,29 @@ ${secEnabled("timeline") ? (()=>{
         const csClientName = pr._cueSheetClientName || "주최주관사";
         const csExtraCols = pr._cueSheetExtraCols || [];
 
+        // ── 드래그 앤 드롭 (타임테이블 / 큐시트) ──
+        const tlDrag = useDraggableRows(pgList, (n)=>setList("program","timeline",n));
+        const csDrag = useDraggableRows(csList, (n)=>setList("program","cueSheet",n));
+
+        // ── 타임테이블 → 큐시트 불러오기 ──
+        const importTimelineToCueSheet = () => {
+          const tl = sd("program").timeline || [];
+          const filledRows = tl.filter(t => t.content || t.startTime || t.endTime);
+          if (!filledRows.length) { toast("타임테이블에 데이터가 없습니다","warn"); return; }
+          const existingCs = sd("program").cueSheet || [];
+          const hasData = existingCs.some(c => c.content || c.startTime || c.endTime);
+          if (hasData && !window.confirm("큐시트에 이미 " + existingCs.length + "개 항목이 있습니다.\n타임테이블 " + filledRows.length + "개 항목을 추가하시겠습니까?\n(기존 항목은 유지됩니다)")) return;
+          const newItems = filledRows.map(t => ({
+            _id: Date.now() + Math.random(),
+            session: "", content: t.content || "", startTime: t.startTime || "", endTime: t.endTime || "",
+            duration: t.duration || "", details: t.note || "", reference: "", screen: "", bgm: "", mic: "",
+            staffEpic: "", staffClient: "", staffProtocol: ""
+          }));
+          const base = hasData ? existingCs : [];
+          setList("program", "cueSheet", [...base, ...newItems]);
+          toast("타임테이블에서 " + filledRows.length + "개 항목을 불러왔습니다", "success");
+        };
+
         // ── 프로그램 아이템 ──
         const getProgramItems = () => sd("program").programItems || [];
         const addProgramItem = () => {
@@ -9672,19 +9747,21 @@ ${secEnabled("timeline") ? (()=>{
                 <div style={{overflowX:"auto",marginBottom:16}}>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                     <thead><tr style={{background:"rgba(99,102,241,.1)"}}>
-                      {["#","시작","종료","소요(분)","내용","비고",""].map((h,i)=>(
-                        <th key={i} style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:i===0?30:i===1?90:i===2?90:i===3?60:i===6?36:undefined}}>{h}</th>
+                      {["","#","시작","종료","소요(분)","내용","비고",""].map((h,i)=>(
+                        <th key={i} style={{padding:"6px 8px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",width:i===0?24:i===1?30:i===2?90:i===3?90:i===4?60:i===7?36:undefined}}>{h}</th>
                       ))}
                     </tr></thead>
                     <tbody>
                       {pgList.map((item,idx)=>{
                         const autoDur = calcDuration(item.startTime, item.endTime);
                         const tlDurDisplay = autoDur ? Math.floor(parseInt(autoDur)/60)+":"+String(parseInt(autoDur)%60).padStart(2,"0") : item.duration||"";
+                        const rdp = tlDrag.rowDragProps(idx);
                         return (
-                          <tr key={idx}>
+                          <tr key={item._id||idx} onDragOver={rdp.onDragOver} style={{...rdp.style}}>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><span {...tlDrag.dragHandleProps(idx)}>⠿</span></td>
                             <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
                             <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(v,item.endTime);updateListItemMulti("program","timeline",idx,{startTime:v,...(d?{duration:d}:{})});}} style={{padding:"4px 8px",fontSize:12}}/></td>
-                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(item.startTime,v);updateListItemMulti("program","timeline",idx,{endTime:v,...(d?{duration:d}:{})});}} style={{padding:"4px 8px",fontSize:12}}/></td>
+                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(item.startTime,v);const myUp={endTime:v,...(d?{duration:d}:{})};const nr=pgList[idx+1];let nUp=null;if(v&&nr&&!nr.startTime){const nd=calcDuration(v,nr.endTime);nUp={startTime:v,...(nd?{duration:nd}:{})};}updateListItemCascade("program","timeline",idx,myUp,nUp);}} style={{padding:"4px 8px",fontSize:12}}/></td>
                             <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:autoDur?"#10b981":"var(--txt3)",fontWeight:autoDur?700:400,fontSize:12}}>{tlDurDisplay || <input className="form-input" value={item.duration||""} onChange={e=>updateListItem("program","timeline",idx,"duration",e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="소요시간"/>}</td>
                             <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.content||""} onChange={e=>updateListItem("program","timeline",idx,"content",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="순서 내용"/></td>
                             <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.note||""} onChange={e=>updateListItem("program","timeline",idx,"note",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
@@ -9727,21 +9804,26 @@ ${secEnabled("timeline") ? (()=>{
                       <button onClick={()=>{const name=prompt("추가할 스태프 컬럼명 (예: 의전, 통역)");if(name)updateDoc("program","_cueSheetExtraCols",[...csExtraCols,name]);}} style={{padding:"2px 8px",fontSize:10,background:"rgba(99,102,241,.1)",border:"1px dashed rgba(99,102,241,.3)",color:"#818cf8",borderRadius:4,cursor:"pointer"}}>+ 컬럼</button>
                     </div>
                   </div>
-                  <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("program","cueSheet",{session:"",content:"",startTime:"",endTime:"",duration:"",details:"",reference:"",screen:"",bgm:"",mic:"",staffEpic:"",staffClient:""})}>+ 항목 추가</button>
+                  <div style={{display:"flex",gap:6}}>
+                    <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12,color:"#818cf8"}} onClick={importTimelineToCueSheet}>📋 타임테이블 불러오기</button>
+                    <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("program","cueSheet",{session:"",content:"",startTime:"",endTime:"",duration:"",details:"",reference:"",screen:"",bgm:"",mic:"",staffEpic:"",staffClient:""})}>+ 항목 추가</button>
+                  </div>
                 </div>
                 <div style={{overflowX:"auto",marginBottom:16}}>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:1200}}>
                     <thead><tr style={{background:"rgba(99,102,241,.1)"}}>
-                      {["#","세션","내용","시작","종료","경과","상세내용","참고","화면","BGM","MIC","에픽",""+csClientName,...csExtraCols,""].map((h,i)=>(
-                        <th key={i} style={{padding:"5px 6px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",fontSize:10,whiteSpace:"nowrap",width:i===0?26:i===3||i===4?75:i===5?40:i===14?30:undefined}}>{h}</th>
+                      {["","#","세션","내용","시작","종료","경과","상세내용","참고","화면","BGM","MIC","에픽",""+csClientName,...csExtraCols,""].map((h,i)=>(
+                        <th key={i} style={{padding:"5px 6px",color:"#818cf8",fontWeight:700,border:"1px solid rgba(255,255,255,.07)",fontSize:10,whiteSpace:"nowrap",width:i===0?24:i===1?26:i===4||i===5?75:i===6?40:undefined}}>{h}</th>
                       ))}
                     </tr></thead>
                     <tbody>
                       {csList.map((item,idx)=>{
                         const autoDur = calcDuration(item.startTime, item.endTime);
                         const durDisplay = autoDur ? Math.floor(parseInt(autoDur)/60)+":"+String(parseInt(autoDur)%60).padStart(2,"0") : item.duration||"";
+                        const crdp = csDrag.rowDragProps(idx);
                         return (
-                          <tr key={idx}>
+                          <tr key={item._id||idx} onDragOver={crdp.onDragOver} style={{...crdp.style}}>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><span {...csDrag.dragHandleProps(idx)}>⠿</span></td>
                             <td style={{padding:"3px 4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:10}}>{idx+1}</td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}>
                               <select className="form-input" value={SESSION_PRESETS.includes(item.session)?item.session:"_custom"} onChange={e=>{const v=e.target.value;if(v!=="_custom")updateListItem("program","cueSheet",idx,"session",v);}} style={{padding:"2px 4px",fontSize:10}}>
@@ -9752,7 +9834,7 @@ ${secEnabled("timeline") ? (()=>{
                             </td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.content||""} onChange={e=>updateListItem("program","cueSheet",idx,"content",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="내용"/></td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(v,item.endTime);updateListItemMulti("program","cueSheet",idx,{startTime:v,...(d?{duration:d}:{})});}} style={{padding:"4px 6px",fontSize:11,minWidth:65}}/></td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(item.startTime,v);updateListItemMulti("program","cueSheet",idx,{endTime:v,...(d?{duration:d}:{})});}} style={{padding:"4px 6px",fontSize:11,minWidth:65}}/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(item.startTime,v);const myUp={endTime:v,...(d?{duration:d}:{})};const nr=csList[idx+1];let nUp=null;if(v&&nr&&!nr.startTime){const nd=calcDuration(v,nr.endTime);nUp={startTime:v,...(nd?{duration:nd}:{})};}updateListItemCascade("program","cueSheet",idx,myUp,nUp);}} style={{padding:"4px 6px",fontSize:11,minWidth:65}}/></td>
                             <td style={{padding:"2px 4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",fontSize:10,color:autoDur?"#10b981":"var(--txt3)",fontWeight:autoDur?700:400}}>{durDisplay}</td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.details||""} onChange={e=>updateListItem("program","cueSheet",idx,"details",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="상세"/></td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.reference||""} onChange={e=>updateListItem("program","cueSheet",idx,"reference",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="참고"/></td>
