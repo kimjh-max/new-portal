@@ -10,6 +10,24 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <title>EpicStage EventOS – 로그인</title>
+<script>
+// 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
+(function(){
+  var CODE_VER = "20260309v3";
+  var stored = localStorage.getItem("eventos_code_ver");
+  if(stored !== CODE_VER){
+    localStorage.setItem("eventos_code_ver", CODE_VER);
+    if(stored){
+      // 구버전이 있었으면 캐시 우회 새로고침
+      location.href = location.pathname + "?_=" + Date.now();
+    }
+  }
+  // ?_= 쿼리가 있으면 클린 URL로 복원 (한번만)
+  if(location.search.indexOf("_=") > -1){
+    history.replaceState(null, "", location.pathname);
+  }
+})();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.3/babel.min.js"></script>
