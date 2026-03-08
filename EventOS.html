@@ -8744,6 +8744,7 @@ function DocEditorPanel({docType, project}) {
       // ③ 더 큰(더 최신) 데이터를 선택
       const localSize = localData ? JSON.stringify(localData).length : 0;
       const cloudSize = cloudData ? JSON.stringify(cloudData).length : 0;
+      console.log("[DocEditor] 로컬:" + localSize + " vs 클라우드:" + cloudSize);
       const bestData = cloudSize > localSize ? cloudData : localData;
 
       if (bestData && Object.keys(bestData).length) {
@@ -8751,18 +8752,22 @@ function DocEditorPanel({docType, project}) {
           const prevSize = JSON.stringify(prev).length;
           const bestSize = JSON.stringify(bestData).length;
           if (bestSize >= prevSize) {
-            // 클라우드에서 온 데이터라면 로컬에도 저장
             if (cloudSize > localSize && cloudData) {
+              // 클라우드가 최신 → 로컬에 동기화
               saveToIDB(storageKey, cloudData).catch(()=>{});
               try { localStorage.setItem(storageKey, JSON.stringify(cloudData)); } catch {}
-              console.log("[DocEditor] ☁️ 클라우드 데이터가 최신 → 로컬에 동기화");
+              console.log("[DocEditor] ☁️→📱 클라우드 데이터 로컬에 동기화");
+            } else if (localSize > cloudSize && localData) {
+              // 로컬이 최신 → 클라우드에 업로드 (빈 클라우드 덮어쓰기)
+              CloudSync.saveDoc(storageKey, localData).then(() => {
+                console.log("[DocEditor] 📱→☁️ 로컬 데이터 클라우드에 동기화 (" + localSize + " chars)");
+              }).catch(()=>{});
             }
             return bestData;
           }
           return prev;
         });
       } else if (!localData && !cloudData) {
-        // 둘 다 없으면 빈 상태 유지
         console.log("[DocEditor] 로컬 & 클라우드 모두 데이터 없음");
       }
     })();
