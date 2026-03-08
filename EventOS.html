@@ -4569,17 +4569,71 @@ function toast(msg, type="default") {
       }
     }
 
-    // 3단계: 아직 4MB 넘으면 → 프로젝트 내 quoteHistory, logs 정리
-    if (calcUsed() > 4 * 1024) {
+    // 3단계: 프로젝트 내 quoteHistory, logs, files 정리
+    if (calcUsed() > 3.5 * 1024) {
       try {
         const projects = JSON.parse(localStorage.getItem("eventos_projects") || "[]");
-        let trimmed = false;
         projects.forEach(p => {
-          if (p.quoteHistory && p.quoteHistory.length > 3) { p.quoteHistory = p.quoteHistory.slice(0, 3); trimmed = true; }
-          if (p.logs && p.logs.length > 20) { p.logs = p.logs.slice(0, 20); trimmed = true; }
-          if (p.taskOrderHistory && p.taskOrderHistory.length > 5) { p.taskOrderHistory = p.taskOrderHistory.slice(0, 5); trimmed = true; }
+          if (p.quoteHistory && p.quoteHistory.length > 2) p.quoteHistory = p.quoteHistory.slice(0, 2);
+          if (p.logs && p.logs.length > 10) p.logs = p.logs.slice(0, 10);
+          if (p.taskOrderHistory && p.taskOrderHistory.length > 3) p.taskOrderHistory = p.taskOrderHistory.slice(0, 3);
+          if (p.gantt && p.gantt.length > 50) p.gantt = p.gantt.slice(0, 50);
         });
-        if (trimmed) localStorage.setItem("eventos_projects", JSON.stringify(projects));
+        localStorage.setItem("eventos_projects", JSON.stringify(projects));
+      } catch {}
+    }
+
+    // 4단계: 아직 4MB 넘으면 → 버전 이력 전체 삭제
+    if (calcUsed() > 4 * 1024) {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("eventos_docVersions_")) {
+          try { localStorage.removeItem(key); } catch {}
+        }
+      }
+    }
+
+    // 5단계: 아직 4.5MB 넘으면 → 프로젝트 내 base64 이미지를 IDB로 이전
+    if (calcUsed() > 4.5 * 1024) {
+      try {
+        const projects = JSON.parse(localStorage.getItem("eventos_projects") || "[]");
+        const idbImgKey = "eventos_project_images";
+        const imgBackup = {};
+        projects.forEach(p => {
+          // files 배열에서 base64 데이터 분리
+          if (p.files && Array.isArray(p.files)) {
+            p.files.forEach((f, fi) => {
+              if (f.data && f.data.length > 1000) {
+                imgBackup[p.id + "_file_" + fi] = f.data;
+                f.data = "__IDB__"; // 플레이스홀더
+              }
+            });
+          }
+          // checklist 내 이미지
+          if (p.checklist && Array.isArray(p.checklist)) {
+            p.checklist.forEach((c, ci) => {
+              if (c.image && c.image.length > 1000) {
+                imgBackup[p.id + "_chk_" + ci] = c.image;
+                c.image = "__IDB__";
+              }
+            });
+          }
+        });
+        if (Object.keys(imgBackup).length > 0) {
+          localStorage.setItem("eventos_projects", JSON.stringify(projects));
+          // IDB에 이미지 저장 (openIDB가 아직 없으므로 직접)
+          try {
+            const req = indexedDB.open("eventos_docs", 2);
+            req.onupgradeneeded = e => { const db = e.target.result; if (!db.objectStoreNames.contains("documents")) db.createObjectStore("documents"); };
+            req.onsuccess = () => {
+              const db = req.result;
+              const tx = db.transaction("documents", "readwrite");
+              tx.objectStore("documents").put(imgBackup, idbImgKey);
+              console.log("[EventOS] 📸 이미지 " + Object.keys(imgBackup).length + "개 IDB로 이전");
+              db.close();
+            };
+          } catch {}
+        }
       } catch {}
     }
 
@@ -4620,12 +4674,26 @@ function cleanupStorage() {
 }
 
 let _storageAlertShown = false;
+let _storageCleanAttempts = 0;
 function showStorageUpgradeAlert() {
+  _storageCleanAttempts++;
   // 먼저 자동 정리 시도
   const freedKB = cleanupStorage();
   if (freedKB > 50) {
     toast("✅ 스토리지 " + (freedKB/1024).toFixed(1) + "MB 자동 정리 완료!", "success");
-    return; // 정리로 충분한 공간 확보되면 알림 생략
+    return;
+  }
+  // 2번째 시도부터: 강력 정리 자동 실행 (모달 없이)
+  if (_storageCleanAttempts <= 3) {
+    try {
+      localStorage.removeItem("eventos_autoBackups");
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("eventos_docVersions_")) localStorage.removeItem(key);
+      }
+      toast("🧹 스토리지 자동 정리 완료", "info");
+    } catch {}
+    return;
   }
   if (_storageAlertShown) return;
   _storageAlertShown = true;
