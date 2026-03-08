@@ -11928,10 +11928,16 @@ function App() {
         setTimeout(async () => {
           try {
             console.log("[DocSync] 🔍 로컬→클라우드 동기화 시작...");
-            // 클라우드에 이미 있는 doc 키 + 크기 맵
+            // 클라우드 doc 키별 크기 조회 (빈 데이터 감지용)
             const cloudDocs = await CloudSync.listDocs();
-            const cloudKeySet = new Set(cloudDocs.map(d => d.doc_key));
-            console.log("[DocSync] 클라우드 doc " + cloudDocs.length + "개 확인");
+            const cloudSizeMap = {};
+            for (const cd of cloudDocs) {
+              try {
+                const cdData = await CloudSync.loadDoc(cd.doc_key);
+                cloudSizeMap[cd.doc_key] = cdData ? JSON.stringify(cdData).length : 0;
+              } catch { cloudSizeMap[cd.doc_key] = 0; }
+            }
+            console.log("[DocSync] 클라우드 doc " + cloudDocs.length + "개 (크기 확인 완료)");
             // ① IndexedDB에서 모든 doc 키 수집
             const docKeySet = new Set();
             try {
@@ -11951,10 +11957,9 @@ function App() {
               }
             }
             console.log("[DocSync] 로컬 총 doc 키 " + docKeySet.size + "개");
-            // ③ 클라우드에 없는 것만 업로드
+            // ③ 로컬이 클라우드보다 크면 업로드 (빈 클라우드 데이터 덮어쓰기)
             let uploadCount = 0;
             for (const key of docKeySet) {
-              if (cloudKeySet.has(key)) continue; // 이미 있으면 스킵
               let localData = null;
               try {
                 const idbData = await loadFromIDB(key);
@@ -11971,17 +11976,22 @@ function App() {
               if (!localData) continue;
               const localSize = JSON.stringify(localData).length;
               if (localSize <= 2) continue;
+              const cloudSize = cloudSizeMap[key] || 0;
+              if (localSize <= cloudSize) {
+                console.log("[DocSync] ⏭️ " + key + " (클라우드 " + cloudSize + " >= 로컬 " + localSize + ")");
+                continue;
+              }
               try {
                 await CloudSync.saveDoc(key, localData);
                 uploadCount++;
-                console.log("[DocSync] ⬆️ " + key + " (" + localSize + " chars)");
+                console.log("[DocSync] ⬆️ " + key + " (로컬 " + localSize + " > 클라우드 " + cloudSize + ")");
               } catch (e) { console.error("[DocSync] 실패:", key, e); }
             }
             if (uploadCount > 0) {
               console.log("[DocSync] ☁️ " + uploadCount + "건 클라우드 업로드 완료");
               toast("☁️ 보고서 " + uploadCount + "건 클라우드 동기화 완료", "success");
             } else {
-              console.log("[DocSync] ✅ 동기화 완료 (업로드 대상 없음)");
+              console.log("[DocSync] ✅ 동기화 완료 (모두 최신)");
             }
           } catch (err) {
             console.error("[DocSync] 동기화 오류:", err);
