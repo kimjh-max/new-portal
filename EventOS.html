@@ -8367,6 +8367,17 @@ function DocEditorPanel({docType, project}) {
   const [versions, setVersions] = React.useState(() => {
     try { const v = localStorage.getItem(versionsKey); return v ? JSON.parse(v) : []; } catch { return []; }
   });
+  // IndexedDB에서 버전 폴백 로딩
+  React.useEffect(() => {
+    if (versions.length === 0 && versionsKey) {
+      loadFromIDB(versionsKey).then(data => {
+        if (data && Array.isArray(data) && data.length > 0) {
+          setVersions(data);
+          console.log("[DocEditor] IndexedDB에서 버전 " + data.length + "개 복구");
+        }
+      }).catch(()=>{});
+    }
+  }, [versionsKey]);
   const [showVersions, setShowVersions] = React.useState(false);
   const [showSectionMgr, setShowSectionMgr] = React.useState(false);
   const [showCoverEdit, setShowCoverEdit] = React.useState(false);
@@ -8464,14 +8475,27 @@ function DocEditorPanel({docType, project}) {
     const newVersion = { id: Date.now(), name: displayName, timestamp: ts, data: JSON.parse(JSON.stringify(docData)) };
     const updated = [newVersion, ...versions].slice(0, 30); // 최대 30개 버전
     setVersions(updated);
-    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch {}
+    try {
+      localStorage.setItem(versionsKey, JSON.stringify(updated));
+    } catch(e) {
+      console.warn("[DocEditor] 버전 localStorage 저장 실패, IndexedDB 폴백:", e);
+      saveToIDB(versionsKey, updated).then(()=>{
+        toast(`"${displayName}" 버전 저장 완료 (IndexedDB)`, "success");
+      }).catch(err=>{
+        console.error("[DocEditor] 버전 IndexedDB 저장 실패:", err);
+        toast("⚠️ 버전 저장 실패! 용량 부족", "error");
+      });
+      return;
+    }
     toast(`"${displayName}" 버전 저장 완료`, "success");
   };
 
   // ── 버전 불러오기 ──
   const loadVersion = (ver) => {
+    if (!window.confirm(`"${ver.name}" 버전을 불러오시겠습니까?\n현재 작성 중인 내용이 대체됩니다.`)) return;
     setDocData(ver.data);
     try { localStorage.setItem(storageKey, JSON.stringify(ver.data)); } catch {}
+    saveToIDB(storageKey, ver.data).catch(()=>{});
     setShowVersions(false);
     toast(`"${ver.name}" 버전을 불러왔습니다`, "success");
   };
@@ -8683,9 +8707,14 @@ tr:nth-child(even) td{background:#f8fafc}
 .img-page .img-grid{display:grid;gap:12px;align-items:center;align-content:center}
 .img-page img{width:100%;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block}
 @media print{
-  .page{width:297mm;height:210mm;margin:0;page-break-after:always;overflow:hidden}
+  .page{width:297mm;height:210mm;margin:0;page-break-after:always;overflow:hidden;box-sizing:border-box}
   .page:last-child{page-break-after:auto}
-  .img-page{page-break-before:always}
+  .page.sec-page{display:flex;flex-direction:column;height:210mm}
+  .page.cover{height:210mm;display:flex;flex-direction:column}
+  .sec-header{flex-shrink:0}
+  .sec-body{flex:1;overflow:hidden}
+  .footer{flex-shrink:0;margin-top:auto}
+  .img-page{page-break-before:always;height:210mm;overflow:hidden;box-sizing:border-box}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style></head><body>
