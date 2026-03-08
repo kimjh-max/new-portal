@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260309v4";
+  var CODE_VER = "20260309v5";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -288,7 +288,8 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
 
       var uploaded = 0, downloaded = 0;
 
-      // ② 로컬 → 클라우드 (로컬이 더 크면 업로드)
+      // ② 로컬 → 클라우드 (로컬이 더 크면 업로드, 대용량은 청크 분할)
+      var CHUNK_THRESHOLD = 40 * 1024 * 1024; // 40MB 이상이면 청크 분할
       for(var i = 0; i < localDocKeys.length; i++){
         var key = localDocKeys[i];
         try {
@@ -300,36 +301,102 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
           var cloudDoc = cloudDocs.find(function(d){ return d.doc_key === key; });
           var cloudSize = cloudDoc ? cloudDoc.size : 0;
           if(localSize > cloudSize){
-            await uploadToCloud(key, data);
-            console.log("[Sync] ⬆️ " + key + " 업로드 (" + localSize + " > " + cloudSize + ")");
-            uploaded++;
+            // 대용량 배열 데이터는 청크 분할 업로드
+            if(Array.isArray(data) && localSize > CHUNK_THRESHOLD){
+              console.log("[Sync] 📦 대용량 청크 업로드: " + key + " (" + data.length + "개, " + (localSize/1024/1024).toFixed(1) + "MB)");
+              for(var ci = 0; ci < data.length; ci++){
+                var chunkKey = key + "__chunk_" + ci;
+                await uploadToCloud(chunkKey, data[ci]);
+                console.log("[Sync]   └ chunk_" + ci + " 업로드 완료");
+              }
+              uploaded++;
+            } else {
+              await uploadToCloud(key, data);
+              console.log("[Sync] ⬆️ " + key + " 업로드 (" + localSize + " > " + cloudSize + ")");
+              uploaded++;
+            }
           }
         } catch(err){ console.error("[Sync] 업로드 실패:", key, err); }
       }
 
-      // ③ 클라우드 → 로컬 (클라우드에 있고 로컬에 없거나 더 크면 다운로드)
+      // ③ 청크 키 그룹핑 (버전 데이터 분할 저장 지원)
+      var chunkGroups = {};
+      var normalCloudKeys = [];
       for(var j = 0; j < cloudDocKeys.length; j++){
         var ck = cloudDocKeys[j];
+        var key = ck.doc_key;
+        var chunkMatch = key.match(/^(.+)__chunk_(\d+)$/);
+        if(chunkMatch){
+          var baseKey = chunkMatch[1];
+          var idx = parseInt(chunkMatch[2]);
+          if(!chunkGroups[baseKey]) chunkGroups[baseKey] = [];
+          chunkGroups[baseKey].push({ idx: idx, doc_key: key, size: ck.size || 0 });
+        } else {
+          normalCloudKeys.push(ck);
+        }
+      }
+
+      // ③-a 일반 클라우드 → 로컬 다운로드
+      for(var j = 0; j < normalCloudKeys.length; j++){
+        var ck = normalCloudKeys[j];
         var key = ck.doc_key;
         try {
           var localData = null;
           try { localData = await getData(db, key); } catch{}
-          var localSize = (localData && typeof localData === "object" && Object.keys(localData).length) ? JSON.stringify(localData).length : 0;
+          var localSize = 0;
+          if(localData){
+            if(Array.isArray(localData)){ localSize = localData.length ? JSON.stringify(localData).length : 0; }
+            else if(typeof localData === "object" && Object.keys(localData).length){ localSize = JSON.stringify(localData).length; }
+          }
           var cloudSize = ck.size || 0;
 
           if(cloudSize > localSize){
             var cloudData = await loadFromCloud(key);
-            if(cloudData && typeof cloudData === "object" && Object.keys(cloudData).length){
-              await putData(db, key, cloudData);
-              try { localStorage.setItem(key, JSON.stringify(cloudData)); } catch{}
-              // window 캐시에도 저장 → DocEditor에서 즉시 사용 가능
-              window.__preloadedDocs = window.__preloadedDocs || {};
-              window.__preloadedDocs[key] = cloudData;
-              console.log("[Sync] ⬇️ " + key + " 다운로드 (" + cloudSize + " > " + localSize + ")");
-              downloaded++;
+            if(cloudData){
+              var valid = Array.isArray(cloudData) ? cloudData.length > 0 : (typeof cloudData === "object" && Object.keys(cloudData).length > 0);
+              if(valid){
+                await putData(db, key, cloudData);
+                try { localStorage.setItem(key, JSON.stringify(cloudData)); } catch{}
+                window.__preloadedDocs = window.__preloadedDocs || {};
+                window.__preloadedDocs[key] = cloudData;
+                console.log("[Sync] ⬇️ " + key + " 다운로드 (" + cloudSize + " > " + localSize + ")");
+                downloaded++;
+              }
             }
           }
         } catch(err){ console.error("[Sync] 다운로드 실패:", key, err); }
+      }
+
+      // ③-b 청크 그룹 → 조합 후 로컬 저장 (대용량 버전 데이터)
+      var chunkBaseKeys = Object.keys(chunkGroups);
+      for(var c = 0; c < chunkBaseKeys.length; c++){
+        var baseKey = chunkBaseKeys[c];
+        var chunks = chunkGroups[baseKey].sort(function(a,b){ return a.idx - b.idx; });
+        try {
+          var localData = null;
+          try { localData = await getData(db, baseKey); } catch{}
+          var localLen = Array.isArray(localData) ? localData.length : 0;
+
+          // 청크 수가 로컬 버전 수보다 많거나 로컬 없으면 다운로드
+          if(chunks.length > 0 && (localLen === 0 || chunks.length > localLen)){
+            console.log("[Sync] 📦 청크 조합 시작: " + baseKey + " (" + chunks.length + "개)");
+            var assembled = [];
+            for(var ci = 0; ci < chunks.length; ci++){
+              var chunkData = await loadFromCloud(chunks[ci].doc_key);
+              if(chunkData){
+                assembled.push(chunkData);
+                console.log("[Sync]   └ chunk_" + chunks[ci].idx + " 다운로드 완료");
+              }
+            }
+            if(assembled.length > 0){
+              await putData(db, baseKey, assembled);
+              window.__preloadedDocs = window.__preloadedDocs || {};
+              window.__preloadedDocs[baseKey] = assembled;
+              console.log("[Sync] ✅ " + baseKey + " 조합 완료 (" + assembled.length + "개 버전)");
+              downloaded++;
+            }
+          }
+        } catch(err){ console.error("[Sync] 청크 조합 실패:", baseKey, err); }
       }
 
       console.log("[Sync] ✅ 완료! 업로드:" + uploaded + " 다운로드:" + downloaded);
@@ -650,6 +717,22 @@ const CloudSync = {
   async saveDoc(key, data) {
     if (!CLOUD_CONFIG.ENABLED) return null;
     try {
+      const jsonSize = JSON.stringify(data).length;
+      // 대용량 배열(버전 데이터 등)은 개별 청크로 분할 업로드
+      if (Array.isArray(data) && jsonSize > 40 * 1024 * 1024) {
+        console.log("[CloudSync] 📦 대용량 청크 업로드:", key, (jsonSize/1024/1024).toFixed(1) + "MB", data.length + "개");
+        for (let i = 0; i < data.length; i++) {
+          const chunkKey = key + "__chunk_" + i;
+          const chRes = await fetch(`${this._baseUrl()}/api/doc`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: chunkKey, data: data[i] }),
+          });
+          const chResult = await chRes.json();
+          if (!chResult.success) console.error("[CloudSync] chunk_" + i + " 실패:", chResult);
+        }
+        return { success: true, chunked: true, count: data.length };
+      }
       const res = await fetch(`${this._baseUrl()}/api/doc`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -662,13 +745,38 @@ const CloudSync = {
     }
   },
 
-  // ── 문서(보고서) 데이터 로드 ──
+  // ── 문서(보고서) 데이터 로드 (청크 자동 조합 지원) ──
   async loadDoc(key) {
     if (!CLOUD_CONFIG.ENABLED) return null;
     try {
+      // ① 기본 키로 로드 시도
       const res = await fetch(`${this._baseUrl()}/api/doc?key=${encodeURIComponent(key)}`);
       const result = await res.json();
-      if (result.success && result.found) return result.data;
+      if (result.success && result.found && result.data) return result.data;
+
+      // ② 기본 키가 없으면 청크 키 탐색 (버전 데이터 등 대용량)
+      if (key.indexOf("eventos_docVersions_") === 0) {
+        const docs = await this.listDocs();
+        const chunkPrefix = key + "__chunk_";
+        const chunks = docs.filter(d => d.doc_key.startsWith(chunkPrefix))
+          .map(d => ({ idx: parseInt(d.doc_key.replace(chunkPrefix, "")), doc_key: d.doc_key }))
+          .sort((a,b) => a.idx - b.idx);
+        if (chunks.length > 0) {
+          console.log("[CloudSync] 📦 청크 " + chunks.length + "개 발견, 조합 시작:", key);
+          const assembled = [];
+          for (const ch of chunks) {
+            const chRes = await fetch(`${this._baseUrl()}/api/doc?key=${encodeURIComponent(ch.doc_key)}`);
+            const chResult = await chRes.json();
+            if (chResult.success && chResult.found && chResult.data) {
+              assembled.push(chResult.data);
+            }
+          }
+          if (assembled.length > 0) {
+            console.log("[CloudSync] ✅ 청크 조합 완료:", assembled.length + "개 버전");
+            return assembled;
+          }
+        }
+      }
       return null;
     } catch (err) {
       console.error("[CloudSync] loadDoc:", err);
@@ -8952,10 +9060,18 @@ function DocEditorPanel({docType, project}) {
   const [versions, setVersions] = React.useState(() => {
     try { const v = localStorage.getItem(versionsKey); return v ? JSON.parse(v) : []; } catch { return []; }
   });
-  // IndexedDB + 클라우드에서 버전 로딩
+  // IndexedDB + 클라우드에서 버전 로딩 (preloaded 캐시 우선)
   React.useEffect(() => {
     if (!versionsKey) return;
     (async () => {
+      // ⓪ 독립 스크립트가 미리 로드한 preloaded 데이터 확인
+      const preloaded = window.__preloadedDocs?.[versionsKey];
+      if (preloaded && Array.isArray(preloaded) && preloaded.length > 0) {
+        setVersions(preloaded);
+        console.log("[DocEditor] ✅ preloaded 버전 " + preloaded.length + "개 사용");
+        saveToIDB(versionsKey, preloaded).catch(()=>{});
+        return;
+      }
       let localVer = null;
       try {
         const idbVer = await loadFromIDB(versionsKey);
