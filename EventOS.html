@@ -11924,6 +11924,55 @@ function App() {
         toast(`☁️ ${source}에서 데이터를 불러왔습니다.`, "success");
       }
       setDriveLoaded(true);
+
+      // 3) 로컬 문서 데이터 → 클라우드 일괄 마이그레이션 (앱 시작 시 1회)
+      if (CLOUD_CONFIG.ENABLED) {
+        try {
+          const migrated = sessionStorage.getItem("_docCloudMigrated");
+          if (!migrated) {
+            sessionStorage.setItem("_docCloudMigrated", "1");
+            // 클라우드에 이미 있는 doc 키 목록
+            const cloudDocs = await CloudSync.listDocs();
+            const cloudKeySet = new Set(cloudDocs.map(d => d.doc_key));
+            // localStorage에서 doc 키 수집
+            const localDocKeys = [];
+            for (let i = 0; i < localStorage.length; i++) {
+              const k = localStorage.key(i);
+              if (k && (k.startsWith("eventos_doc_") || k.startsWith("eventos_docVersions_"))) {
+                localDocKeys.push(k);
+              }
+            }
+            // IDB에서도 확인
+            let uploadCount = 0;
+            for (const key of localDocKeys) {
+              // 로컬 데이터 (IDB 우선, localStorage 폴백)
+              let localData = null;
+              try {
+                const idbData = await loadFromIDB(key);
+                if (idbData && (Array.isArray(idbData) ? idbData.length > 0 : Object.keys(idbData).length > 0)) {
+                  localData = idbData;
+                }
+              } catch {}
+              if (!localData) {
+                try { const ls = localStorage.getItem(key); if (ls) localData = JSON.parse(ls); } catch {}
+              }
+              if (!localData) continue;
+              // 클라우드에 없거나, 로컬이 더 크면 업로드
+              const localSize = JSON.stringify(localData).length;
+              if (!cloudKeySet.has(key) || localSize > 10) {
+                await CloudSync.saveDoc(key, localData);
+                uploadCount++;
+              }
+            }
+            if (uploadCount > 0) {
+              console.log("[DocSync] ☁️ 로컬 문서 " + uploadCount + "건 클라우드 마이그레이션 완료");
+              toast("☁️ 보고서 " + uploadCount + "건 클라우드 동기화 완료", "success");
+            }
+          }
+        } catch (err) {
+          console.error("[DocSync] 마이그레이션 실패:", err);
+        }
+      }
     })();
   }, []);
 
