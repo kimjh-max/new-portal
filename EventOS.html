@@ -187,6 +187,106 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
 <div id="root"></div>
 <div id="toasts"></div>
 
+<!-- ★ 독립 IDB→Cloud 마이그레이션 (React 없이 즉시 실행) ★ -->
+<script>
+(function(){
+  var API = "https://eventos-worker.kimjh-c7c.workers.dev/api/doc";
+  var DB_NAME = "eventos_docs";
+  var STORE = "documents";
+
+  function openIDB(){
+    return new Promise(function(resolve, reject){
+      var req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = function(e){ e.target.result.createObjectStore(STORE); };
+      req.onsuccess = function(e){ resolve(e.target.result); };
+      req.onerror = function(){ reject(req.error); };
+    });
+  }
+
+  function getAllKeys(db){
+    return new Promise(function(resolve, reject){
+      var tx = db.transaction(STORE, "readonly");
+      var store = tx.objectStore(STORE);
+      var req = store.getAllKeys();
+      req.onsuccess = function(){ resolve(req.result || []); };
+      req.onerror = function(){ reject(req.error); };
+    });
+  }
+
+  function getData(db, key){
+    return new Promise(function(resolve, reject){
+      var tx = db.transaction(STORE, "readonly");
+      var store = tx.objectStore(STORE);
+      var req = store.get(key);
+      req.onsuccess = function(){ resolve(req.result); };
+      req.onerror = function(){ reject(req.error); };
+    });
+  }
+
+  async function uploadToCloud(key, data){
+    var res = await fetch(API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: key, data: data })
+    });
+    return await res.json();
+  }
+
+  async function checkCloud(key){
+    var res = await fetch(API + "?key=" + encodeURIComponent(key));
+    var result = await res.json();
+    if(result.success && result.found && result.data){
+      return JSON.stringify(result.data).length;
+    }
+    return 0;
+  }
+
+  async function run(){
+    try {
+      var db = await openIDB();
+      var keys = await getAllKeys(db);
+      var docKeys = keys.filter(function(k){ return String(k).indexOf("eventos_doc_") === 0; });
+      if(!docKeys.length){ console.log("[IDB→Cloud] 문서 키 없음"); return; }
+      console.log("[IDB→Cloud] 발견된 문서 키:", docKeys.length, docKeys);
+
+      var uploaded = 0;
+      for(var i = 0; i < docKeys.length; i++){
+        var key = docKeys[i];
+        try {
+          var data = await getData(db, key);
+          if(!data || typeof data !== "object" || !Object.keys(data).length){
+            console.log("[IDB→Cloud] 빈 데이터 스킵:", key);
+            continue;
+          }
+          var localSize = JSON.stringify(data).length;
+          var cloudSize = await checkCloud(key);
+          console.log("[IDB→Cloud] " + key + " 로컬:" + localSize + " 클라우드:" + cloudSize);
+
+          if(localSize > cloudSize){
+            var result = await uploadToCloud(key, data);
+            console.log("[IDB→Cloud] ✅ 업로드 완료:", key, "(" + localSize + " chars)", result);
+            uploaded++;
+          } else {
+            console.log("[IDB→Cloud] 클라우드가 이미 최신:", key);
+          }
+        } catch(err){
+          console.error("[IDB→Cloud] ❌ 실패:", key, err);
+        }
+      }
+      console.log("[IDB→Cloud] 완료! 업로드 " + uploaded + "/" + docKeys.length);
+    } catch(err){
+      console.log("[IDB→Cloud] IDB 열기 실패 (정상 - 첫 방문):", err);
+    }
+  }
+
+  if(document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded", run);
+  } else {
+    run();
+  }
+})();
+</script>
+
 <script type="text/babel">
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
