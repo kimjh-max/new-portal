@@ -187,10 +187,10 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
 <div id="root"></div>
 <div id="toasts"></div>
 
-<!-- ★ 독립 IDB→Cloud 마이그레이션 (React 없이 즉시 실행) ★ -->
+<!-- ★ 독립 양방향 Cloud↔IDB 동기화 (React 없이 즉시 실행) ★ -->
 <script>
 (function(){
-  var API = "https://eventos-worker.kimjh-c7c.workers.dev/api/doc";
+  var API_BASE = "https://eventos-worker.kimjh-c7c.workers.dev/api";
   var DB_NAME = "eventos_docs";
   var STORE = "documents";
 
@@ -223,8 +223,18 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
     });
   }
 
+  function putData(db, key, data){
+    return new Promise(function(resolve, reject){
+      var tx = db.transaction(STORE, "readwrite");
+      var store = tx.objectStore(STORE);
+      var req = store.put(data, key);
+      req.onsuccess = function(){ resolve(); };
+      req.onerror = function(){ reject(req.error); };
+    });
+  }
+
   async function uploadToCloud(key, data){
-    var res = await fetch(API, {
+    var res = await fetch(API_BASE + "/doc", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: key, data: data })
@@ -232,50 +242,84 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
     return await res.json();
   }
 
-  async function checkCloud(key){
-    var res = await fetch(API + "?key=" + encodeURIComponent(key));
+  async function loadFromCloud(key){
+    var res = await fetch(API_BASE + "/doc?key=" + encodeURIComponent(key));
     var result = await res.json();
     if(result.success && result.found && result.data){
-      return JSON.stringify(result.data).length;
+      return result.data;
     }
-    return 0;
+    return null;
+  }
+
+  async function listCloudDocs(){
+    var res = await fetch(API_BASE + "/docs");
+    var result = await res.json();
+    return (result.success && result.docs) ? result.docs : [];
   }
 
   async function run(){
     try {
       var db = await openIDB();
-      var keys = await getAllKeys(db);
-      var docKeys = keys.filter(function(k){ return String(k).indexOf("eventos_doc_") === 0; });
-      if(!docKeys.length){ console.log("[IDB→Cloud] 문서 키 없음"); return; }
-      console.log("[IDB→Cloud] 발견된 문서 키:", docKeys.length, docKeys);
+      var localKeys = await getAllKeys(db);
+      var localDocKeys = localKeys.filter(function(k){ return String(k).indexOf("eventos_doc_") === 0; });
 
-      var uploaded = 0;
-      for(var i = 0; i < docKeys.length; i++){
-        var key = docKeys[i];
+      // ① 클라우드 doc 목록 가져오기
+      var cloudDocs = await listCloudDocs();
+      var cloudDocKeys = cloudDocs.filter(function(d){ return d.doc_key.indexOf("eventos_doc_") === 0 && d.doc_key.indexOf("__r2_test") === -1; });
+      console.log("[Sync] 로컬 IDB 키:" + localDocKeys.length + " | 클라우드 키:" + cloudDocKeys.length);
+
+      var uploaded = 0, downloaded = 0;
+
+      // ② 로컬 → 클라우드 (로컬이 더 크면 업로드)
+      for(var i = 0; i < localDocKeys.length; i++){
+        var key = localDocKeys[i];
         try {
           var data = await getData(db, key);
-          if(!data || typeof data !== "object" || !Object.keys(data).length){
-            console.log("[IDB→Cloud] 빈 데이터 스킵:", key);
-            continue;
-          }
+          if(!data || typeof data !== "object" || !Object.keys(data).length) continue;
           var localSize = JSON.stringify(data).length;
-          var cloudSize = await checkCloud(key);
-          console.log("[IDB→Cloud] " + key + " 로컬:" + localSize + " 클라우드:" + cloudSize);
-
+          var cloudDoc = cloudDocs.find(function(d){ return d.doc_key === key; });
+          var cloudSize = cloudDoc ? cloudDoc.size : 0;
           if(localSize > cloudSize){
-            var result = await uploadToCloud(key, data);
-            console.log("[IDB→Cloud] ✅ 업로드 완료:", key, "(" + localSize + " chars)", result);
+            await uploadToCloud(key, data);
+            console.log("[Sync] ⬆️ " + key + " 업로드 (" + localSize + " > " + cloudSize + ")");
             uploaded++;
-          } else {
-            console.log("[IDB→Cloud] 클라우드가 이미 최신:", key);
           }
-        } catch(err){
-          console.error("[IDB→Cloud] ❌ 실패:", key, err);
-        }
+        } catch(err){ console.error("[Sync] 업로드 실패:", key, err); }
       }
-      console.log("[IDB→Cloud] 완료! 업로드 " + uploaded + "/" + docKeys.length);
+
+      // ③ 클라우드 → 로컬 (클라우드에 있고 로컬에 없거나 더 크면 다운로드)
+      for(var j = 0; j < cloudDocKeys.length; j++){
+        var ck = cloudDocKeys[j];
+        var key = ck.doc_key;
+        try {
+          var localData = null;
+          try { localData = await getData(db, key); } catch{}
+          var localSize = (localData && typeof localData === "object" && Object.keys(localData).length) ? JSON.stringify(localData).length : 0;
+          var cloudSize = ck.size || 0;
+
+          if(cloudSize > localSize){
+            var cloudData = await loadFromCloud(key);
+            if(cloudData && typeof cloudData === "object" && Object.keys(cloudData).length){
+              await putData(db, key, cloudData);
+              try { localStorage.setItem(key, JSON.stringify(cloudData)); } catch{}
+              // window 캐시에도 저장 → DocEditor에서 즉시 사용 가능
+              window.__preloadedDocs = window.__preloadedDocs || {};
+              window.__preloadedDocs[key] = cloudData;
+              console.log("[Sync] ⬇️ " + key + " 다운로드 (" + cloudSize + " > " + localSize + ")");
+              downloaded++;
+            }
+          }
+        } catch(err){ console.error("[Sync] 다운로드 실패:", key, err); }
+      }
+
+      console.log("[Sync] ✅ 완료! 업로드:" + uploaded + " 다운로드:" + downloaded);
+      // 다운로드한 데이터를 window에 직접 캐시 (React DocEditor에서 즉시 참조 가능)
+      if(downloaded > 0){
+        window.__cloudSyncDownloaded = true;
+        window.__cloudSyncCount = downloaded;
+      }
     } catch(err){
-      console.log("[IDB→Cloud] IDB 열기 실패 (정상 - 첫 방문):", err);
+      console.log("[Sync] IDB 초기화:", err.message || err);
     }
   }
 
@@ -8820,10 +8864,19 @@ function DocEditorPanel({docType, project}) {
   };
 
   const [docData, setDocData] = React.useState(() => loadDocFromStorage());
-  // 로컬 스토리지 우선 로딩 (IDB → 클라우드 순)
+  // 로컬 스토리지 우선 로딩 (preloaded → IDB → 클라우드 순)
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
+      // ⓪ 독립 스크립트가 미리 다운로드한 데이터 확인 (window 캐시)
+      const preloaded = window.__preloadedDocs?.[storageKey];
+      if (preloaded && typeof preloaded === "object" && Object.keys(preloaded).length) {
+        console.log("[DocEditor] ✅ preloaded 데이터 사용:", storageKey, "(" + JSON.stringify(preloaded).length + " chars)");
+        if (!cancelled) setDocData(preloaded);
+        saveToIDB(storageKey, preloaded).catch(()=>{});
+        return;
+      }
+
       // ① IndexedDB에서 먼저 시도
       let localData = null;
       try {
@@ -8831,12 +8884,16 @@ function DocEditorPanel({docType, project}) {
         if (idbData && Object.keys(idbData).length) localData = idbData;
       } catch {}
 
-      // ② 클라우드에서 로드 시도 (R2)
+      // ② 클라우드에서 로드 시도 (R2) — 최대 2회 재시도
       let cloudData = null;
-      try {
-        cloudData = await CloudSync.loadDoc(storageKey);
-      } catch (err) {
-        console.warn("[DocEditor] 클라우드 로드 실패:", err);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          cloudData = await CloudSync.loadDoc(storageKey);
+          if (cloudData) break;
+        } catch (err) {
+          console.warn("[DocEditor] 클라우드 로드 시도 " + (attempt+1) + " 실패:", err);
+          if (attempt === 0) await new Promise(r => setTimeout(r, 1000));
+        }
       }
 
       if (cancelled) return;
