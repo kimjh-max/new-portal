@@ -8618,24 +8618,37 @@ function DocEditorPanel({docType, project}) {
   const storageKey = `eventos_doc_${docKey}`;
   const versionsKey = `eventos_docVersions_${docKey}`;
 
-  // ── localStorage에서 문서 데이터 로드 ──
+  // ── 문서 데이터 로드 (localStorage → IDB 순) ──
   const loadDocFromStorage = () => {
     try {
       const saved = localStorage.getItem(storageKey);
       if (saved) return JSON.parse(saved);
     } catch {}
-    // IndexedDB 폴백 로딩 (비동기)
-    loadFromIDB(storageKey).then(data => { if (data && Object.keys(data).length) setDocData(data); }).catch(() => {});
     return {};
   };
 
   const [docData, setDocData] = React.useState(() => loadDocFromStorage());
+  // IndexedDB에서 우선 로딩 (더 최신 데이터일 수 있음)
+  React.useEffect(() => {
+    loadFromIDB(storageKey).then(data => {
+      if (data && Object.keys(data).length) {
+        setDocData(prev => {
+          // IDB 데이터가 더 크면 (더 최신) IDB 사용
+          const prevSize = JSON.stringify(prev).length;
+          const idbSize = JSON.stringify(data).length;
+          if (idbSize >= prevSize) return data;
+          return prev;
+        });
+      }
+    }).catch(() => {});
+  }, [storageKey]);
+
   const [versions, setVersions] = React.useState(() => {
     try { const v = localStorage.getItem(versionsKey); return v ? JSON.parse(v) : []; } catch { return []; }
   });
-  // IndexedDB에서 버전 폴백 로딩
+  // IndexedDB에서 버전 로딩
   React.useEffect(() => {
-    if (versions.length === 0 && versionsKey) {
+    if (versionsKey) {
       loadFromIDB(versionsKey).then(data => {
         if (data && Array.isArray(data) && data.length > 0) {
           setVersions(data);
@@ -8672,29 +8685,23 @@ function DocEditorPanel({docType, project}) {
     try { const v = localStorage.getItem(versionsKey); setVersions(v ? JSON.parse(v) : []); } catch { setVersions([]); }
   }, [docKey]);
 
-  // ── Smart Save (localStorage + IndexedDB 이중 저장 + 검증) ──
+  // ── Smart Save (IndexedDB 기본 + localStorage 보조) ──
   const performSave = React.useCallback((data) => {
     const now = new Date();
     const ts = now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-    const json = JSON.stringify(data);
-    try {
-      localStorage.setItem(storageKey, json);
-      // ── 저장 검증 (read-back) ──
-      const readBack = localStorage.getItem(storageKey);
-      if (!readBack || readBack.length !== json.length) {
-        console.error("[DocEditor] ❌ 저장 검증 실패! 저장된 크기:", readBack?.length, "원본:", json.length);
-        toast("⚠️ 저장 검증 실패! 데이터가 정상 저장되지 않았습니다.", "error");
-        setSaveStatus("unsaved");
-        showStorageUpgradeAlert();
-        return;
-      }
+    // ① IndexedDB에 먼저 저장 (기본 저장소, 용량 제한 없음)
+    saveToIDB(storageKey, data).then(() => {
       setSaveStatus("saved"); setLastSavedAt(ts);
-      // IndexedDB에도 이중 저장 (안전망)
-      saveToIDB(storageKey, data).catch(()=>{});
+    }).catch(err => {
+      console.error("[DocEditor] IndexedDB 저장 실패:", err);
+      setSaveStatus("unsaved");
+    });
+    // ② localStorage에도 저장 시도 (보조, 실패해도 무시)
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(data));
     } catch(e) {
-      console.warn("[DocEditor] localStorage full, IndexedDB 폴백:", e);
-      saveToIDB(storageKey, data).then(()=>{ setSaveStatus("saved"); setLastSavedAt(ts); toast("용량 초과 → IndexedDB 저장","info"); })
-        .catch(err=>{ console.error("[DocEditor] IndexedDB 실패:", err); setSaveStatus("unsaved"); toast("⚠️ 저장 실패! 스토리지 용량이 부족합니다. 요금제를 업그레이드해주세요.","error"); showStorageUpgradeAlert(); });
+      // localStorage 용량 초과 → 조용히 무시 (IDB에 이미 저장됨)
+      console.log("[DocEditor] localStorage 보조 저장 스킵 (IDB에 저장 완료)");
     }
   }, [storageKey]);
 
@@ -8754,7 +8761,11 @@ function DocEditorPanel({docType, project}) {
 
   // 탭 닫기/새로고침 시 즉시 저장
   React.useEffect(() => {
-    const handler = () => { try { localStorage.setItem(storageKey, JSON.stringify(docDataLatestRef.current)); } catch(e) { console.warn("[DocEditor] beforeunload 저장 실패:", e); } };
+    const handler = () => {
+      const data = docDataLatestRef.current;
+      saveToIDB(storageKey, data).catch(()=>{});
+      try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
+    };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [storageKey]);
@@ -8784,21 +8795,12 @@ function DocEditorPanel({docType, project}) {
     const newVersion = { id: Date.now(), name: displayName, timestamp: ts, data: JSON.parse(JSON.stringify(docData)) };
     const updated = [newVersion, ...versions].slice(0, 30); // 최대 30개 버전
     setVersions(updated);
-    try {
-      localStorage.setItem(versionsKey, JSON.stringify(updated));
-      // IndexedDB에도 이중 저장 (안전망)
-      saveToIDB(versionsKey, updated).catch(()=>{});
-    } catch(e) {
-      console.warn("[DocEditor] 버전 localStorage 저장 실패, IndexedDB 폴백:", e);
-      saveToIDB(versionsKey, updated).then(()=>{
-        toast(`"${displayName}" 버전 저장 완료 (IndexedDB)`, "success");
-      }).catch(err=>{
-        console.error("[DocEditor] 버전 IndexedDB 저장 실패:", err);
-        toast("⚠️ 버전 저장 실패! 스토리지 용량이 부족합니다. 요금제를 업그레이드해주세요.", "error");
-        showStorageUpgradeAlert();
-      });
-      return;
-    }
+    // IndexedDB에 먼저 저장 (기본)
+    saveToIDB(versionsKey, updated).catch(err => {
+      console.error("[DocEditor] 버전 IDB 저장 실패:", err);
+    });
+    // localStorage에도 시도 (보조, 실패해도 OK)
+    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch {}
     toast(`"${displayName}" 버전 저장 완료`, "success");
     // ── 로컬 파일 자동 백업 다운로드 ──
     try {
