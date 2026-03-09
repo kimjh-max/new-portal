@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260309v11";
+  var CODE_VER = "20260309v12";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -838,10 +838,12 @@ const CloudDataStore = {
     this.startAutoRetry();
   },
 
-  // ── 시스템 데이터 저장 (클라우드 우선) ──
+  // ── 시스템 데이터 저장 (클라우드 우선, 장애 시 큐잉) ──
   async writeAppData(payload) {
-    if (!this._isOnline || !CLOUD_CONFIG.ENABLED) {
+    if (!this._isOnline || !CLOUD_CONFIG.ENABLED || CloudHealthMonitor.isDown()) {
       this._enqueue({ type: "appData", payload, queuedAt: new Date().toISOString() });
+      // 로컬 캐시에도 즉시 반영 (장애 모드에서 작업 유지)
+      try { for (const [k,v] of Object.entries(payload)) localStorage.setItem("eventos_" + k, JSON.stringify(v)); } catch {}
       return { success: false, queued: true };
     }
     try {
@@ -855,9 +857,9 @@ const CloudDataStore = {
     }
   },
 
-  // ── 프로젝트 벌크 저장 (클라우드 우선) ──
+  // ── 프로젝트 벌크 저장 (클라우드 우선, 장애 시 큐잉) ──
   async writeProjectsBulk(projects) {
-    if (!this._isOnline || !CLOUD_CONFIG.ENABLED) {
+    if (!this._isOnline || !CLOUD_CONFIG.ENABLED || CloudHealthMonitor.isDown()) {
       this._enqueue({ type: "projectsBulk", projects, queuedAt: new Date().toISOString() });
       return { success: false, queued: true };
     }
@@ -878,7 +880,7 @@ const CloudDataStore = {
 
   // ── 프로젝트 개별 저장 ──
   async writeProject(project) {
-    if (!this._isOnline || !CLOUD_CONFIG.ENABLED) {
+    if (!this._isOnline || !CLOUD_CONFIG.ENABLED || CloudHealthMonitor.isDown()) {
       this._enqueue({ type: "project", project, queuedAt: new Date().toISOString() });
       return { success: false, queued: true };
     }
@@ -997,6 +999,98 @@ const CloudDataStore = {
         this.flushQueue();
       }
     }, 30000);
+  },
+};
+
+/* ── CloudHealthMonitor: 클라우드 상태 모니터링 (D1+R2 헬스체크) ────────────── */
+const CloudHealthMonitor = {
+  _status: "unknown", // "healthy" | "degraded" | "down" | "unknown"
+  _checks: { d1: false, r2: false },
+  _lastCheck: null,
+  _listeners: new Set(),
+  _timer: null,
+  _consecutiveFailures: 0,
+
+  // 헬스체크 실행
+  async check() {
+    if (!CLOUD_CONFIG.ENABLED) { this._status = "unknown"; return; }
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(`${CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "")}/api/health`, { signal: controller.signal });
+      clearTimeout(timeout);
+      const data = await res.json();
+      this._checks = data.checks || { d1: false, r2: false };
+      this._status = data.success ? "healthy" : "degraded";
+      this._lastCheck = new Date().toISOString();
+      this._consecutiveFailures = 0;
+      console.log("[HealthMonitor] ✅", this._status, this._checks);
+    } catch (err) {
+      this._consecutiveFailures++;
+      this._status = this._consecutiveFailures >= 2 ? "down" : "degraded";
+      this._checks = { d1: false, r2: false };
+      this._lastCheck = new Date().toISOString();
+      console.error("[HealthMonitor] ❌ 클라우드 연결 실패 (" + this._consecutiveFailures + "회 연속):", err.message);
+    }
+    this._notify();
+  },
+
+  // 5분마다 자동 체크 시작
+  startMonitoring() {
+    if (this._timer) return;
+    this.check(); // 즉시 1회
+    this._timer = setInterval(() => this.check(), 5 * 60 * 1000);
+  },
+
+  stopMonitoring() {
+    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+  },
+
+  // 상태 구독
+  subscribe(fn) { this._listeners.add(fn); return () => this._listeners.delete(fn); },
+  _notify() { this._listeners.forEach(fn => { try { fn(this.getState()); } catch {} }); },
+  getState() {
+    return { status: this._status, checks: { ...this._checks }, lastCheck: this._lastCheck, consecutiveFailures: this._consecutiveFailures };
+  },
+
+  isHealthy() { return this._status === "healthy"; },
+  isDown() { return this._status === "down"; },
+};
+
+/* ── LocalSnapshotManager: 클라우드 저장 성공 시 로컬 스냅샷 자동 보관 ────── */
+const LocalSnapshotManager = {
+  IDB_KEY: "eventos_local_snapshots",
+  MAX_SNAPSHOTS: 5,
+
+  // 스냅샷 저장 (클라우드 성공 후 호출)
+  async save(data) {
+    try {
+      const snapshots = await this.list() || [];
+      snapshots.unshift({
+        data,
+        savedAt: new Date().toISOString(),
+        projectCount: (data.projects || []).length,
+        userCount: (data.users || []).length,
+      });
+      if (snapshots.length > this.MAX_SNAPSHOTS) snapshots.length = this.MAX_SNAPSHOTS;
+      await saveToIDB(this.IDB_KEY, snapshots);
+    } catch (e) {
+      console.error("[LocalSnapshot] 저장 실패:", e.message);
+    }
+  },
+
+  // 스냅샷 목록
+  async list() {
+    try {
+      return await loadFromIDB(this.IDB_KEY) || [];
+    } catch { return []; }
+  },
+
+  // 특정 스냅샷 복원 (인덱스 기반)
+  async restore(index) {
+    const snapshots = await this.list();
+    if (!snapshots[index]) return null;
+    return snapshots[index].data;
   },
 };
 
@@ -5413,7 +5507,7 @@ function showStorageUpgradeAlert() {
 /* ══ 컴포넌트 ════════════════════════════════════════════════════════════════ */
 
 // ─ Topbar ─
-function Topbar({page, setPage, user, onLogout, onExport, onImport}) {
+function Topbar({page, setPage, user, onLogout, onExport, onImport, onShowBackupPanel}) {
   const importRef = useRef(null);
   const pages = [
     {id:"dashboard",label:"대시보드"},
@@ -5465,6 +5559,13 @@ function Topbar({page, setPage, user, onLogout, onExport, onImport}) {
               cursor:"pointer",transition:"all .15s",whiteSpace:"nowrap",
             }}>📥 복원</button>
           </>
+        )}
+        {onShowBackupPanel && (
+          <button onClick={onShowBackupPanel} title="백업 복원 센터" style={{
+            background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.2)",
+            color:"#fbbf24",borderRadius:7,padding:"4px 10px",fontSize:11,fontWeight:600,
+            cursor:"pointer",transition:"all .15s",whiteSpace:"nowrap",
+          }}>🛡️ 백업센터</button>
         )}
         <div style={{width:8,height:8,borderRadius:"50%",background:"#10b981",boxShadow:"0 0 6px #10b981"}}/>
         <span className="user-name">{user?.name} {user?.role}</span>
@@ -12472,6 +12573,155 @@ function PurchasePanel({purchases, setPurchases, projects, users, currentUser}) 
   );
 }
 
+// ── 백업 복원 패널: 클라우드 백업 + 로컬 스냅샷 모두 표시 ──
+function BackupRestorePanel({ onClose, onRestore }) {
+  const [cloudBackups, setCloudBackups] = useState([]);
+  const [localSnapshots, setLocalSnapshots] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [restoring, setRestoring] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      // 클라우드 백업 목록
+      try {
+        const backups = await CloudSync.listBackups();
+        setCloudBackups(backups || []);
+      } catch { setCloudBackups([]); }
+      // 로컬 스냅샷 목록
+      try {
+        const snaps = await LocalSnapshotManager.list();
+        setLocalSnapshots(snaps || []);
+      } catch { setLocalSnapshots([]); }
+      setLoading(false);
+    })();
+  }, []);
+
+  const restoreFromCloud = async (id) => {
+    if (!window.confirm("이 백업으로 현재 데이터를 교체합니다. 계속하시겠습니까?")) return;
+    setRestoring(true);
+    try {
+      const data = await CloudSync.restoreBackup(id);
+      if (data) onRestore(data);
+      else toast("❌ 백업 데이터를 불러올 수 없습니다", "error");
+    } catch { toast("❌ 복원 실패", "error"); }
+    setRestoring(false);
+  };
+
+  const restoreFromLocal = async (index) => {
+    if (!window.confirm("이 로컬 스냅샷으로 현재 데이터를 교체합니다. 계속하시겠습니까?")) return;
+    setRestoring(true);
+    try {
+      const data = await LocalSnapshotManager.restore(index);
+      if (data) onRestore(data);
+      else toast("❌ 스냅샷 데이터를 불러올 수 없습니다", "error");
+    } catch { toast("❌ 복원 실패", "error"); }
+    setRestoring(false);
+  };
+
+  const triggerDailyBackup = async () => {
+    toast("☁️ 일일 백업 생성 중...", "success");
+    try {
+      const res = await fetch(`${CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "")}/api/backup/daily`, { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        toast(`✅ 일일 백업 완료 (프로젝트 ${data.projectCount}개, 문서 ${data.docCount}개)`, "success");
+        const backups = await CloudSync.listBackups();
+        setCloudBackups(backups || []);
+      } else { toast("❌ 백업 실패: " + (data.error || ""), "error"); }
+    } catch (e) { toast("❌ 백업 실패: " + e.message, "error"); }
+  };
+
+  const fmt = (iso) => {
+    if (!iso) return "—";
+    try { return new Date(iso).toLocaleString("ko-KR", { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" }); }
+    catch { return iso; }
+  };
+
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:20000,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center"}}
+      onClick={(e)=>{if(e.target===e.currentTarget)onClose();}}>
+      <div style={{background:"var(--surface,#1a1a2e)",borderRadius:16,border:"1px solid var(--border,#2a2a4a)",
+        width:"90%",maxWidth:600,maxHeight:"80vh",overflow:"auto",padding:24,boxShadow:"0 20px 60px rgba(0,0,0,.5)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+          <h3 style={{color:"var(--txt,#e2e8f0)",fontSize:18,fontWeight:800,margin:0}}>🛡️ 백업 복원 센터</h3>
+          <button onClick={onClose} style={{background:"transparent",border:"none",color:"var(--txt3)",fontSize:20,cursor:"pointer"}}>✕</button>
+        </div>
+
+        {loading ? (
+          <div style={{textAlign:"center",padding:40,color:"var(--txt3)"}}>불러오는 중...</div>
+        ) : (
+          <>
+            {/* 즉시 백업 버튼 */}
+            <div style={{marginBottom:20,display:"flex",gap:8}}>
+              <button onClick={triggerDailyBackup} style={{background:"rgba(99,102,241,.15)",border:"1px solid rgba(99,102,241,.3)",
+                color:"#a5b4fc",borderRadius:8,padding:"8px 16px",fontSize:12,fontWeight:600,cursor:"pointer",flex:1}}>
+                ☁️ 지금 클라우드 백업 생성
+              </button>
+            </div>
+
+            {/* 클라우드 백업 */}
+            <div style={{marginBottom:20}}>
+              <div style={{color:"var(--txt2)",fontSize:13,fontWeight:700,marginBottom:8}}>☁️ 클라우드 백업 ({cloudBackups.length}개)</div>
+              {cloudBackups.length === 0 ? (
+                <div style={{color:"var(--txt4)",fontSize:12,padding:12}}>클라우드 백업이 없습니다</div>
+              ) : (
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {cloudBackups.slice(0, 10).map((b, i) => (
+                    <div key={b.id || i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                      background:"rgba(255,255,255,.03)",border:"1px solid var(--border)",borderRadius:8,padding:"8px 12px"}}>
+                      <div>
+                        <span style={{color:"var(--txt2)",fontSize:12}}>{fmt(b.created_at)}</span>
+                        <span style={{color:"var(--txt4)",fontSize:11,marginLeft:8}}>
+                          {b.backup_type === "daily" ? "📅 일일" : b.backup_type === "auto" ? "🔄 자동" : "📦 수동"}
+                          {b.project_count ? ` · ${b.project_count}개 프로젝트` : ""}
+                        </span>
+                      </div>
+                      <button onClick={()=>restoreFromCloud(b.id)} disabled={restoring}
+                        style={{background:"rgba(16,185,129,.15)",border:"1px solid rgba(16,185,129,.3)",color:"#34d399",
+                          borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:600,cursor:"pointer",opacity:restoring?.5:1}}>
+                        {restoring ? "..." : "복원"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 로컬 스냅샷 */}
+            <div>
+              <div style={{color:"var(--txt2)",fontSize:13,fontWeight:700,marginBottom:8}}>💾 로컬 스냅샷 ({localSnapshots.length}개)</div>
+              <div style={{color:"var(--txt4)",fontSize:11,marginBottom:8}}>클라우드 로드 성공 시 자동 보관 (최근 5개). 클라우드 장애 시 이 스냅샷에서 복원 가능.</div>
+              {localSnapshots.length === 0 ? (
+                <div style={{color:"var(--txt4)",fontSize:12,padding:12}}>로컬 스냅샷이 없습니다</div>
+              ) : (
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {localSnapshots.map((s, i) => (
+                    <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                      background:"rgba(255,255,255,.03)",border:"1px solid var(--border)",borderRadius:8,padding:"8px 12px"}}>
+                      <div>
+                        <span style={{color:"var(--txt2)",fontSize:12}}>{fmt(s.savedAt)}</span>
+                        <span style={{color:"var(--txt4)",fontSize:11,marginLeft:8}}>
+                          {s.projectCount || 0}개 프로젝트 · {s.userCount || 0}명 사용자
+                        </span>
+                      </div>
+                      <button onClick={()=>restoreFromLocal(i)} disabled={restoring}
+                        style={{background:"rgba(245,158,11,.15)",border:"1px solid rgba(245,158,11,.3)",color:"#f59e0b",
+                          borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:600,cursor:"pointer",opacity:restoring?.5:1}}>
+                        {restoring ? "..." : "복원"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   // ── 클라우드-퍼스트 상태 (로컬 캐시로 빠른 초기 렌더, 클라우드 = source of truth) ──
   const [users, setUsers, usersCloud] = useCloudState("users", INIT_USERS);
@@ -12505,6 +12755,28 @@ function App() {
   const [loadingMsg, setLoadingMsg] = useState("클라우드에서 데이터를 불러오는 중...");
   // driveLoaded 호환용 (기존 코드에서 참조하는 곳이 있을 수 있음)
   const driveLoaded = appReady;
+
+  // ── 클라우드 헬스 모니터링 상태 ──
+  const [cloudHealth, setCloudHealth] = useState({ status: "unknown", checks: {}, lastCheck: null, consecutiveFailures: 0 });
+  const [showBackupPanel, setShowBackupPanel] = useState(false);
+  const [degradedMode, setDegradedMode] = useState(false); // 클라우드 장애 시 로컬 모드
+
+  // 헬스 모니터링 시작
+  useEffect(() => {
+    CloudHealthMonitor.startMonitoring();
+    const unsub = CloudHealthMonitor.subscribe((state) => {
+      setCloudHealth(state);
+      if (state.status === "down" && !degradedMode) {
+        setDegradedMode(true);
+        toast("🔴 클라우드 연결 실패! 로컬 모드로 전환됩니다. 작업은 계속 가능하며, 복구 시 자동 동기화됩니다.", "error");
+      } else if (state.status === "healthy" && degradedMode) {
+        setDegradedMode(false);
+        toast("🟢 클라우드 연결 복구! 미저장 데이터를 동기화 중...", "success");
+        CloudDataStore.flushQueue();
+      }
+    });
+    return () => { unsub(); CloudHealthMonitor.stopMonitoring(); };
+  }, [degradedMode]);
 
   // ── 클라우드 동기화: 프로젝트 변경 시 벌크 저장 (CloudDataStore 사용) ──
   const projectsRef = useRef(null);
@@ -12578,6 +12850,11 @@ function App() {
           if (cloud.purchases) purchasesCloud.setFromCloud(cloud.purchases);
           const source = CLOUD_CONFIG.ENABLED ? "Cloudflare D1" : "Google Drive";
           toast(`☁️ ${source}에서 데이터를 불러왔습니다.`, "success");
+          // 클라우드 로드 성공 → 로컬 스냅샷 자동 보관 (장애 대비)
+          LocalSnapshotManager.save({
+            users: cloud.users, projects: cloud.projects, priceList: cloud.priceList,
+            expenses: cloud.expenses, laborCosts: cloud.laborCosts, purchases: cloud.purchases,
+          }).then(() => console.log("[App] 📸 로컬 스냅샷 저장 완료")).catch(() => {});
         } else {
           console.warn("[App] 클라우드 로드 실패 → 로컬 캐시 사용");
           toast("⚠️ 클라우드 연결 실패 — 로컬 캐시 사용 중", "warn");
@@ -12996,10 +13273,56 @@ function App() {
 
   return (
     <>
+      {/* ── 클라우드 장애 경고 배너 ── */}
+      {cloudHealth.status === "down" && (
+        <div style={{position:"fixed",top:0,left:0,right:0,zIndex:10000,background:"linear-gradient(90deg,#dc2626,#b91c1c)",
+          color:"#fff",padding:"10px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",
+          fontSize:13,fontWeight:600,boxShadow:"0 2px 8px rgba(220,38,38,.4)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:18}}>🔴</span>
+            <span>클라우드 서버 연결 실패 — 로컬 모드로 작업 중 (자동 복구 대기)</span>
+            <span style={{fontSize:11,opacity:.8,marginLeft:8}}>
+              {cloudHealth.lastCheck ? `마지막 확인: ${new Date(cloudHealth.lastCheck).toLocaleTimeString("ko-KR")}` : ""}
+              {cloudHealth.consecutiveFailures > 0 ? ` · ${cloudHealth.consecutiveFailures}회 연속 실패` : ""}
+            </span>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={()=>CloudHealthMonitor.check()} style={{background:"rgba(255,255,255,.2)",border:"1px solid rgba(255,255,255,.3)",
+              color:"#fff",borderRadius:6,padding:"4px 12px",fontSize:11,cursor:"pointer"}}>🔄 재확인</button>
+            <button onClick={()=>setShowBackupPanel(true)} style={{background:"rgba(255,255,255,.2)",border:"1px solid rgba(255,255,255,.3)",
+              color:"#fff",borderRadius:6,padding:"4px 12px",fontSize:11,cursor:"pointer"}}>🛡️ 백업 복원</button>
+          </div>
+        </div>
+      )}
+      {cloudHealth.status === "degraded" && (
+        <div style={{position:"fixed",top:0,left:0,right:0,zIndex:10000,background:"linear-gradient(90deg,#f59e0b,#d97706)",
+          color:"#fff",padding:"8px 20px",display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:600}}>
+          <span>🟡</span>
+          <span>클라우드 일부 기능 제한 중 — 연결 복구 시도 중...</span>
+          <button onClick={()=>CloudHealthMonitor.check()} style={{background:"rgba(255,255,255,.2)",border:"1px solid rgba(255,255,255,.3)",
+            color:"#fff",borderRadius:6,padding:"3px 10px",fontSize:11,cursor:"pointer",marginLeft:"auto"}}>🔄 재확인</button>
+        </div>
+      )}
+
+      {/* ── 백업 복원 패널 (모달) ── */}
+      {showBackupPanel && <BackupRestorePanel
+        onClose={()=>setShowBackupPanel(false)}
+        onRestore={(data)=>{
+          if(data.projects) setProjects(data.projects);
+          if(data.users) setUsers(data.users);
+          if(data.priceList) setPriceList(data.priceList);
+          if(data.expenses) setExpenses(data.expenses);
+          if(data.laborCosts) setLaborCosts(data.laborCosts);
+          if(data.purchases) setPurchases(data.purchases);
+          toast("✅ 백업에서 데이터를 복원했습니다!", "success");
+          setShowBackupPanel(false);
+        }}
+      />}
+
       <Topbar page={page} setPage={setPage} user={authedUser} onLogout={handleLogout}
-        onExport={exportData} onImport={importData}/>
+        onExport={exportData} onImport={importData} onShowBackupPanel={()=>setShowBackupPanel(true)}/>
       <BottomNav page={page} setPage={setPage} user={authedUser}/>
-      <div id="main">
+      <div id="main" style={{marginTop: cloudHealth.status === "down" ? 44 : cloudHealth.status === "degraded" ? 36 : 0}}>
         {renderPage()}
         {/* ProjectDetail: 업로드 중 페이지 이동해도 끊기지 않도록 display:none으로 유지 */}
         {liveDetail && (
