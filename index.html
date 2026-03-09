@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260309v13";
+  var CODE_VER = "20260309v14";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -9282,7 +9282,7 @@ function SectionImages({sectionId, images, onUpdate, layoutMode, onLayoutChange}
               </div>
               <div style={{display:"grid",gridTemplateColumns:`repeat(${layoutMode||Math.min((images||[]).length,3)},1fr)`,gap:8,background:"#fff",borderRadius:6,padding:12,minHeight:80}}>
                 {(images||[]).map((img,i)=>(
-                  <div key={i} style={{aspectRatio:"16/10",background:"#f1f5f9",borderRadius:4,overflow:"hidden",border:"1px solid #e2e8f0",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                  <div key={i} style={{aspectRatio:"16/10",background:"transparent",borderRadius:4,overflow:"hidden",border:"none",display:"flex",alignItems:"center",justifyContent:"center"}}>
                     <img src={img.data} style={{width:"100%",height:"100%",objectFit:"contain"}} alt=""/>
                   </div>
                 ))}
@@ -9295,7 +9295,7 @@ function SectionImages({sectionId, images, onUpdate, layoutMode, onLayoutChange}
 
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10,marginTop:8}}>
         {(images||[]).map((img,idx)=>(
-          <div key={img.id||idx} style={{position:"relative",borderRadius:8,overflow:"hidden",border:"1px solid var(--border)",background:"var(--surface)"}}>
+          <div key={img.id||idx} style={{position:"relative",borderRadius:8,overflow:"hidden",border:"none",background:"transparent"}}>
             <img src={img.data} alt={img.name} style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",display:"block"}}/>
             {(img.annotations||[]).length>0 && (
               <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,.7)",padding:"4px 6px"}}>
@@ -9954,12 +9954,12 @@ tr:nth-child(even) td{background:#f8fafc}
 .box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:12px}
 .box-title{font-size:11px;font-weight:800;color:#475569;margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
 .box-val{font-size:13px;color:#1e293b;white-space:pre-wrap;line-height:1.6}
-/* Footer 제거됨 */
-.footer{display:none}
+/* Footer — 페이지 하단 고정 */
+.footer{position:absolute;bottom:8px;left:40px;right:40px;font-size:9px;color:#94a3b8;text-align:right;letter-spacing:.5px}
 .pill{display:inline-block}
 /* Photo placeholder */
 .photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
-.photo-box{background:#f1f5f9;border:2px dashed #cbd5e1;border-radius:8px;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:11px}
+.photo-box{background:transparent;border:none;border-radius:8px;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:11px}
 /* 인라인 이미지 (텍스트와 같은 페이지) */
 .inline-imgs{margin-top:16px}
 .inline-imgs .img-grid{display:grid;gap:12px;align-items:center}
@@ -9969,8 +9969,9 @@ tr:nth-child(even) td{background:#f8fafc}
 .img-page .img-grid{display:grid;gap:12px;align-items:center;align-content:center}
 .img-page img{width:100%;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block}
 @media print{
+  @page{margin:0;size:297mm 210mm landscape}
   .page{width:297mm;height:210mm;margin:0;page-break-after:always;overflow:hidden;box-sizing:border-box}
-  .page:last-child{page-break-after:auto}
+  .page:last-child{page-break-after:avoid}
   .page.sec-page{display:grid;grid-template-rows:auto 1fr;height:210mm}
   .page.cover{height:210mm;display:flex;flex-direction:column}
   .sec-body{overflow:hidden;min-height:0}
@@ -11769,6 +11770,8 @@ function ExpensePanel({expenses, setExpenses, projects, users, currentUser}) {
 
   const deleteItem = (id) => setExpenses(prev=>prev.filter(e=>e.id!==id));
   const filtered = filter==="전체" ? expenses : expenses.filter(e=>e.payStatus===filter);
+  // 연번 매핑: 전체 expenses 배열 기준 순번 (삭제/필터링과 무관하게 일관된 번호)
+  const seqMap = new Map(); expenses.forEach((e,i)=>seqMap.set(e.id, i+1));
 
   // 합계
   const totalAmt = filtered.reduce((s,e)=>s+(parseInt(e.amount)||0),0);
@@ -11964,7 +11967,7 @@ function ExpensePanel({expenses, setExpenses, projects, users, currentUser}) {
               const rowBg = i%2===0?"transparent":"rgba(255,255,255,.015)";
               return (
                 <tr key={e.id} style={{background:rowBg}}>
-                  <TD align="center" color="#6366f1" bold>{e.seq||i+1}</TD>
+                  <TD align="center" color="#6366f1" bold>{seqMap.get(e.id)||i+1}</TD>
                   <TD><span style={{color:"#a5b4fc",fontSize:11}}>{e.projectName||"-"}</span></TD>
                   <TD>{e.description}</TD>
                   <TD align="right" bold>{(e.amount||0).toLocaleString()}</TD>
@@ -12079,6 +12082,8 @@ function LaborPanel({laborCosts, setLaborCosts, projects, users, currentUser}) {
   const filtered = filter==="전체" ? laborCosts : filter==="사업소득"||filter==="기타소득"
     ? laborCosts.filter(e=>e.taxType===filter)
     : laborCosts.filter(e=>e.payStatus===filter);
+  // 연번 매핑: 전체 laborCosts 배열 기준 순번
+  const laborSeqMap = new Map(); laborCosts.forEach((e,i)=>laborSeqMap.set(e.id, i+1));
 
   const totalAmt = filtered.reduce((s,e)=>s+(parseInt(e.amount)||0),0);
   const totalTax = filtered.reduce((s,e)=>s+calcTax(e.amount,e.taxType).total,0);
@@ -12281,7 +12286,7 @@ function LaborPanel({laborCosts, setLaborCosts, projects, users, currentUser}) {
               const isSaup = e.taxType==="사업소득";
               return (
                 <tr key={e.id} style={{background:rowBg}}>
-                  <TD align="center" color="#6366f1" bold>{e.seq||i+1}</TD>
+                  <TD align="center" color="#6366f1" bold>{laborSeqMap.get(e.id)||i+1}</TD>
                   <TD><span style={{color:"#a5b4fc",fontSize:11}}>{e.projectName||"-"}</span></TD>
                   <TD>{e.description}</TD>
                   <TD align="right" bold>{(e.amount||0).toLocaleString()}</TD>
