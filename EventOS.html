@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260310v16";
+  var CODE_VER = "20260310v17";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -735,6 +735,27 @@ const CloudSync = {
     } catch (err) {
       console.error("[CloudSync] listFiles:", err);
       return [];
+    }
+  },
+
+  // ── AI 타임라인 생성 ──
+  async generateTimeline(mode, options = {}) {
+    if (!CLOUD_CONFIG.ENABLED) return { success: false, error: "클라우드 미연결" };
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/ai/generate-timeline`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode,
+          fileKey: options.fileKey || undefined,
+          message: options.message || undefined,
+          context: options.context || undefined,
+        }),
+      });
+      return await res.json();
+    } catch (err) {
+      console.error("[CloudSync] generateTimeline:", err);
+      return { success: false, error: err.message || "네트워크 오류" };
     }
   },
 
@@ -9401,6 +9422,201 @@ function StorageIndicator() {
   );
 }
 
+// ── AI 타임테이블 생성 패널 ──
+function AITimelinePanel({ project, onApplyTimeline, onApplyCueSheet }) {
+  const [mode, setMode] = React.useState("chat");
+  const [loading, setLoading] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+  const [selectedFileKey, setSelectedFileKey] = React.useState("");
+  const [result, setResult] = React.useState(null);
+  const [error, setError] = React.useState("");
+  const [collapsed, setCollapsed] = React.useState(true);
+  const fileInputRef = React.useRef(null);
+
+  const projectFiles = React.useMemo(() => {
+    return (project?.files || [])
+      .filter(f => typeof f === "object")
+      .filter(f => {
+        const mime = (f.mimeType || "").toLowerCase();
+        const name = (f.name || "").toLowerCase();
+        return mime.includes("pdf") || mime.startsWith("image/")
+          || name.endsWith(".pdf") || name.endsWith(".png")
+          || name.endsWith(".jpg") || name.endsWith(".jpeg");
+      });
+  }, [project?.files]);
+
+  const buildContext = () => ({
+    projectName: project?.name || "",
+    venue: project?.taskOrder?.venue || "",
+    attendance: project?.taskOrder?.attendance || "",
+  });
+
+  const handleGenerate = async () => {
+    setLoading(true);
+    setError("");
+    setResult(null);
+    try {
+      let res;
+      if (mode === "file") {
+        if (!selectedFileKey) { setError("파일을 선택해주세요"); setLoading(false); return; }
+        res = await CloudSync.generateTimeline("file", { fileKey: selectedFileKey, context: buildContext() });
+      } else {
+        if (!message.trim()) { setError("일정 설명을 입력해주세요"); setLoading(false); return; }
+        res = await CloudSync.generateTimeline("chat", { message: message.trim(), context: buildContext() });
+      }
+      if (!res) { setError("서버 연결 실패. 클라우드 연결 상태를 확인해주세요."); }
+      else if (!res.success) { setError(res.error || "AI 생성 실패"); }
+      else { setResult(res); }
+    } catch (e) { setError("오류 발생: " + e.message); }
+    setLoading(false);
+  };
+
+  const handleNewFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const mime = file.type.toLowerCase();
+    if (!mime.includes("pdf") && !mime.startsWith("image/")) {
+      toast("PDF 또는 이미지 파일만 업로드 가능합니다", "warn"); return;
+    }
+    toast(`"${file.name}" 업로드 중...`, "default");
+    try {
+      const uploadResult = await CloudSync.uploadFileBinary(project?.id, file, null, null);
+      if (uploadResult?.success) {
+        const key = uploadResult.r2Key || uploadResult.key || uploadResult.fileKey || "";
+        setSelectedFileKey(key);
+        toast(`"${file.name}" 업로드 완료`, "success");
+      } else { toast("파일 업로드 실패", "error"); }
+    } catch (err) { toast("업로드 오류: " + err.message, "error"); }
+  };
+
+  const applyTimeline = () => {
+    if (!result?.timeline?.length) return;
+    onApplyTimeline(result.timeline);
+    toast("타임테이블 " + result.timeline.length + "개 항목 적용 완료", "success");
+  };
+
+  const applyCueSheet = () => {
+    if (!result?.cueSheet?.length) return;
+    onApplyCueSheet(result.cueSheet);
+    toast("큐시트 " + result.cueSheet.length + "개 항목 적용 완료", "success");
+  };
+
+  if (!CLOUD_CONFIG.ENABLED) return null;
+
+  return (
+    <div style={{marginBottom:16,background:"rgba(99,102,241,.04)",border:"1px solid rgba(99,102,241,.15)",borderRadius:12,overflow:"hidden"}}>
+      {/* 헤더 (토글) */}
+      <div onClick={()=>setCollapsed(!collapsed)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",cursor:"pointer",userSelect:"none"}}>
+        <div style={{color:"#a5b4fc",fontWeight:700,fontSize:13}}>🤖 AI 타임테이블 생성</div>
+        <span style={{color:"var(--txt4)",fontSize:11}}>{collapsed?"▶ 펼치기":"▼ 접기"}</span>
+      </div>
+
+      {!collapsed && (
+        <div style={{padding:"0 14px 14px"}}>
+          {/* 모드 탭 */}
+          <div style={{display:"flex",gap:4,marginBottom:10}}>
+            <button onClick={()=>setMode("chat")} style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:mode==="chat"?700:500,background:mode==="chat"?"rgba(99,102,241,.2)":"transparent",color:mode==="chat"?"#a5b4fc":"var(--txt3)"}}>
+              💬 대화 입력
+            </button>
+            <button onClick={()=>setMode("file")} style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:mode==="file"?700:500,background:mode==="file"?"rgba(99,102,241,.2)":"transparent",color:mode==="file"?"#a5b4fc":"var(--txt3)"}}>
+              📄 파일 분석
+            </button>
+          </div>
+
+          {/* 대화 모드 */}
+          {mode === "chat" && (
+            <textarea className="form-input" rows={3} value={message}
+              onChange={e=>setMessage(e.target.value)}
+              placeholder={"행사 일정을 자유롭게 설명하세요.\n예: 오전 9시에 세팅 시작, 10시에 리허설, 11시 오프닝, 11시 10분 환영사, 11시 30분 축사..."}
+              style={{resize:"vertical",marginBottom:8,fontSize:12}}/>
+          )}
+
+          {/* 파일 모드 */}
+          {mode === "file" && (
+            <div style={{marginBottom:8}}>
+              {projectFiles.length > 0 && (
+                <div style={{marginBottom:8}}>
+                  <label style={{fontSize:11,color:"var(--txt3)",marginBottom:4,display:"block"}}>업로드된 파일 선택</label>
+                  <select className="form-input" value={selectedFileKey} onChange={e=>setSelectedFileKey(e.target.value)} style={{fontSize:12}}>
+                    <option value="">-- 파일 선택 --</option>
+                    {projectFiles.map((f,i) => (
+                      <option key={i} value={f.r2Key || f.name}>{f.name} ({(f.size/1024).toFixed(0)}KB)</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <button className="btn btn-ghost" style={{fontSize:11,padding:"5px 12px"}} onClick={()=>fileInputRef.current?.click()}>
+                  📎 새 파일 업로드
+                </button>
+                <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" onChange={handleNewFileUpload} style={{display:"none"}}/>
+                <span style={{color:"var(--txt4)",fontSize:10}}>PDF, PNG, JPG 지원</span>
+              </div>
+            </div>
+          )}
+
+          {/* 생성 버튼 */}
+          <button onClick={handleGenerate} disabled={loading} style={{width:"100%",padding:"10px",borderRadius:8,border:"none",cursor:loading?"not-allowed":"pointer",fontSize:12,fontWeight:700,background:loading?"rgba(99,102,241,.1)":"rgba(99,102,241,.15)",color:loading?"var(--txt4)":"#a5b4fc",marginBottom:8,transition:"all .2s"}}>
+            {loading ? "🔄 AI 분석 중... (10~30초 소요)" : "🤖 타임테이블 생성"}
+          </button>
+
+          {/* 에러 */}
+          {error && (
+            <div style={{background:"rgba(239,68,68,.08)",border:"1px solid rgba(239,68,68,.2)",borderRadius:8,padding:"8px 12px",color:"#fca5a5",fontSize:11,marginBottom:8}}>
+              ⚠️ {error}
+            </div>
+          )}
+
+          {/* 결과 미리보기 */}
+          {result && (
+            <div style={{background:"rgba(16,185,129,.05)",border:"1px solid rgba(16,185,129,.2)",borderRadius:8,padding:12}}>
+              <div style={{color:"#34d399",fontWeight:700,fontSize:12,marginBottom:8}}>✅ AI 생성 결과</div>
+
+              {result.timeline?.length > 0 && (
+                <div style={{marginBottom:10}}>
+                  <div style={{color:"var(--txt2)",fontSize:11,fontWeight:600,marginBottom:4}}>
+                    📋 타임테이블: {result.timeline.length}개 항목
+                  </div>
+                  <div style={{maxHeight:140,overflowY:"auto",fontSize:11,color:"var(--txt3)",background:"rgba(0,0,0,.15)",borderRadius:6,padding:8}}>
+                    {result.timeline.map((t,i) => (
+                      <div key={i} style={{padding:"2px 0",borderBottom:"1px solid rgba(255,255,255,.05)"}}>
+                        <span style={{color:"#818cf8",fontWeight:600}}>{t.startTime}~{t.endTime}</span>
+                        <span style={{color:"var(--txt4)",margin:"0 6px"}}>({t.duration}분)</span>
+                        <span>{t.content}</span>
+                        {t.note && <span style={{color:"var(--txt4)",marginLeft:6}}>— {t.note}</span>}
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={applyTimeline} style={{marginTop:6,padding:"6px 14px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:700,background:"rgba(99,102,241,.15)",color:"#a5b4fc"}}>
+                    📋 타임테이블에 적용
+                  </button>
+                </div>
+              )}
+
+              {result.cueSheet?.length > 0 && (
+                <div>
+                  <div style={{color:"var(--txt2)",fontSize:11,fontWeight:600,marginBottom:4}}>
+                    🎬 큐시트: {result.cueSheet.length}개 항목
+                  </div>
+                  <button onClick={applyCueSheet} style={{padding:"6px 14px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:600,background:"rgba(16,185,129,.1)",color:"#34d399"}}>
+                    🎬 큐시트에도 적용
+                  </button>
+                </div>
+              )}
+
+              {result.usage && (
+                <div style={{color:"var(--txt4)",fontSize:9,marginTop:8,opacity:.7}}>
+                  토큰: {result.usage.inputTokens} in / {result.usage.outputTokens} out
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 운영계획안 → 결과보고서 데이터 로드/병합 헬퍼 ──
 async function loadPlanDataForResult(projectId) {
   const planKey = `eventos_doc_${projectId}_plan`;
@@ -11119,6 +11335,34 @@ ${secEnabled("timeline") ? (()=>{
           toast("타임테이블에서 " + filledRows.length + "개 항목을 불러왔습니다", "success");
         };
 
+        // ── AI 타임라인/큐시트 적용 콜백 ──
+        const applyAITimeline = (aiTimeline) => {
+          const existingTl = sd("program").timeline || [];
+          const hasData = existingTl.some(t => t.content || t.startTime);
+          const newItems = aiTimeline.map(t => ({ ...t, _id: Date.now() + Math.random() }));
+          if (hasData) {
+            if (window.confirm("타임테이블에 이미 " + existingTl.length + "개 항목이 있습니다.\nAI 생성 " + aiTimeline.length + "개 항목으로 교체하시겠습니까?\n(취소하면 기존 항목 뒤에 추가됩니다)")) {
+              setList("program", "timeline", newItems);
+            } else {
+              setList("program", "timeline", [...existingTl, ...newItems]);
+            }
+          } else {
+            setList("program", "timeline", newItems);
+          }
+        };
+
+        const applyAICueSheet = (aiCueSheet) => {
+          const existingCs = sd("program").cueSheet || [];
+          const hasData = existingCs.some(c => c.content || c.startTime);
+          const newItems = aiCueSheet.map(c => ({ ...c, _id: Date.now() + Math.random() }));
+          if (hasData) {
+            if (!window.confirm("큐시트에 이미 " + existingCs.length + "개 항목이 있습니다.\nAI 생성 " + aiCueSheet.length + "개 항목을 추가하시겠습니까?")) return;
+            setList("program", "cueSheet", [...existingCs, ...newItems]);
+          } else {
+            setList("program", "cueSheet", newItems);
+          }
+        };
+
         // ── 프로그램 아이템 ──
         const getProgramItems = () => sd("program").programItems || [];
         const addProgramItem = () => {
@@ -11158,6 +11402,9 @@ ${secEnabled("timeline") ? (()=>{
             {/* ── 타임테이블 탭 ── */}
             {activeProgramTab === "timetable" && (
               <div>
+                {/* AI 타임테이블 생성 패널 */}
+                <AITimelinePanel project={proj} onApplyTimeline={applyAITimeline} onApplyCueSheet={applyAICueSheet} />
+
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
                   <label className="form-label" style={{margin:0}}>타임테이블 / 진행순서</label>
                   <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("program","timeline",{startTime:"",endTime:"",duration:"",content:"",note:""})}>+ 항목 추가</button>
