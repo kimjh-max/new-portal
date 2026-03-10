@@ -1449,7 +1449,7 @@ function usePersistedState(key, defaultValue) {
   const setPersistedState = useCallback((valOrFn) => {
     setState(prev => {
       const next = typeof valOrFn === "function" ? valOrFn(prev) : valOrFn;
-      try { localStorage.setItem(key, JSON.stringify(next)); } catch(e) { console.warn("[usePersistedState] localStorage 저장 실패:", key, e); showStorageUpgradeAlert(); }
+      try { localStorage.setItem(key, JSON.stringify(next)); } catch(e) { console.warn("[usePersistedState] localStorage 저장 실패:", key, e); if (!CLOUD_CONFIG.ENABLED) showStorageUpgradeAlert(); }
       return next;
     });
   }, [key]);
@@ -5305,6 +5305,27 @@ function toast(msg, type="default") {
       }
       return kb;
     };
+
+    // 클라우드 활성 시: 자동 백업 + 버전 이력 즉시 삭제 (클라우드가 source of truth)
+    var cloudActive = !!(window.CLOUD_CONFIG && window.CLOUD_CONFIG.ENABLED);
+    try {
+      // CLOUD_CONFIG이 아직 정의되지 않았을 수 있으므로 Worker URL로 판단
+      if (!cloudActive && document.querySelector('script[type="text/babel"]')) {
+        var htmlText = document.documentElement.innerHTML;
+        cloudActive = htmlText.indexOf('WORKER_URL: "https://eventos-worker') > -1;
+      }
+    } catch(e) {}
+    if (cloudActive) {
+      try { localStorage.removeItem("eventos_autoBackups"); } catch {}
+      for (var ci = localStorage.length - 1; ci >= 0; ci--) {
+        var ck = localStorage.key(ci);
+        if (ck && ck.indexOf("eventos_docVersions_") === 0) {
+          try { localStorage.removeItem(ck); } catch {}
+        }
+      }
+      console.log("[EventOS] ☁️ 클라우드 활성 → 로컬 백업/버전이력 정리 완료");
+    }
+
     let usedKB = calcUsed();
     if (usedKB < 3 * 1024) return; // 3MB 미만이면 정리 불필요
     console.log("[EventOS] ⚡ 스토리지 " + (usedKB/1024).toFixed(1) + "MB → 선제 정리 시작");
@@ -10051,7 +10072,7 @@ function DocEditorPanel({docType, project}) {
   const loadVersion = (ver) => {
     if (!window.confirm(`"${ver.name}" 버전을 불러오시겠습니까?\n현재 작성 중인 내용이 대체됩니다.`)) return;
     setDocData(ver.data);
-    try { localStorage.setItem(storageKey, JSON.stringify(ver.data)); } catch(e) { console.warn("[DocEditor] 버전 복원 localStorage 실패:", e); showStorageUpgradeAlert(); }
+    try { localStorage.setItem(storageKey, JSON.stringify(ver.data)); } catch(e) { console.warn("[DocEditor] 버전 복원 localStorage 실패:", e); }
     saveToIDB(storageKey, ver.data).catch(()=>{});
     setShowVersions(false);
     toast(`"${ver.name}" 버전을 불러왔습니다`, "success");
@@ -10061,7 +10082,7 @@ function DocEditorPanel({docType, project}) {
   const deleteVersion = (verId) => {
     const updated = versions.filter(v => v.id !== verId);
     setVersions(updated);
-    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch(e) { console.warn("[DocEditor] 버전 삭제 localStorage 실패:", e); showStorageUpgradeAlert(); }
+    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch(e) { console.warn("[DocEditor] 버전 삭제 localStorage 실패:", e); }
   };
 
   // 현재 섹션 데이터
@@ -13327,13 +13348,18 @@ function App() {
       }
       lastBackupRef.current = json;
 
-      // localStorage에 최근 N개 백업 보관
-      try {
-        const backups = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
-        backups.unshift(snapshot);
-        if (backups.length > DRIVE_CONFIG.MAX_LOCAL_BACKUPS) backups.length = DRIVE_CONFIG.MAX_LOCAL_BACKUPS;
-        localStorage.setItem("eventos_autoBackups", JSON.stringify(backups));
-      } catch (e) { console.error("[EventOS] 자동 백업 저장 실패:", e); showStorageUpgradeAlert(); }
+      // localStorage에 최근 N개 백업 보관 (클라우드 활성 시 로컬 백업 스킵 → 용량 절약)
+      if (CLOUD_CONFIG.ENABLED) {
+        // 클라우드가 source of truth이므로 로컬 자동백업 불필요 → 기존 것도 정리
+        try { localStorage.removeItem("eventos_autoBackups"); } catch {}
+      } else {
+        try {
+          const backups = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
+          backups.unshift(snapshot);
+          if (backups.length > DRIVE_CONFIG.MAX_LOCAL_BACKUPS) backups.length = DRIVE_CONFIG.MAX_LOCAL_BACKUPS;
+          localStorage.setItem("eventos_autoBackups", JSON.stringify(backups));
+        } catch (e) { console.error("[EventOS] 자동 백업 저장 실패:", e); showStorageUpgradeAlert(); }
+      }
 
       // 클라우드 백업 (Cloudflare D1 + Drive, 둘 다 활성 시 모두 저장)
       if (CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED) {
@@ -13464,7 +13490,7 @@ function App() {
       localStorage.setItem("eventos_lastEmailNotify", JSON.stringify({
         date: today, sent, failed, noEmail, at: new Date().toISOString()
       }));
-    } catch(e) { console.warn("[EmailNotify] localStorage 저장 실패:", e); showStorageUpgradeAlert(); }
+    } catch(e) { console.warn("[EmailNotify] localStorage 저장 실패:", e); }
 
     console.log(`[EmailNotify] ${msg}`);
     return { sent, failed, noEmail };
