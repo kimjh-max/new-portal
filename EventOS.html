@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260309v14";
+  var CODE_VER = "20260310v15";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -288,7 +288,19 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
       var localKeys = await getAllKeys(db);
       var localDocKeys = localKeys.filter(function(k){ var s = String(k); return s.indexOf("eventos_doc_") === 0 || s.indexOf("eventos_docVersions_") === 0; });
 
-      // ① 클라우드 doc 목록 가져오기
+      // ① localStorage에서도 doc 키 수집 (IDB에 없는 경우 대비)
+      var lsDocKeySet = {};
+      for(var li = 0; li < localStorage.length; li++){
+        var lk = localStorage.key(li);
+        if(lk && (lk.indexOf("eventos_doc_") === 0 || lk.indexOf("eventos_docVersions_") === 0)){
+          if(localDocKeys.indexOf(lk) === -1){
+            localDocKeys.push(lk);
+            lsDocKeySet[lk] = true;
+          }
+        }
+      }
+
+      // ② 클라우드 doc 목록 가져오기
       var cloudDocs = await listCloudDocs();
       var cloudDocKeys = cloudDocs.filter(function(d){ var k = d.doc_key; return (k.indexOf("eventos_doc_") === 0 || k.indexOf("eventos_docVersions_") === 0) && k.indexOf("__r2_test") === -1; });
       console.log("[Sync] 로컬 IDB 키:" + localDocKeys.length + " | 클라우드 키:" + cloudDocKeys.length);
@@ -301,6 +313,10 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
         var key = localDocKeys[i];
         try {
           var data = await getData(db, key);
+          // IDB에 없으면 localStorage에서 로드
+          if(!data && lsDocKeySet[key]){
+            try { var ls = localStorage.getItem(key); if(ls && ls.length > 2) data = JSON.parse(ls); } catch(e){}
+          }
           if(!data) continue;
           if(Array.isArray(data)){ if(!data.length) continue; }
           else if(typeof data !== "object" || !Object.keys(data).length) continue;
@@ -12913,11 +12929,10 @@ function App() {
                 docKeySet.add(k);
               }
             }
-            // ② 클라우드에 없는 문서만 업로드 (기존 클라우드 데이터 덮어쓰기 방지)
+            // ② 로컬 문서를 클라우드에 동기화 (로컬이 더 크거나 클라우드에 없으면 업로드)
             let uploadCount = 0;
             for (const key of docKeySet) {
               const cloudSize = cloudSizeMap[key] || 0;
-              if (cloudSize > 0) continue; // 🛡️ 클라우드에 이미 존재 → 건드리지 않음 (클라우드=source of truth)
               let localData = null;
               try {
                 const idbData = await loadFromIDB(key);
@@ -12934,10 +12949,12 @@ function App() {
               if (!localData) continue;
               const localSize = JSON.stringify(localData).length;
               if (localSize <= 2) continue;
+              // 클라우드에 없거나, 로컬이 더 크면 업로드 (Worker 덮어쓰기 보호가 안전장치 역할)
+              if (cloudSize > 0 && localSize <= cloudSize) continue;
               try {
                 await CloudSync.saveDoc(key, localData);
                 uploadCount++;
-                console.log("[DocSync] ⬆️ " + key + " (클라우드에 없음, 로컬→클라우드 첫 업로드)");
+                console.log("[DocSync] ⬆️ " + key + (cloudSize > 0 ? " (로컬 업데이트: " + localSize + " > " + cloudSize + ")" : " (첫 업로드)"));
               } catch (e) { console.error("[DocSync] 실패:", key, e); }
             }
             if (uploadCount > 0) {
