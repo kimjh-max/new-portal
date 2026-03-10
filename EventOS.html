@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260310v15";
+  var CODE_VER = "20260310v16";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -9401,6 +9401,42 @@ function StorageIndicator() {
   );
 }
 
+// ── 운영계획안 → 결과보고서 데이터 로드/병합 헬퍼 ──
+async function loadPlanDataForResult(projectId) {
+  const planKey = `eventos_doc_${projectId}_plan`;
+  if (CLOUD_CONFIG.ENABLED) {
+    try {
+      const cloud = await CloudSync.loadDoc(planKey);
+      if (cloud && typeof cloud === "object" && Object.keys(cloud).length) return cloud;
+    } catch {}
+  }
+  try {
+    const idb = await loadFromIDB(planKey);
+    if (idb && typeof idb === "object" && Object.keys(idb).length) return idb;
+  } catch {}
+  try {
+    const ls = localStorage.getItem(planKey);
+    if (ls && ls.length > 2) return JSON.parse(ls);
+  } catch {}
+  return null;
+}
+
+function mergePlanToResult(planData, existingResult) {
+  const merged = JSON.parse(JSON.stringify(planData));
+  merged._keyColor = "#10b981";
+  if (existingResult && typeof existingResult === "object" && Object.keys(existingResult).length > 0) {
+    for (const sectionId of Object.keys(existingResult)) {
+      if (sectionId.startsWith("_")) continue;
+      const rs = existingResult[sectionId];
+      if (rs && typeof rs === "object" && merged[sectionId]) {
+        if (rs.resultNotes) merged[sectionId].resultNotes = rs.resultNotes;
+        if (rs.images && rs.images.length) merged[sectionId].images = rs.images;
+      }
+    }
+  }
+  return merged;
+}
+
 function DocEditorPanel({docType, project}) {
   // docType: "plan" | "report"
   const isPlan = docType === "plan";
@@ -9472,6 +9508,32 @@ function DocEditorPanel({docType, project}) {
         } catch (err) {
           console.warn("[DocEditor] 클라우드 로드 실패 (캐시 사용):", err.message);
           cloudDocLoadedRef.current = true; // 클라우드 실패해도 해제 (로컬 캐시 모드)
+        }
+      }
+
+      // ③ 결과보고서가 비어있으면 → 운영계획안 자동 가져오기
+      if (!isPlan && !cancelled) {
+        // 현재 docData 상태를 직접 확인 (비동기 완료 후)
+        const checkEmpty = () => {
+          const current = loadDocFromStorage();
+          return !current || Object.keys(current).length === 0 ||
+            (Object.keys(current).length === 1 && current._keyColor);
+        };
+        if (checkEmpty()) {
+          try {
+            const planData = await loadPlanDataForResult(proj?.id);
+            if (planData && !cancelled) {
+              const merged = mergePlanToResult(planData, {});
+              setDocData(merged);
+              saveToIDB(storageKey, merged).catch(()=>{});
+              try { localStorage.setItem(storageKey, JSON.stringify(merged)); } catch {}
+              if (CLOUD_CONFIG.ENABLED) CloudDataStore.writeDoc(storageKey, merged).catch(()=>{});
+              console.log("[DocEditor] 📋→📊 운영계획안 → 결과보고서 자동 가져오기 완료");
+              toast("📋 운영계획안 데이터를 결과보고서에 불러왔습니다", "success");
+            }
+          } catch (err) {
+            console.warn("[DocEditor] 운영계획안 가져오기 실패:", err.message);
+          }
         }
       }
     })();
@@ -11508,6 +11570,20 @@ ${secEnabled("timeline") ? (()=>{
           <button onClick={()=>setShowVersions(!showVersions)} className="btn" style={{background:"rgba(245,158,11,.08)",border:"1px solid rgba(245,158,11,.2)",color:"#fbbf24",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12,position:"relative"}}>
             📂 불러오기 {versions.length > 0 && <span style={{background:"#f59e0b",color:"#000",borderRadius:10,padding:"1px 6px",fontSize:10,fontWeight:800,marginLeft:4}}>{versions.length}</span>}
           </button>
+          {!isPlan && (
+            <button onClick={async()=>{
+              if(!confirm("운영계획안 데이터를 가져오시겠습니까?\n현재 입력된 결과 메모와 사진은 유지됩니다.")) return;
+              try {
+                const planData = await loadPlanDataForResult(proj?.id);
+                if(!planData || !Object.keys(planData).length){ toast("운영계획안 데이터가 없습니다","warn"); return; }
+                const merged = mergePlanToResult(planData, docData);
+                setDocData(merged);
+                toast("📋 운영계획안 데이터를 불러왔습니다","success");
+              } catch(e){ toast("불러오기 실패: "+e.message,"error"); }
+            }} className="btn" style={{background:"rgba(99,102,241,.08)",border:"1px solid rgba(99,102,241,.2)",color:"#818cf8",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
+              📋 운영계획안 불러오기
+            </button>
+          )}
           <div style={{width:1,height:24,background:"var(--border)"}}/>
           <button className="btn btn-primary" onClick={printPDF} style={{background:isPlan?"linear-gradient(135deg,#6366f1,#8b5cf6)":"linear-gradient(135deg,#10b981,#059669)"}}>
             PDF 출력
