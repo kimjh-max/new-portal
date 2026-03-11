@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v21";
+  var CODE_VER = "20260312v22";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -8656,7 +8656,8 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
           {/* AI 과업지시서 분석 → 개요/과업 자동 생성 */}
           <AIOverviewPanel project={project}
             onApplyOverview={(ovData) => {
-              // AI 분석 결과를 과업지시서의 관련 필드에도 반영
+              // 🛡️ 기존 데이터 있으면 사용자 확인
+              if (project.name && !window.confirm("⚠️ AI 분석 결과를 프로젝트 개요에 반영하시겠습니까?")) return;
               const updated = { ...project };
               if (ovData.eventName && !project.name) updated.name = ovData.eventName;
               if (ovData.venue && !project.taskOrder?.venue) {
@@ -8666,6 +8667,8 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
               toast("AI 분석 결과가 프로젝트에 반영되었습니다", "success");
             }}
             onApplyTaskOrder={(toData) => {
+              const to = project.taskOrder || {};
+              if ((to.purpose || to.tasks || to.sender) && !window.confirm("⚠️ 기존 과업지시서 데이터가 있습니다.\nAI 분석 결과로 덮어쓰시겠습니까?")) return;
               const updated = { ...project, taskOrder: { ...(project.taskOrder || {}), ...toData } };
               onUpdate(updated);
               toast("과업지시서에 AI 분석 결과가 반영되었습니다", "success");
@@ -11388,6 +11391,10 @@ ${secEnabled("timeline") ? (()=>{
       };
 
       const applyAIOverview = (aiData) => {
+        // 🛡️ 기존 개요 데이터가 있으면 사용자 확인 필수
+        const ov = docData.overview || {};
+        const hasExisting = ov.eventName || ov.content || ov.venue || ov.organizer;
+        if (hasExisting && !window.confirm("⚠️ 기존 행사 개요 데이터가 있습니다.\nAI 분석 결과로 덮어쓰시겠습니까?\n(기존 데이터는 버전 이력에 자동 백업됩니다)")) return;
         saveOverviewVersion();
         Object.entries(aiData).forEach(([key, val]) => {
           if (val && key !== "_history") updateDoc("overview", key, val);
@@ -11396,8 +11403,12 @@ ${secEnabled("timeline") ? (()=>{
 
       const applyAITaskOrder = (aiData) => {
         if (!onUpdateProject || !proj) return;
-        const prevHistory = [...(proj.taskOrderHistory || [])];
+        // 🛡️ 기존 과업지시서가 있으면 사용자 확인 필수
         const to = proj.taskOrder || {};
+        if (to.purpose || to.tasks || to.sender) {
+          if (!window.confirm("⚠️ 기존 과업지시서 데이터가 있습니다.\nAI 분석 결과로 덮어쓰시겠습니까?\n(기존 데이터는 이력에 자동 백업됩니다)")) return;
+        }
+        const prevHistory = [...(proj.taskOrderHistory || [])];
         if (to.purpose || to.tasks || to.sender) {
           prevHistory.push({...to, savedAt: new Date().toISOString().slice(0,19).replace("T"," "), version: prevHistory.length+1});
         }
