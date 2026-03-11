@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v23e";
+  var CODE_VER = "20260312v23f";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -841,32 +841,15 @@ const CloudSync = {
       // ① 기본 키로 로드 시도
       const res = await fetch(`${this._baseUrl()}/api/doc?key=${encodeURIComponent(key)}`);
       const result = await res.json();
-      if (result.success && result.found && result.data) return result.data;
+      // ★ found=true면 data가 빈 배열이어도 반환 (삭제 후 [] 상태 정상 반영)
+      if (result.success && result.found) return result.data;
 
-      // ② 기본 키가 없으면 청크 키 탐색 (버전 데이터 등 대용량)
+      // ② 청크 조합 비활성화 — docVersions는 기본 키만 사용 (R2 source of truth)
+      // 구 청크 데이터(165MB+)를 조합하면 메모리 크래시 발생하므로 완전 차단
+      // 버전 데이터는 CloudDataStore.writeDoc으로 기본 키에 직접 저장됨
       if (key.indexOf("eventos_docVersions_") === 0) {
-        const docs = await this.listDocs();
-        const chunkPrefix = key + "__chunk_";
-        const chunks = docs.filter(d => d.doc_key.startsWith(chunkPrefix))
-          .map(d => ({ idx: parseInt(d.doc_key.replace(chunkPrefix, "")), doc_key: d.doc_key }))
-          .sort((a,b) => a.idx - b.idx);
-        if (chunks.length > 0) {
-          console.log("[CloudSync] 📦 청크 " + chunks.length + "개 발견, 조합 시작:", key);
-          const assembled = [];
-          for (const ch of chunks) {
-            const chRes = await fetch(`${this._baseUrl()}/api/doc?key=${encodeURIComponent(ch.doc_key)}&raw=1`);
-            if (chRes.ok) {
-              try {
-                const chData = await chRes.json();
-                if (chData) assembled.push(chData);
-              } catch(e) { console.error("[CloudSync] chunk parse error:", e); }
-            }
-          }
-          if (assembled.length > 0) {
-            console.log("[CloudSync] ✅ 청크 조합 완료:", assembled.length + "개 버전");
-            return assembled;
-          }
-        }
+        console.log("[CloudSync] ℹ️ docVersions 청크 조합 비활성화 — 기본 키만 사용:", key);
+        return null;
       }
       return null;
     } catch (err) {
@@ -10569,16 +10552,24 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     toast(`"${ver.name}" 버전을 불러왔습니다`, "success");
   };
 
-  // ── 버전 삭제 (R2 + IDB + localStorage 모두 동기화) ──
+  // ── 버전 삭제 (R2 + IDB + localStorage + 구 청크 정리) ──
   const deleteVersion = async (verId) => {
     const updated = versions.filter(v => v.id !== verId);
     setVersions(updated);
-    // ① R2 클라우드 (source of truth) — 삭제 후 상태를 즉시 반영
+    // ① R2 기본 키 저장 (source of truth)
     try { await CloudDataStore.writeDoc(versionsKey, updated); console.log("[DocEditor] 🗑️ 버전 삭제 → R2 동기화 완료"); } catch(e) { console.warn("[DocEditor] 버전 삭제 R2 실패:", e.message); }
     // ② IDB
     try { await saveToIDB(versionsKey, updated); } catch {}
     // ③ localStorage
     try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch(e) { console.warn("[DocEditor] 버전 삭제 localStorage 실패:", e); }
+    // ④ R2 구 청크 정리 (좀비 방지 — __chunk_0~9 삭제)
+    if (updated.length === 0) {
+      for (let ci = 0; ci < 10; ci++) {
+        const chunkKey = versionsKey + "__chunk_" + ci;
+        fetch(`${CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "")}/api/doc?key=${encodeURIComponent(chunkKey)}`, { method: "DELETE" }).catch(()=>{});
+      }
+      console.log("[DocEditor] 🧹 R2 구 청크 정리 요청 완료");
+    }
   };
 
   // 현재 섹션 데이터
