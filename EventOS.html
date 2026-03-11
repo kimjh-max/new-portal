@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v24";
+  var CODE_VER = "20260312v25";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10392,14 +10392,15 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     return () => { delete window.__forceDocEditorSave; };
   }, [performSave]);
 
-  // ── 3분 주기 무결성 체크 (메모리 ↔ 저장소 비교) ──
+  // ── 무결성 체크 (v25: JSON.stringify 제거 — 메모리 크래시 방지) ──
   React.useEffect(() => {
     if (!storageKey) return;
     const integrityCheck = setInterval(() => {
-      if (!cloudDocLoadedRef.current) return; // 🛡️ 클라우드 로드 전 체크 차단
+      if (!cloudDocLoadedRef.current) return;
       const memData = docDataLatestRef.current;
       if (!memData || Object.keys(memData).length === 0) return;
-      const memJson = JSON.stringify(memData);
+      // ★ JSON.stringify 하지 않음 — 55MB 문서에서 매분 stringify하면 메모리 크래시
+      const memKeyCount = Object.keys(memData).length;
       // localStorage 체크
       const lsData = localStorage.getItem(storageKey);
       const lsOk = lsData && lsData.length > 10;
@@ -10407,20 +10408,17 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       loadFromIDB(storageKey).then(idbData => {
         const idbOk = idbData && Object.keys(idbData).length > 0;
         if (!lsOk && !idbOk) {
-          console.error("[DocEditor] 🚨 무결성 위반! localStorage & IndexedDB 모두 데이터 없음");
+          console.error("[DocEditor] 🚨 무결성 위반! localStorage & IDB 모두 없음 (메모리 키:", memKeyCount, "개)");
           toast("🚨 보고서 데이터 유실 감지! 긴급 복구 중...", "error");
-          // 긴급 복구: 현재 메모리 데이터를 다시 저장
-          performSave(memData).catch(e => console.warn("[DocEditor] 긴급 복구 저장 실패:", e.message));
+          performSave(memData).catch(e => console.warn("[DocEditor] 긴급 복구 실패:", e.message));
         } else if (!lsOk && idbOk) {
-          // IDB에 데이터 있으면 정상 — localStorage는 캐시일 뿐 (대형 데이터는 IDB만 사용)
-          safeLocalSet(storageKey, JSON.stringify(idbData));
-          console.log("[DocEditor] ℹ️ localStorage 없음, IDB 정상 — 캐시 복원 시도");
+          // IDB 정상 — localStorage는 대형 문서에선 없을 수 있음 (정상)
+          console.log("[DocEditor] ℹ️ localStorage 없음, IDB 정상 (키:", memKeyCount, "개)");
         } else if (lsOk && !idbOk) {
-          // IDB만 없으면 조용히 재저장
           saveToIDB(storageKey, memData).catch(()=>{});
         }
       }).catch(()=>{});
-    }, 60 * 1000); // 1분 (저장 안정성 강화)
+    }, 2 * 60 * 1000); // 2분 (너무 자주 체크하면 부담)
     return () => clearInterval(integrityCheck);
   }, [storageKey, performSave]);
 
@@ -10489,7 +10487,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     }));
   };
 
-  // ── 버전 저장 ──
+  // ── 버전 저장 (v25: 로컬 먼저 → 클라우드, 전체 try/catch) ──
   const saveVersion = async (label) => {
     const now = new Date();
     const ts = now.toISOString();
@@ -10497,16 +10495,24 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     const newVersion = { id: Date.now(), name: displayName, timestamp: ts, data: JSON.parse(JSON.stringify(docData)) };
     const updated = [newVersion, ...versions].slice(0, 5);
     setVersions(updated);
-    // ① 클라우드 저장 먼저 (source of truth)
-    const cloudResult = await CloudDataStore.writeDoc(versionsKey, updated);
-    // ② 로컬 캐시 (IDB + localStorage)
-    try { await saveToIDB(versionsKey, updated); } catch {}
-    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch {}
-    const suffix = cloudResult.success ? " ☁️" : cloudResult.queued ? " 📤" : "";
+    // ① 로컬 저장 먼저 (절대 실패하지 않도록)
+    try { await saveToIDB(versionsKey, updated); } catch(e) { console.warn("[DocEditor] 버전 IDB 저장 실패:", e); }
+    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch(e) { console.warn("[DocEditor] 버전 LS 저장 실패:", e); }
+    console.log("[DocEditor] 📋 버전 로컬 저장 완료:", displayName, "총", updated.length, "개");
+    // ② 클라우드 저장 (실패해도 로컬은 이미 저장됨)
+    let cloudOk = false;
+    try {
+      const cloudResult = await CloudDataStore.writeDoc(versionsKey, updated);
+      cloudOk = cloudResult && cloudResult.success;
+      if (!cloudOk) console.warn("[DocEditor] 버전 클라우드 저장 실패/대기:", cloudResult);
+    } catch(e) {
+      console.warn("[DocEditor] 버전 클라우드 저장 에러:", e.message);
+    }
+    const suffix = cloudOk ? " ☁️" : " 💾";
     toast(`"${displayName}" 버전 저장 완료${suffix}`, "success");
     // ── 로컬 파일 자동 백업 다운로드 ──
     try {
-      const backupData = { version: displayName, timestamp: ts, project: proj?.name || "unknown", docType, data: JSON.parse(JSON.stringify(docData)) };
+      const backupData = { version: displayName, timestamp: ts, project: proj?.name || "unknown", docType, data: newVersion.data };
       const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
