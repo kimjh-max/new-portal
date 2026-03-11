@@ -9533,6 +9533,7 @@ function AIOverviewPanel({ project, onApplyOverview, onApplyTaskOrder }) {
   const [result, setResult] = React.useState(null);
   const [error, setError] = React.useState("");
   const [collapsed, setCollapsed] = React.useState(true);
+  const [uploadStatus, setUploadStatus] = React.useState(null); // {state:"uploading"|"success"|"error", name, size?, msg?}
   const fileInputRef = React.useRef(null);
 
   const projectFiles = React.useMemo(() => {
@@ -9578,17 +9579,24 @@ function AIOverviewPanel({ project, onApplyOverview, onApplyTaskOrder }) {
     if (!file) return;
     const mime = file.type.toLowerCase();
     if (!mime.includes("pdf") && !mime.startsWith("image/")) {
-      toast("PDF 또는 이미지 파일만 업로드 가능합니다", "warn"); return;
+      setUploadStatus({state:"error",name:file.name,msg:"PDF 또는 이미지 파일만 업로드 가능합니다"});
+      return;
     }
-    toast(`"${file.name}" 업로드 중...`, "default");
+    const sizeStr = file.size > 1024*1024 ? (file.size/1024/1024).toFixed(1)+"MB" : (file.size/1024).toFixed(0)+"KB";
+    setUploadStatus({state:"uploading",name:file.name,size:sizeStr});
     try {
       const uploadResult = await CloudSync.uploadFileBinary(project?.id, file, null, null);
       if (uploadResult?.success) {
         const key = uploadResult.r2Key || uploadResult.key || uploadResult.fileKey || "";
         setSelectedFileKey(key);
-        toast(`"${file.name}" 업로드 완료`, "success");
-      } else { toast("파일 업로드 실패", "error"); }
-    } catch (err) { toast("업로드 오류: " + err.message, "error"); }
+        setUploadStatus({state:"success",name:file.name,size:sizeStr});
+      } else {
+        setUploadStatus({state:"error",name:file.name,msg:"서버 업로드 실패 — 네트워크를 확인하세요"});
+      }
+    } catch (err) {
+      setUploadStatus({state:"error",name:file.name,msg:err.message||"업로드 중 오류 발생"});
+    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   if (!CLOUD_CONFIG.ENABLED) return null;
@@ -9638,12 +9646,34 @@ function AIOverviewPanel({ project, onApplyOverview, onApplyTaskOrder }) {
                 </div>
               )}
               <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                <button className="btn btn-ghost" style={{fontSize:11,padding:"5px 12px"}} onClick={()=>fileInputRef.current?.click()}>
-                  📎 새 파일 업로드
+                <button className="btn btn-ghost" style={{fontSize:11,padding:"5px 12px"}} disabled={uploadStatus?.state==="uploading"} onClick={()=>fileInputRef.current?.click()}>
+                  {uploadStatus?.state==="uploading" ? "⏳ 업로드 중..." : "📎 새 파일 업로드"}
                 </button>
                 <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" onChange={handleNewFileUpload} style={{display:"none"}}/>
                 <span style={{color:"var(--txt4)",fontSize:10}}>PDF, PNG, JPG 지원</span>
               </div>
+              {/* 업로드 상태 표시 */}
+              {uploadStatus && (
+                <div style={{marginTop:8,padding:"8px 12px",borderRadius:8,fontSize:11,display:"flex",alignItems:"center",gap:8,
+                  background: uploadStatus.state==="uploading" ? "rgba(99,102,241,.08)" : uploadStatus.state==="success" ? "rgba(16,185,129,.08)" : "rgba(239,68,68,.08)",
+                  border: `1px solid ${uploadStatus.state==="uploading" ? "rgba(99,102,241,.2)" : uploadStatus.state==="success" ? "rgba(16,185,129,.25)" : "rgba(239,68,68,.2)"}`,
+                  color: uploadStatus.state==="uploading" ? "#a5b4fc" : uploadStatus.state==="success" ? "#34d399" : "#fca5a5"}}>
+                  <span style={{fontSize:16}}>{uploadStatus.state==="uploading" ? "⏳" : uploadStatus.state==="success" ? "✅" : "❌"}</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:600}}>
+                      {uploadStatus.state==="uploading" && `"${uploadStatus.name}" 업로드 중...`}
+                      {uploadStatus.state==="success" && `"${uploadStatus.name}" 업로드 완료`}
+                      {uploadStatus.state==="error" && `"${uploadStatus.name}" 업로드 실패`}
+                    </div>
+                    {uploadStatus.size && uploadStatus.state!=="error" && <div style={{opacity:.7,fontSize:10,marginTop:2}}>파일 크기: {uploadStatus.size}</div>}
+                    {uploadStatus.state==="success" && <div style={{opacity:.7,fontSize:10,marginTop:2}}>파일이 선택되었습니다 — "과업지시서 분석" 버튼을 눌러주세요</div>}
+                    {uploadStatus.state==="error" && uploadStatus.msg && <div style={{opacity:.8,fontSize:10,marginTop:2}}>{uploadStatus.msg}</div>}
+                  </div>
+                  {uploadStatus.state!=="uploading" && (
+                    <button onClick={()=>setUploadStatus(null)} style={{background:"none",border:"none",cursor:"pointer",color:"inherit",fontSize:14,opacity:.6,padding:0}}>✕</button>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
