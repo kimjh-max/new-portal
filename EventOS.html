@@ -9980,13 +9980,9 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           clearTimeout(cloudTimeout);
           if (cancelled) return;
           if (cloudTimedOut) {
-            // 타임아웃 후 도착한 클라우드 데이터 — setDocData 호출 차단 (사용자 편집 덮어쓰기 방지)
-            // 로컬 캐시만 조용히 갱신
-            if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
-              saveToIDB(storageKey, cloudData).catch(()=>{});
-              try { localStorage.setItem(storageKey, JSON.stringify(cloudData)); } catch {}
-              console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 캐시만 갱신, UI 변경 없음");
-            }
+            // 타임아웃 후 도착한 클라우드 데이터 — 완전 무시 (사용자 편집 덮어쓰기 방지)
+            // 로컬 캐시도 갱신하지 않음 (사용자가 이미 편집한 데이터가 저장되어 있으므로)
+            console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 무시 (사용자 편집 보호)");
           } else if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
             setDocData(cloudData);
             // 로컬 캐시 갱신
@@ -10012,25 +10008,30 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         cloudDocLoadedRef.current = true; // 클라우드 비활성 시 즉시 해제
       }
 
-      // ③ 결과보고서 → 항상 운영계획안 최신 데이터 병합 (빈 보고서 + 기존 보고서 모두)
+      // ③ 결과보고서가 비어있을 때만 → 운영계획안 자동 가져오기
+      // (비어있지 않은 보고서는 사용자가 직접 편집 중이므로 덮어쓰지 않음)
+      // (plan→report 실시간 동기화는 performSave에서 백그라운드로 처리)
       if (!isPlan && !cancelled) {
-        try {
-          const planData = await loadPlanDataForResult(proj?.id);
-          if (planData && !cancelled) {
-            const currentData = loadDocFromStorage();
-            const merged = mergePlanToResult(planData, currentData || {});
-            const mergedStr = JSON.stringify(merged);
-            const currentStr = JSON.stringify(currentData);
-            if (mergedStr !== currentStr) {
+        const checkEmpty = () => {
+          const current = loadDocFromStorage();
+          return !current || Object.keys(current).length === 0 ||
+            (Object.keys(current).length === 1 && current._keyColor);
+        };
+        if (checkEmpty()) {
+          try {
+            const planData = await loadPlanDataForResult(proj?.id);
+            if (planData && !cancelled) {
+              const merged = mergePlanToResult(planData, {});
               setDocData(merged);
               saveToIDB(storageKey, merged).catch(()=>{});
               try { localStorage.setItem(storageKey, JSON.stringify(merged)); } catch {}
               if (CLOUD_CONFIG.ENABLED) CloudDataStore.writeDoc(storageKey, merged).catch(()=>{});
-              console.log("[DocEditor] 📋→📊 운영계획안 최신 데이터 반영 완료");
+              console.log("[DocEditor] 📋→📊 운영계획안 → 결과보고서 자동 가져오기 완료");
+              toast("📋 운영계획안 데이터를 결과보고서에 불러왔습니다", "success");
             }
+          } catch (err) {
+            console.warn("[DocEditor] 운영계획안 가져오기 실패:", err.message);
           }
-        } catch (err) {
-          console.warn("[DocEditor] 운영계획안 병합 실패:", err.message);
         }
       }
     })();
@@ -11376,25 +11377,25 @@ ${secEnabled("timeline") ? (()=>{
 
           {/* 개요 필드 */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <DocFG label="행사명"><input className="form-input" value={ov.eventName||proj?.name||""} onChange={e=>updateDoc("overview","eventName",e.target.value)} placeholder="행사명 입력"/></DocFG>
-            <DocFG label="주최사"><input className="form-input" value={ov.organizer||proj?.client||""} onChange={e=>updateDoc("overview","organizer",e.target.value)} placeholder="주최사/클라이언트"/></DocFG>
-            <DocFG label="일시"><input className="form-input" value={ov.date||proj?.eventDate||""} onChange={e=>updateDoc("overview","date",e.target.value)} placeholder="예) 2025년 11월 25일(화)"/></DocFG>
-            <DocFG label="시간"><input className="form-input" value={ov.time||""} onChange={e=>updateDoc("overview","time",e.target.value)} placeholder="예) 오전 10:30 ~ 오후 1:30 (3시간)"/></DocFG>
+            <DocFG label="행사명"><input className="form-input" value={ov.eventName != null ? ov.eventName : (proj?.name||"")} onChange={e=>updateDoc("overview","eventName",e.target.value)} placeholder="행사명 입력"/></DocFG>
+            <DocFG label="주최사"><input className="form-input" value={ov.organizer != null ? ov.organizer : (proj?.client||"")} onChange={e=>updateDoc("overview","organizer",e.target.value)} placeholder="주최사/클라이언트"/></DocFG>
+            <DocFG label="일시"><input className="form-input" value={ov.date != null ? ov.date : (proj?.eventDate||"")} onChange={e=>updateDoc("overview","date",e.target.value)} placeholder="예) 2025년 11월 25일(화)"/></DocFG>
+            <DocFG label="시간"><input className="form-input" value={ov.time ?? ""} onChange={e=>updateDoc("overview","time",e.target.value)} placeholder="예) 오전 10:30 ~ 오후 1:30 (3시간)"/></DocFG>
           </div>
-          <DocFG label="장소"><input className="form-input" value={ov.venue||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("overview","venue",e.target.value)} placeholder="행사 장소명"/></DocFG>
+          <DocFG label="장소"><input className="form-input" value={ov.venue != null ? ov.venue : (proj?.taskOrder?.venue||"")} onChange={e=>updateDoc("overview","venue",e.target.value)} placeholder="행사 장소명"/></DocFG>
           <DocFG label="행사 내용">
-            <textarea className="form-input" rows={3} value={ov.content||proj?.taskOrder?.purpose||""} onChange={e=>updateDoc("overview","content",e.target.value)} placeholder="행사의 주요 내용 및 목적" style={{resize:"vertical"}}/>
+            <textarea className="form-input" rows={3} value={ov.content != null ? ov.content : (proj?.taskOrder?.purpose||"")} onChange={e=>updateDoc("overview","content",e.target.value)} placeholder="행사의 주요 내용 및 목적" style={{resize:"vertical"}}/>
           </DocFG>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <DocFG label="행사 성격">
-              <textarea className="form-input" rows={4} value={ov.character||""} onChange={e=>updateDoc("overview","character",e.target.value)} placeholder="예) 지역사회공헌인정제 시상식&#10;- 시상식&#10;- 네트워킹&#10;- 전시" style={{resize:"vertical"}}/>
+              <textarea className="form-input" rows={4} value={ov.character ?? ""} onChange={e=>updateDoc("overview","character",e.target.value)} placeholder="예) 지역사회공헌인정제 시상식&#10;- 시상식&#10;- 네트워킹&#10;- 전시" style={{resize:"vertical"}}/>
             </DocFG>
             <DocFG label="지원 사항">
-              <textarea className="form-input" rows={4} value={ov.support||""} onChange={e=>updateDoc("overview","support",e.target.value)} placeholder="예) 무대/음향/조명/LED&#10;사회자&#10;영상 제작&#10;인쇄물" style={{resize:"vertical"}}/>
+              <textarea className="form-input" rows={4} value={ov.support ?? ""} onChange={e=>updateDoc("overview","support",e.target.value)} placeholder="예) 무대/음향/조명/LED&#10;사회자&#10;영상 제작&#10;인쇄물" style={{resize:"vertical"}}/>
             </DocFG>
           </div>
           <DocFG label="기타사항">
-            <textarea className="form-input" rows={2} value={ov.extraNotes||""} onChange={e=>updateDoc("overview","extraNotes",e.target.value)} placeholder="기타 특이사항" style={{resize:"vertical"}}/>
+            <textarea className="form-input" rows={2} value={ov.extraNotes ?? ""} onChange={e=>updateDoc("overview","extraNotes",e.target.value)} placeholder="기타 특이사항" style={{resize:"vertical"}}/>
           </DocFG>
         </div>
       );
@@ -11461,7 +11462,7 @@ ${secEnabled("timeline") ? (()=>{
             <div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:4}}>
                 <DocFG label="장소명"><input className="form-input" value={ve.venueName||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("venue","venueName",e.target.value)} placeholder="장소명"/></DocFG>
-                <DocFG label="수용 인원"><input className="form-input" value={ve.capacity||proj?.taskOrder?.attendance||""} onChange={e=>updateDoc("venue","capacity",e.target.value)} placeholder="예) 300명"/></DocFG>
+                <DocFG label="수용 인원"><input className="form-input" value={ve.capacity != null ? ve.capacity : (proj?.taskOrder?.attendance||"")} onChange={e=>updateDoc("venue","capacity",e.target.value)} placeholder="예) 300명"/></DocFG>
                 <DocFG label="주소"><input className="form-input" value={ve.address||""} onChange={e=>updateDoc("venue","address",e.target.value)} placeholder="도로명 주소"/></DocFG>
                 <DocFG label="층/홀"><input className="form-input" value={ve.floor||""} onChange={e=>updateDoc("venue","floor",e.target.value)} placeholder="예) B1층 그랜드볼룸"/></DocFG>
               </div>
