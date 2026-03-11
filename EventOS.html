@@ -9967,9 +9967,11 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       // ② 클라우드에서 로드 (source of truth) — 10초 타임아웃 안전장치
       if (CLOUD_CONFIG.ENABLED) {
         // 타임아웃 안전장치: 10초 내 클라우드 응답 없으면 로컬 캐시 모드로 전환
+        let cloudTimedOut = false;
         const cloudTimeout = setTimeout(() => {
           if (!cloudDocLoadedRef.current) {
             cloudDocLoadedRef.current = true;
+            cloudTimedOut = true;
             console.warn("[DocEditor] ⏰ 클라우드 로드 10초 타임아웃 — 로컬 캐시 모드로 전환");
           }
         }, 10 * 1000);
@@ -9977,7 +9979,15 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           const cloudData = await CloudSync.loadDoc(storageKey);
           clearTimeout(cloudTimeout);
           if (cancelled) return;
-          if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
+          if (cloudTimedOut) {
+            // 타임아웃 후 도착한 클라우드 데이터 — setDocData 호출 차단 (사용자 편집 덮어쓰기 방지)
+            // 로컬 캐시만 조용히 갱신
+            if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
+              saveToIDB(storageKey, cloudData).catch(()=>{});
+              try { localStorage.setItem(storageKey, JSON.stringify(cloudData)); } catch {}
+              console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 캐시만 갱신, UI 변경 없음");
+            }
+          } else if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
             setDocData(cloudData);
             // 로컬 캐시 갱신
             saveToIDB(storageKey, cloudData).catch(()=>{});
