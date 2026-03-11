@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v23c";
+  var CODE_VER = "20260312v23d";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10188,39 +10188,48 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     if (!versionsKey) return;
     let cancelled = false;
     (async () => {
-      // ⓪ 독립 스크립트가 미리 로드한 preloaded 데이터 확인
+      // ⓪ 로컬 즉시 표시: preloaded 또는 IDB (빠른 렌더링용, R2로 덮어쓸 수 있음)
+      let localVer = null;
       const preloaded = window.__preloadedDocs?.[versionsKey];
       if (preloaded && Array.isArray(preloaded) && preloaded.length > 0) {
+        localVer = preloaded;
         if (!cancelled) setVersions(preloaded);
-        console.log("[DocEditor] ✅ preloaded 버전 " + preloaded.length + "개 사용");
-        saveToIDB(versionsKey, preloaded).catch(()=>{});
-        return;
-      }
-      // ① IDB에서 먼저 로드 → 즉시 적용
-      let localVer = null;
-      try {
-        const idbVer = await loadFromIDB(versionsKey);
-        if (idbVer && Array.isArray(idbVer) && idbVer.length > 0) {
-          localVer = idbVer;
-          if (!cancelled) {
-            setVersions(idbVer);
-            console.log("[DocEditor] 📂 IDB 버전 " + idbVer.length + "개 즉시 적용");
+        console.log("[DocEditor] ✅ preloaded 버전 " + preloaded.length + "개 즉시 표시 (R2 확인 대기 중)");
+      } else {
+        try {
+          const idbVer = await loadFromIDB(versionsKey);
+          if (idbVer && Array.isArray(idbVer) && idbVer.length > 0) {
+            localVer = idbVer;
+            if (!cancelled) {
+              setVersions(idbVer);
+              console.log("[DocEditor] 📂 IDB 버전 " + idbVer.length + "개 즉시 표시 (R2 확인 대기 중)");
+            }
           }
-        }
-      } catch {}
-      // ② 클라우드에서 백그라운드 로드 (R2 = source of truth → 항상 R2 우선)
+        } catch {}
+      }
+      // ① R2 클라우드 = source of truth (항상 확인, preloaded 있어도 건너뛰지 않음)
       try {
         const cv = await CloudSync.loadDoc(versionsKey);
         if (cv && Array.isArray(cv)) {
-          // R2 데이터가 존재하면 항상 적용 (삭제 후 0개여도 반영해야 함)
+          // R2 데이터 항상 적용 (삭제 후 0개여도 반영 — 좀비 버전 방지)
           if (!cancelled) {
             setVersions(cv);
             console.log("[DocEditor] ☁️ R2 버전 " + cv.length + "개 적용 (source of truth)");
           }
           saveToIDB(versionsKey, cv).catch(()=>{});
           try { localStorage.setItem(versionsKey, JSON.stringify(cv)); } catch {}
+        } else if (cv === null || (Array.isArray(cv) && cv.length === 0)) {
+          // R2에 버전 없음 → 로컬 좀비 데이터 정리
+          if (localVer && localVer.length > 0) {
+            console.log("[DocEditor] 🗑️ R2에 버전 없음 → IDB 좀비 버전 " + localVer.length + "개 정리");
+            if (!cancelled) setVersions([]);
+            saveToIDB(versionsKey, []).catch(()=>{});
+            try { localStorage.removeItem(versionsKey); } catch {}
+          }
         }
-      } catch {}
+      } catch (e) {
+        console.warn("[DocEditor] ☁️ R2 버전 로드 실패 — 로컬 데이터 유지:", e.message);
+      }
     })();
     return () => { cancelled = true; };
   }, [versionsKey]);
