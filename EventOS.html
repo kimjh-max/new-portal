@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260311v18";
+  var CODE_VER = "20260311v19";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -9991,29 +9991,25 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         }
       }
 
-      // ③ 결과보고서가 비어있으면 → 운영계획안 자동 가져오기
+      // ③ 결과보고서 → 항상 운영계획안 최신 데이터 병합 (빈 보고서 + 기존 보고서 모두)
       if (!isPlan && !cancelled) {
-        // 현재 docData 상태를 직접 확인 (비동기 완료 후)
-        const checkEmpty = () => {
-          const current = loadDocFromStorage();
-          return !current || Object.keys(current).length === 0 ||
-            (Object.keys(current).length === 1 && current._keyColor);
-        };
-        if (checkEmpty()) {
-          try {
-            const planData = await loadPlanDataForResult(proj?.id);
-            if (planData && !cancelled) {
-              const merged = mergePlanToResult(planData, {});
+        try {
+          const planData = await loadPlanDataForResult(proj?.id);
+          if (planData && !cancelled) {
+            const currentData = loadDocFromStorage();
+            const merged = mergePlanToResult(planData, currentData || {});
+            const mergedStr = JSON.stringify(merged);
+            const currentStr = JSON.stringify(currentData);
+            if (mergedStr !== currentStr) {
               setDocData(merged);
               saveToIDB(storageKey, merged).catch(()=>{});
               try { localStorage.setItem(storageKey, JSON.stringify(merged)); } catch {}
               if (CLOUD_CONFIG.ENABLED) CloudDataStore.writeDoc(storageKey, merged).catch(()=>{});
-              console.log("[DocEditor] 📋→📊 운영계획안 → 결과보고서 자동 가져오기 완료");
-              toast("📋 운영계획안 데이터를 결과보고서에 불러왔습니다", "success");
+              console.log("[DocEditor] 📋→📊 운영계획안 최신 데이터 반영 완료");
             }
-          } catch (err) {
-            console.warn("[DocEditor] 운영계획안 가져오기 실패:", err.message);
           }
+        } catch (err) {
+          console.warn("[DocEditor] 운영계획안 병합 실패:", err.message);
         }
       }
     })();
@@ -10119,7 +10115,24 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     if (DRIVE_CONFIG.ENABLED) {
       SyncManager.queueSync("saveDoc_" + storageKey, { key: storageKey, data });
     }
-  }, [storageKey]);
+    // 운영계획안 저장 시 → 결과보고서에도 자동 반영 (실시간 동기화)
+    if (isPlan) {
+      const reportKey = storageKey.replace("_plan", "_report");
+      try {
+        let existingReport = null;
+        try { existingReport = await loadFromIDB(reportKey); } catch {}
+        if (!existingReport) {
+          try { const ls = localStorage.getItem(reportKey); if (ls) existingReport = JSON.parse(ls); } catch {}
+        }
+        const merged = mergePlanToResult(data, existingReport || {});
+        await CloudDataStore.writeDoc(reportKey, merged);
+        try { await saveToIDB(reportKey, merged); } catch {}
+        try { localStorage.setItem(reportKey, JSON.stringify(merged)); } catch {}
+      } catch (e) {
+        console.warn("[DocEditor] plan→report 자동 동기화 실패:", e.message);
+      }
+    }
+  }, [storageKey, isPlan]);
 
   // 디바운스 0.5초 저장 (프로듀서 입력 즉시 반영)
   // ⚠️ cloudDocLoadedRef: 클라우드 로드 완료 전 auto-save 차단 (크래시 후 stale 데이터 덮어쓰기 방지)
@@ -10136,14 +10149,14 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [docData, docKey, performSave]);
 
-  // 5분 주기 강제 저장
+  // 10초 주기 자동저장 (저장 안정성 강화 — 토스트 없이 조용히 저장)
   React.useEffect(() => {
     if (!docKey) return;
     const docDataRef = { current: docData };
     periodicSaveRef.current = setInterval(() => {
       if (!cloudDocLoadedRef.current) return; // 🛡️ 클라우드 로드 전 저장 차단
-      if (Object.keys(docDataRef.current).length > 0) { performSave(docDataRef.current); toast("자동 저장 완료","success"); }
-    }, 5 * 60 * 1000);
+      if (Object.keys(docDataRef.current).length > 0) { performSave(docDataRef.current); }
+    }, 10 * 1000);
     return () => { if (periodicSaveRef.current) clearInterval(periodicSaveRef.current); };
   }, [docKey, performSave]);
 
@@ -10192,7 +10205,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           saveToIDB(storageKey, memData).catch(()=>{});
         }
       }).catch(()=>{});
-    }, 3 * 60 * 1000); // 3분
+    }, 60 * 1000); // 1분 (저장 안정성 강화)
     return () => clearInterval(integrityCheck);
   }, [storageKey, performSave]);
 
