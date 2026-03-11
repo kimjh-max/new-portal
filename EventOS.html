@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v25";
+  var CODE_VER = "20260312v25b";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -834,26 +834,30 @@ const CloudSync = {
     }
   },
 
-  // ── 문서(보고서) 데이터 로드 (청크 자동 조합 지원) ──
+  // ── 문서(보고서) 데이터 로드 (v25: docVersions 에러/미발견 구분) ──
   async loadDoc(key) {
     if (!CLOUD_CONFIG.ENABLED) return null;
     try {
-      // ① 기본 키로 로드 시도
       const res = await fetch(`${this._baseUrl()}/api/doc?key=${encodeURIComponent(key)}`);
       const result = await res.json();
-      // ★ found=true면 data가 빈 배열이어도 반환 (삭제 후 [] 상태 정상 반영)
+      // ★ found=true면 data가 빈 배열이어도 반환
       if (result.success && result.found) return result.data;
 
-      // ② 청크 조합 비활성화 — docVersions는 기본 키만 사용 (R2 source of truth)
-      // 구 청크 데이터(165MB+)를 조합하면 메모리 크래시 발생하므로 완전 차단
-      // 버전 데이터는 CloudDataStore.writeDoc으로 기본 키에 직접 저장됨
+      // docVersions: 청크 조합 비활성화 + "확인된 미발견"은 빈배열 반환
       if (key.indexOf("eventos_docVersions_") === 0) {
-        console.log("[CloudSync] ℹ️ docVersions 청크 조합 비활성화 — 기본 키만 사용:", key);
+        if (result.success && !result.found) {
+          // R2가 명확히 "이 키 없음" 확인 → 빈 배열 (삭제 완료 상태)
+          console.log("[CloudSync] ℹ️ docVersions R2 확인: 키 없음 →", key);
+          return [];
+        }
+        // 기타 (서버 에러 등) → null (로컬 데이터 유지)
+        console.warn("[CloudSync] ⚠️ docVersions R2 응답 이상:", JSON.stringify(result).slice(0,200));
         return null;
       }
       return null;
     } catch (err) {
-      console.error("[CloudSync] loadDoc:", err);
+      // ★ 네트워크 에러 → null 반환 (로컬 데이터 삭제하면 안 됨)
+      console.error("[CloudSync] loadDoc 에러 (로컬 유지):", err.message);
       return null;
     }
   },
@@ -10185,25 +10189,20 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           }
         } catch {}
       }
-      // ① R2 클라우드 = source of truth (항상 확인, preloaded 있어도 건너뛰지 않음)
+      // ① R2 클라우드 확인 (v25: null=에러→로컬유지, 배열=R2 적용)
       try {
         const cv = await CloudSync.loadDoc(versionsKey);
-        if (cv && Array.isArray(cv)) {
-          // R2 데이터 항상 적용 (삭제 후 0개여도 반영 — 좀비 버전 방지)
+        if (Array.isArray(cv)) {
+          // R2에서 배열 반환 (빈 배열 포함) → R2 데이터 적용
           if (!cancelled) {
             setVersions(cv);
-            console.log("[DocEditor] ☁️ R2 버전 " + cv.length + "개 적용 (source of truth)");
+            console.log("[DocEditor] ☁️ R2 버전 " + cv.length + "개 적용");
           }
           saveToIDB(versionsKey, cv).catch(()=>{});
           try { localStorage.setItem(versionsKey, JSON.stringify(cv)); } catch {}
-        } else if (cv === null || (Array.isArray(cv) && cv.length === 0)) {
-          // R2에 버전 없음 → 로컬 좀비 데이터 정리
-          if (localVer && localVer.length > 0) {
-            console.log("[DocEditor] 🗑️ R2에 버전 없음 → IDB 좀비 버전 " + localVer.length + "개 정리");
-            if (!cancelled) setVersions([]);
-            saveToIDB(versionsKey, []).catch(()=>{});
-            try { localStorage.removeItem(versionsKey); } catch {}
-          }
+        } else {
+          // cv === null → R2 에러/타임아웃 → 로컬 데이터 유지 (삭제하지 않음!)
+          console.log("[DocEditor] ⚠️ R2 응답 null → 로컬 버전 " + (localVer ? localVer.length : 0) + "개 유지");
         }
       } catch (e) {
         console.warn("[DocEditor] ☁️ R2 버전 로드 실패 — 로컬 데이터 유지:", e.message);
