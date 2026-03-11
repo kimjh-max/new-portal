@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v25b";
+  var CODE_VER = "20260312v25c";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -843,15 +843,10 @@ const CloudSync = {
       // ★ found=true면 data가 빈 배열이어도 반환
       if (result.success && result.found) return result.data;
 
-      // docVersions: 청크 조합 비활성화 + "확인된 미발견"은 빈배열 반환
+      // docVersions: 청크 조합 비활성화 + "미발견"도 null (로컬 유지)
+      // ★ deleteVersion이 이미 IDB/LS 클리어하므로 여기서 좀비 정리 불필요
       if (key.indexOf("eventos_docVersions_") === 0) {
-        if (result.success && !result.found) {
-          // R2가 명확히 "이 키 없음" 확인 → 빈 배열 (삭제 완료 상태)
-          console.log("[CloudSync] ℹ️ docVersions R2 확인: 키 없음 →", key);
-          return [];
-        }
-        // 기타 (서버 에러 등) → null (로컬 데이터 유지)
-        console.warn("[CloudSync] ⚠️ docVersions R2 응답 이상:", JSON.stringify(result).slice(0,200));
+        console.log("[CloudSync] ℹ️ docVersions R2: found=" + result.found + " →", result.found ? "데이터 반환" : "null (로컬 유지)");
         return null;
       }
       return null;
@@ -10496,8 +10491,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     setVersions(updated);
     // ① 로컬 저장 먼저 (절대 실패하지 않도록)
     try { await saveToIDB(versionsKey, updated); } catch(e) { console.warn("[DocEditor] 버전 IDB 저장 실패:", e); }
-    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch(e) { console.warn("[DocEditor] 버전 LS 저장 실패:", e); }
-    console.log("[DocEditor] 📋 버전 로컬 저장 완료:", displayName, "총", updated.length, "개");
+    // ★ localStorage 저장 안 함 — 55MB 버전 데이터는 QuotaExceeded 발생. IDB만 사용.
+    console.log("[DocEditor] 📋 버전 IDB 저장 완료:", displayName, "총", updated.length, "개");
     // ② 클라우드 저장 (실패해도 로컬은 이미 저장됨)
     let cloudOk = false;
     try {
