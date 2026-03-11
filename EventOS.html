@@ -13,7 +13,12 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260311v19";
+  var CODE_VER = "20260312v20";
+  // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
+  window.addEventListener("unhandledrejection", function(e) {
+    console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
+    e.preventDefault(); // 브라우저 크래시 방지
+  });
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -1064,8 +1069,13 @@ const CloudDataStore = {
         }
         console.log("[CloudDataStore] ✅ 큐 항목 전송:", item.type, item.key || "");
       } catch (err) {
-        console.error("[CloudDataStore] ❌ 큐 항목 실패, 재큐잉:", err.message);
-        this._enqueue(item);
+        const retries = (item._retries || 0) + 1;
+        if (retries < 5) {
+          console.warn("[CloudDataStore] ❌ 큐 항목 실패 (재시도 " + retries + "/5):", err.message);
+          this._enqueue({ ...item, _retries: retries });
+        } else {
+          console.error("[CloudDataStore] ❌ 큐 항목 최대 재시도 초과 — 폐기:", item.type, item.key || "");
+        }
       }
     }
   },
@@ -1543,14 +1553,14 @@ function useCloudState(key, defaultValue, opts) {
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       CloudDataStore.writeAppData({ [key]: stateRef.current }).then(result => {
-        if (result.success) {
+        if (result && result.success) {
           SyncManager.setStatus("success");
           SyncManager._lastSyncTime = new Date();
           SyncManager._notify();
-        } else if (result.queued) {
+        } else if (result && result.queued) {
           console.log("[useCloudState] 📤 " + key + " 큐잉됨 (오프라인)");
         }
-      });
+      }).catch(e => console.warn("[useCloudState] " + key + " 저장 실패:", e.message));
       // Drive 백업도 전송
       if (DRIVE_CONFIG.ENABLED) {
         SyncManager.queueSync("saveAppData", { data: { [key]: stateRef.current } });
@@ -8007,7 +8017,7 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
     SyncManager.listFiles(project.name).then(files => {
       setDriveFiles(files);
       setLoadingFiles(false);
-    });
+    }).catch(e => { console.warn("[Files] 파일 목록 로드 실패:", e.message); setLoadingFiles(false); });
   }, [project.name]);
 
   // ⚡ R2-first 병렬 업로드 핸들러 (속도 최적화)
@@ -8372,7 +8382,7 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
             {loadingFiles && <span style={{color:"var(--txt4)",fontSize:11}}>로딩 중...</span>}
             {DRIVE_CONFIG.ENABLED && !loadingFiles && (
               <button className="btn btn-ghost" style={{padding:"2px 8px",fontSize:10}}
-                onClick={()=>{setLoadingFiles(true);SyncManager.listFiles(project.name).then(f=>{setDriveFiles(f);setLoadingFiles(false)})}}>
+                onClick={()=>{setLoadingFiles(true);SyncManager.listFiles(project.name).then(f=>{setDriveFiles(f);setLoadingFiles(false)}).catch(()=>setLoadingFiles(false))}}>
                 🔄 새로고침
               </button>
             )}
@@ -8643,6 +8653,24 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
       {/* 탭 콘텐츠 */}
       {tab==="overview"&&(
         <div style={{display:"flex",flexDirection:"column",gap:20}}>
+          {/* AI 과업지시서 분석 → 개요/과업 자동 생성 */}
+          <AIOverviewPanel project={project}
+            onApplyOverview={(ovData) => {
+              // AI 분석 결과를 과업지시서의 관련 필드에도 반영
+              const updated = { ...project };
+              if (ovData.eventName && !project.name) updated.name = ovData.eventName;
+              if (ovData.venue && !project.taskOrder?.venue) {
+                updated.taskOrder = { ...(project.taskOrder || {}), venue: ovData.venue };
+              }
+              onUpdate(updated);
+              toast("AI 분석 결과가 프로젝트에 반영되었습니다", "success");
+            }}
+            onApplyTaskOrder={(toData) => {
+              const updated = { ...project, taskOrder: { ...(project.taskOrder || {}), ...toData } };
+              onUpdate(updated);
+              toast("과업지시서에 AI 분석 결과가 반영되었습니다", "success");
+            }}
+          />
           {/* 긴급건 알림 */}
           <UrgentTasksPanel project={project} onUpdate={onUpdate}/>
           {/* 월별 달력 — 간트 일정 표시 */}
@@ -9232,9 +9260,18 @@ function FilesPage({projects}) {
   function openIDB(){return new Promise((res,rej)=>{const r=indexedDB.open(IDB_NAME,IDB_VER);r.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains(IDB_STORE))db.createObjectStore(IDB_STORE)};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
   // 옛 IDB(EventOS_DocEditor) 정리
   try{indexedDB.deleteDatabase("EventOS_DocEditor")}catch(e){}
-  async function saveToIDB(key,data){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readwrite");tx.objectStore(IDB_STORE).put(data,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
-  async function loadFromIDB(key){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
-  async function getAllIDBKeys(){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).getAllKeys();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error)})}
+  // IDB 연결 풀 — 단일 연결 재사용으로 연결 누수 방지
+  let _idbInstance = null;
+  let _idbOpening = null;
+  function getIDB(){
+    if(_idbInstance) return Promise.resolve(_idbInstance);
+    if(_idbOpening) return _idbOpening;
+    _idbOpening = openIDB().then(db=>{_idbInstance=db;db.onclose=()=>{_idbInstance=null};_idbOpening=null;return db}).catch(e=>{_idbOpening=null;throw e});
+    return _idbOpening;
+  }
+  async function saveToIDB(key,data){const db=await getIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readwrite");tx.objectStore(IDB_STORE).put(data,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
+  async function loadFromIDB(key){const db=await getIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+  async function getAllIDBKeys(){const db=await getIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).getAllKeys();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error)})}
 
     /* ──────── Draggable Tab List ──────── */
     function DraggableTabList({items, activeId, onSelect, onReorder, onAdd, renderLabel, addLabel="+ 추가"}) {
@@ -10175,8 +10212,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     window.__docEditorUnsaved = true; // 탭 전환 감지용 플래그
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      performSave(docData);
-      window.__docEditorUnsaved = false;
+      performSave(docData).catch(e => console.warn("[DocEditor] 디바운스 저장 실패:", e.message)).finally(() => { window.__docEditorUnsaved = false; });
     }, 500);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [docData, docKey, performSave]);
@@ -10191,7 +10227,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     periodicSaveRef.current = setInterval(() => {
       if (!cloudDocLoadedRef.current) return; // 🛡️ 클라우드 로드 전 저장 차단
       const latestData = docDataLatestRef.current;
-      if (latestData && Object.keys(latestData).length > 0) { performSave(latestData, { silent: true }); }
+      if (latestData && Object.keys(latestData).length > 0) { performSave(latestData, { silent: true }).catch(e => console.warn("[DocEditor] 주기적 저장 실패:", e.message)); }
     }, 10 * 1000);
     return () => { if (periodicSaveRef.current) clearInterval(periodicSaveRef.current); };
   }, [docKey, performSave]);
@@ -10203,8 +10239,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       const data = docDataLatestRef.current;
       if (!data || Object.keys(data).length === 0) return;
       if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
-      performSave(data);
-      window.__docEditorUnsaved = false;
+      performSave(data).catch(e => console.warn("[DocEditor] 강제 저장 실패:", e.message)).finally(() => { window.__docEditorUnsaved = false; });
     };
     return () => { delete window.__forceDocEditorSave; };
   }, [performSave]);
@@ -10227,7 +10262,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           console.error("[DocEditor] 🚨 무결성 위반! localStorage & IndexedDB 모두 데이터 없음");
           toast("🚨 보고서 데이터 유실 감지! 긴급 복구 중...", "error");
           // 긴급 복구: 현재 메모리 데이터를 다시 저장
-          performSave(memData);
+          performSave(memData).catch(e => console.warn("[DocEditor] 긴급 복구 저장 실패:", e.message));
         } else if (!lsOk && idbOk) {
           console.warn("[DocEditor] ⚠️ localStorage 데이터 유실 → IndexedDB에서 복구");
           try { localStorage.setItem(storageKey, JSON.stringify(idbData)); } catch {}
@@ -10252,10 +10287,13 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       // ② 클라우드로 sendBeacon (클라우드 로드 완료된 경우만 — stale 데이터 전송 방지)
       if (CLOUD_CONFIG.ENABLED && cloudDocLoadedRef.current) {
         try {
-          navigator.sendBeacon(
-            CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "") + "/api/doc",
-            new Blob([JSON.stringify({ key: storageKey, data })], { type: "application/json" })
-          );
+          const payload = JSON.stringify({ key: storageKey, data });
+          if (payload.length < 60000) { // sendBeacon 64KB 제한
+            navigator.sendBeacon(
+              CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "") + "/api/doc",
+              new Blob([payload], { type: "application/json" })
+            );
+          }
         } catch (e) { console.error("[DocEditor] sendBeacon fail:", e); }
       }
     };
@@ -13580,12 +13618,12 @@ function App() {
     if (projectsRef.current === json) return;
     projectsRef.current = json;
     CloudDataStore.writeProjectsBulk(projects).then(result => {
-      if (result.success) {
+      if (result && result.success) {
         SyncManager.setStatus("success");
         SyncManager._lastSyncTime = new Date();
         SyncManager._notify();
       }
-    });
+    }).catch(e => console.warn("[App] 프로젝트 벌크 저장 실패:", e.message));
     // Drive 백업도 전송 (기존 호환)
     if (DRIVE_CONFIG.ENABLED) {
       projects.forEach(p => {
