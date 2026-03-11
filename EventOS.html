@@ -10102,25 +10102,31 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   }, [docKey]);
 
   // ── Smart Save (IndexedDB 기본 + localStorage 보조 + 클라우드 동기화) ──
-  const performSave = React.useCallback(async (data) => {
+  const performSave = React.useCallback(async (data, options = {}) => {
+    const silent = options.silent || false; // silent: UI 상태 변경 없이 백그라운드 저장
     const now = new Date();
     const ts = now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-    setSaveStatus("saving");
+    if (!silent) setSaveStatus("saving");
     // ① 클라우드 저장 먼저 (source of truth)
     const cloudResult = await CloudDataStore.writeDoc(storageKey, data);
     // ② 로컬 캐시 (IDB + localStorage)
     try { await saveToIDB(storageKey, data); } catch {}
     try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
-    // ③ 상태 업데이트 + 실패 시 명확한 경고
-    if (cloudResult.success) {
-      setSaveStatus("saved"); setLastSavedAt(ts + " ☁️");
-      SyncManager.setStatus("success"); SyncManager._lastSyncTime = new Date(); SyncManager._notify();
-    } else if (cloudResult.queued) {
-      setSaveStatus("saved"); setLastSavedAt(ts + " 📤");
-      toast("⚠️ 클라우드 저장 대기 중 — 인터넷 연결 시 자동 전송됩니다", "warn");
+    // ③ 상태 업데이트 (silent 모드에서는 UI 건드리지 않음 — 입력 방해 방지)
+    if (!silent) {
+      if (cloudResult.success) {
+        setSaveStatus("saved"); setLastSavedAt(ts + " ☁️");
+        SyncManager.setStatus("success"); SyncManager._lastSyncTime = new Date(); SyncManager._notify();
+      } else if (cloudResult.queued) {
+        setSaveStatus("saved"); setLastSavedAt(ts + " 📤");
+        toast("⚠️ 클라우드 저장 대기 중 — 인터넷 연결 시 자동 전송됩니다", "warn");
+      } else {
+        setSaveStatus("saved"); setLastSavedAt(ts + " ⚠️");
+        toast("❌ 클라우드 저장 실패! 로컬에만 저장됨 — 네트워크를 확인하세요", "error");
+      }
     } else {
-      setSaveStatus("saved"); setLastSavedAt(ts + " ⚠️");
-      toast("❌ 클라우드 저장 실패! 로컬에만 저장됨 — 네트워크를 확인하세요", "error");
+      // silent 모드에서도 SyncManager는 업데이트 (헤더 상태 반영)
+      if (cloudResult.success) { SyncManager.setStatus("success"); SyncManager._lastSyncTime = new Date(); SyncManager._notify(); }
     }
     // Drive 백업 (기존 호환)
     if (DRIVE_CONFIG.ENABLED) {
@@ -10160,20 +10166,20 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [docData, docKey, performSave]);
 
-  // 10초 주기 자동저장 (저장 안정성 강화 — 토스트 없이 조용히 저장)
-  React.useEffect(() => {
-    if (!docKey) return;
-    const docDataRef = { current: docData };
-    periodicSaveRef.current = setInterval(() => {
-      if (!cloudDocLoadedRef.current) return; // 🛡️ 클라우드 로드 전 저장 차단
-      if (Object.keys(docDataRef.current).length > 0) { performSave(docDataRef.current); }
-    }, 10 * 1000);
-    return () => { if (periodicSaveRef.current) clearInterval(periodicSaveRef.current); };
-  }, [docKey, performSave]);
-
   // docData ref 업데이트 (주기적 저장에서 최신 값 사용)
   const docDataLatestRef = React.useRef(docData);
   React.useEffect(() => { docDataLatestRef.current = docData; }, [docData]);
+
+  // 10초 주기 자동저장 (silent 모드 — UI 상태 변경 없이 백그라운드 저장, 입력 방해 없음)
+  React.useEffect(() => {
+    if (!docKey) return;
+    periodicSaveRef.current = setInterval(() => {
+      if (!cloudDocLoadedRef.current) return; // 🛡️ 클라우드 로드 전 저장 차단
+      const latestData = docDataLatestRef.current;
+      if (latestData && Object.keys(latestData).length > 0) { performSave(latestData, { silent: true }); }
+    }, 10 * 1000);
+    return () => { if (periodicSaveRef.current) clearInterval(periodicSaveRef.current); };
+  }, [docKey, performSave]);
 
   // 외부에서 호출 가능한 글로벌 강제 저장 함수 등록 (탭 전환 시 사용)
   React.useEffect(() => {
