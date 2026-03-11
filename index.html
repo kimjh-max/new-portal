@@ -1070,7 +1070,11 @@ const CloudDataStore = {
         console.log("[CloudDataStore] ✅ 큐 항목 전송:", item.type, item.key || "");
       } catch (err) {
         const retries = (item._retries || 0) + 1;
-        if (retries < 5) {
+        if (item.type === "doc") {
+          // ★ 보고서 데이터는 절대 폐기하지 않음 — 무한 재시도
+          console.warn("[CloudDataStore] ❌ 보고서 큐 실패 (재시도 " + retries + "회, 계속 재시도):", item.key, err.message);
+          this._enqueue({ ...item, _retries: retries });
+        } else if (retries < 5) {
           console.warn("[CloudDataStore] ❌ 큐 항목 실패 (재시도 " + retries + "/5):", err.message);
           this._enqueue({ ...item, _retries: retries });
         } else {
@@ -10281,11 +10285,16 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
               if (r.success) {
                 setLastSavedAt(ts + " ☁️");
                 console.log("[DocEditor] ☁️ R2 자동저장 완료:", storageKey, (json.length/1024/1024).toFixed(1) + "MB");
+              } else if (r.queued) {
+                // ★ 오프라인 큐잉 성공 → 해시 유지 (10초마다 중복 큐 등록 방지)
+                // 인터넷 복구 시 CloudDataStore.flushQueue()가 IDB 최신 데이터를 자동 전송
+                setLastSavedAt(ts + " 📤");
+                console.log("[DocEditor] 📤 오프라인 큐 등록:", storageKey);
               } else {
-                delete lastCloudHashRef.current[storageKey]; // 실패 → 다음 주기에 재시도
+                delete lastCloudHashRef.current[storageKey]; // 진짜 실패 → 다음 주기에 재시도
               }
             }).catch(e => {
-              delete lastCloudHashRef.current[storageKey]; // 실패 → 다음 주기에 재시도
+              delete lastCloudHashRef.current[storageKey]; // 네트워크 에러 → 다음 주기에 재시도
               console.warn("[DocEditor] ☁️ R2 자동저장 실패:", e.message);
             });
           }
