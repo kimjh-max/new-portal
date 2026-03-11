@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v23a";
+  var CODE_VER = "20260312v23b";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10235,6 +10235,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   const cloudDocLoadedRef = React.useRef(!CLOUD_CONFIG.ENABLED); // 클라우드 비활성 시 즉시 해제
   // ── R2 클라우드 변경 감지: dirty 플래그 방식 (메모리 효율적 — JSON.stringify 불필요) ──
   const cloudDirtyRef = React.useRef(false); // docData 변경 시 true, 클라우드 저장 성공 시 false
+  // ── 동시 클라우드 업로드 방지: 55MB 업로드 중 또 다른 업로드 차단 ──
+  const cloudSavingRef = React.useRef(false);
 
   // ── cover / keyColor 데이터 ──
   const cv = docData._cover || {};
@@ -10280,10 +10282,12 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       if (keyCount < 50) { // 소용량 데이터만 localStorage 캐시 시도
         safeLocalSet(storageKey, JSON.stringify(data));
       }
-      // ── ★ R2 클라우드 저장 (dirty 플래그 — JSON.stringify 없이 변경 감지) ──
-      if (CLOUD_CONFIG.ENABLED && cloudDirtyRef.current) {
-        cloudDirtyRef.current = false; // 먼저 해제 (중복 전송 방지)
+      // ── ★ R2 클라우드 저장 (dirty 플래그 + 동시 업로드 방지) ──
+      if (CLOUD_CONFIG.ENABLED && cloudDirtyRef.current && !cloudSavingRef.current) {
+        cloudDirtyRef.current = false;
+        cloudSavingRef.current = true;
         CloudDataStore.writeDoc(storageKey, data).then(r => {
+          cloudSavingRef.current = false;
           if (r.success) {
             setLastSavedAt(ts + " ☁️");
             console.log("[DocEditor] ☁️ R2 자동저장 완료:", storageKey);
@@ -10294,30 +10298,44 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
             cloudDirtyRef.current = true; // 진짜 실패 → 다음 주기에 재시도
           }
         }).catch(e => {
+          cloudSavingRef.current = false;
           cloudDirtyRef.current = true; // 네트워크 에러 → 다음 주기에 재시도
           console.warn("[DocEditor] ☁️ R2 자동저장 실패:", e.message);
         });
       }
       return;
     }
-    // ── 일반: 클라우드 + 로컬 전체 저장 ──
+    // ── 일반: IDB 먼저 저장 (크래시 대비) → 클라우드 ──
     setSaveStatus("saving");
-    // ① 클라우드 저장 먼저 (source of truth)
-    const cloudResult = await CloudDataStore.writeDoc(storageKey, data);
-    // ② 로컬 캐시 (IDB가 주 저장소, localStorage는 4MB 이하만)
+    // ① IDB 먼저 (크래시 시 IDB에서 복구 가능하도록)
     try { await saveToIDB(storageKey, data); } catch {}
-    safeLocalSet(storageKey, JSON.stringify(data));
-    // ③ 상태 업데이트
-    if (cloudResult.success) {
-      setSaveStatus("saved"); setLastSavedAt(ts + " ☁️");
-      SyncManager.setStatus("success"); SyncManager._lastSyncTime = new Date(); SyncManager._notify();
-      cloudDirtyRef.current = false; // ★ 클라우드 저장 성공 → dirty 해제
-    } else if (cloudResult.queued) {
-      setSaveStatus("saved"); setLastSavedAt(ts + " 📤");
-      toast("⚠️ 클라우드 저장 대기 중 — 인터넷 연결 시 자동 전송됩니다", "warn");
+    // ② localStorage: 소용량만 (대용량은 stringify 자체를 하지 않음 — 메모리 보호)
+    if (Object.keys(data).length < 50) {
+      safeLocalSet(storageKey, JSON.stringify(data));
+    }
+    // ③ 클라우드 저장 (동시 업로드 방지 — 55MB 업로드 중 또 다른 업로드 차단)
+    if (cloudSavingRef.current) {
+      // 이미 업로드 중 → IDB에만 저장 완료, 클라우드는 dirty로 남겨 다음 주기에
+      setSaveStatus("saved"); setLastSavedAt(ts + " 💾");
+      cloudDirtyRef.current = true;
+      console.log("[DocEditor] ⏳ 클라우드 업로드 진행 중 — IDB 저장만 완료, R2는 다음 주기");
     } else {
-      setSaveStatus("saved"); setLastSavedAt(ts + " ⚠️");
-      toast("❌ 클라우드 저장 실패! 로컬에만 저장됨 — 네트워크를 확인하세요", "error");
+      cloudSavingRef.current = true;
+      let cloudResult;
+      try {
+        cloudResult = await CloudDataStore.writeDoc(storageKey, data);
+      } finally {
+        cloudSavingRef.current = false;
+      }
+      if (cloudResult && cloudResult.success) {
+        setSaveStatus("saved"); setLastSavedAt(ts + " ☁️");
+        SyncManager.setStatus("success"); SyncManager._lastSyncTime = new Date(); SyncManager._notify();
+        cloudDirtyRef.current = false;
+      } else if (cloudResult && cloudResult.queued) {
+        setSaveStatus("saved"); setLastSavedAt(ts + " 📤");
+      } else {
+        setSaveStatus("saved"); setLastSavedAt(ts + " ⚠️");
+      }
     }
     // Drive 백업 (기존 호환)
     if (DRIVE_CONFIG.ENABLED) {
@@ -10343,7 +10361,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     }
   }, [storageKey, isPlan]);
 
-  // 디바운스 0.5초 저장 (프로듀서 입력 즉시 반영)
+  // 디바운스 저장 (대용량 문서는 2초, 소용량은 0.5초)
   // ⚠️ cloudDocLoadedRef: 클라우드 로드 완료 전 auto-save 차단 (크래시 후 stale 데이터 덮어쓰기 방지)
   React.useEffect(() => {
     if (!docKey || Object.keys(docData).length === 0) return;
@@ -10352,9 +10370,11 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     cloudDirtyRef.current = true; // ★ 데이터 변경 → dirty 플래그 설정
     window.__docEditorUnsaved = true; // 탭 전환 감지용 플래그
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    // ★ 대용량 문서(50키+)는 debounce 2초로 확대 — 메모리 부하 감소
+    const debounceMs = Object.keys(docData).length >= 50 ? 2000 : 500;
     saveTimerRef.current = setTimeout(() => {
       performSave(docData).catch(e => console.warn("[DocEditor] 디바운스 저장 실패:", e.message)).finally(() => { window.__docEditorUnsaved = false; });
-    }, 500);
+    }, debounceMs);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [docData, docKey, performSave]);
 
