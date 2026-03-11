@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v23f";
+  var CODE_VER = "20260312v24";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10552,24 +10552,31 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     toast(`"${ver.name}" 버전을 불러왔습니다`, "success");
   };
 
-  // ── 버전 삭제 (R2 + IDB + localStorage + 구 청크 정리) ──
+  // ── 버전 삭제 (R2 DELETE + IDB + localStorage + 구 청크 정리) ──
   const deleteVersion = async (verId) => {
     const updated = versions.filter(v => v.id !== verId);
     setVersions(updated);
-    // ① R2 기본 키 저장 (source of truth)
-    try { await CloudDataStore.writeDoc(versionsKey, updated); console.log("[DocEditor] 🗑️ 버전 삭제 → R2 동기화 완료"); } catch(e) { console.warn("[DocEditor] 버전 삭제 R2 실패:", e.message); }
+    const workerBase = CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "");
+    if (updated.length === 0) {
+      // ① 전체 삭제: R2 기본 키 DELETE (overwrite protection 우회)
+      try {
+        const res = await fetch(`${workerBase}/api/doc?key=${encodeURIComponent(versionsKey)}`, { method: "DELETE" });
+        const r = await res.json();
+        console.log("[DocEditor] 🗑️ 버전 전체 삭제 → R2 DELETE:", r.success ? "성공" : r.error);
+      } catch(e) { console.warn("[DocEditor] 버전 삭제 R2 DELETE 실패:", e.message); }
+      // 구 청크도 모두 DELETE
+      for (let ci = 0; ci < 10; ci++) {
+        fetch(`${workerBase}/api/doc?key=${encodeURIComponent(versionsKey + "__chunk_" + ci)}`, { method: "DELETE" }).catch(()=>{});
+      }
+      console.log("[DocEditor] 🧹 R2 구 청크 정리 요청 완료");
+    } else {
+      // ① 일부 삭제: R2 기본 키에 남은 버전 저장
+      try { await CloudDataStore.writeDoc(versionsKey, updated); console.log("[DocEditor] 🗑️ 버전 삭제 → R2 동기화 완료"); } catch(e) { console.warn("[DocEditor] 버전 삭제 R2 실패:", e.message); }
+    }
     // ② IDB
     try { await saveToIDB(versionsKey, updated); } catch {}
     // ③ localStorage
     try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch(e) { console.warn("[DocEditor] 버전 삭제 localStorage 실패:", e); }
-    // ④ R2 구 청크 정리 (좀비 방지 — __chunk_0~9 삭제)
-    if (updated.length === 0) {
-      for (let ci = 0; ci < 10; ci++) {
-        const chunkKey = versionsKey + "__chunk_" + ci;
-        fetch(`${CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "")}/api/doc?key=${encodeURIComponent(chunkKey)}`, { method: "DELETE" }).catch(()=>{});
-      }
-      console.log("[DocEditor] 🧹 R2 구 청크 정리 요청 완료");
-    }
   };
 
   // 현재 섹션 데이터
