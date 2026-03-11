@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v20";
+  var CODE_VER = "20260312v21";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -9273,6 +9273,24 @@ function FilesPage({projects}) {
   async function loadFromIDB(key){const db=await getIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
   async function getAllIDBKeys(){const db=await getIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).getAllKeys();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error)})}
 
+  // ── localStorage 안전 저장: 4MB 초과 데이터는 localStorage에 쓰지 않음 (IDB만 사용) ──
+  const LS_MAX_BYTES = 4 * 1024 * 1024; // 4MB
+  function safeLocalSet(key, jsonStr) {
+    try {
+      if (typeof jsonStr !== "string") jsonStr = JSON.stringify(jsonStr);
+      if (jsonStr.length > LS_MAX_BYTES) {
+        console.log("[safeLocalSet] ⚠️ " + key + " 크기 " + (jsonStr.length/1024/1024).toFixed(1) + "MB → localStorage 건너뜀 (IDB만 사용)");
+        return false;
+      }
+      localStorage.setItem(key, jsonStr);
+      return true;
+    } catch (e) {
+      console.warn("[safeLocalSet] localStorage 쓰기 실패:", key, e.message);
+      // QuotaExceeded 시 해당 키 삭제 후 재시도하지 않음 (데이터 보호)
+      return false;
+    }
+  }
+
     /* ──────── Draggable Tab List ──────── */
     function DraggableTabList({items, activeId, onSelect, onReorder, onAdd, renderLabel, addLabel="+ 추가"}) {
       const [dragIdx, setDragIdx] = React.useState(null);
@@ -9970,12 +9988,22 @@ function mergePlanToResult(planData, existingResult) {
   const merged = JSON.parse(JSON.stringify(planData));
   merged._keyColor = "#10b981";
   if (existingResult && typeof existingResult === "object" && Object.keys(existingResult).length > 0) {
+    // 기존 결과보고서의 메타 필드 보존 (_keyColor 제외)
+    for (const key of Object.keys(existingResult)) {
+      if (key.startsWith("_") && key !== "_keyColor") {
+        merged[key] = existingResult[key];
+      }
+    }
+    // 각 섹션의 결과보고서 고유 데이터 보존
     for (const sectionId of Object.keys(existingResult)) {
       if (sectionId.startsWith("_")) continue;
       const rs = existingResult[sectionId];
-      if (rs && typeof rs === "object" && merged[sectionId]) {
+      if (rs && typeof rs === "object") {
+        if (!merged[sectionId]) merged[sectionId] = {};
         if (rs.resultNotes) merged[sectionId].resultNotes = rs.resultNotes;
+        if (rs.resultStatus) merged[sectionId].resultStatus = rs.resultStatus;
         if (rs.images && rs.images.length) merged[sectionId].images = rs.images;
+        if (rs.attachments && rs.attachments.length) merged[sectionId].attachments = rs.attachments;
       }
     }
   }
@@ -10054,7 +10082,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
             setDocData(cloudData);
             // 로컬 캐시 갱신
             saveToIDB(storageKey, cloudData).catch(()=>{});
-            try { localStorage.setItem(storageKey, JSON.stringify(cloudData)); } catch {}
+            safeLocalSet(storageKey, JSON.stringify(cloudData));
             console.log("[DocEditor] ☁️ 클라우드 데이터 적용:", storageKey);
           } else {
             // 클라우드에 데이터 없음 → 로컬 데이터를 클라우드에 업로드
@@ -10076,22 +10104,38 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       }
 
       // ③ 결과보고서가 비어있을 때만 → 운영계획안 자동 가져오기
-      // (비어있지 않은 보고서는 사용자가 직접 편집 중이므로 덮어쓰지 않음)
-      // (plan→report 실시간 동기화는 performSave에서 백그라운드로 처리)
+      // ★ 중요: localStorage뿐 아니라 IDB/Cloud도 확인해야 함 (대형 데이터는 localStorage에 못 들어감)
       if (!isPlan && !cancelled) {
-        const checkEmpty = () => {
-          const current = loadDocFromStorage();
-          return !current || Object.keys(current).length === 0 ||
-            (Object.keys(current).length === 1 && current._keyColor);
-        };
-        if (checkEmpty()) {
+        // 현재까지 로드된 데이터 확인 (IDB/Cloud에서 이미 setDocData 호출됨)
+        let hasExistingData = false;
+        try {
+          const idbCheck = await loadFromIDB(storageKey);
+          if (idbCheck && typeof idbCheck === "object" && Object.keys(idbCheck).length > 0 &&
+              !(Object.keys(idbCheck).length === 1 && idbCheck._keyColor)) {
+            hasExistingData = true;
+          }
+        } catch {}
+        if (!hasExistingData) {
+          try {
+            const lsCheck = localStorage.getItem(storageKey);
+            if (lsCheck && lsCheck.length > 10) {
+              const parsed = JSON.parse(lsCheck);
+              if (parsed && Object.keys(parsed).length > 0 &&
+                  !(Object.keys(parsed).length === 1 && parsed._keyColor)) {
+                hasExistingData = true;
+              }
+            }
+          } catch {}
+        }
+        if (!hasExistingData) {
+          console.log("[DocEditor] 📋→📊 결과보고서 비어있음 — 운영계획안 자동 가져오기 시도");
           try {
             const planData = await loadPlanDataForResult(proj?.id);
             if (planData && !cancelled) {
               const merged = mergePlanToResult(planData, {});
               setDocData(merged);
               saveToIDB(storageKey, merged).catch(()=>{});
-              try { localStorage.setItem(storageKey, JSON.stringify(merged)); } catch {}
+              safeLocalSet(storageKey, JSON.stringify(merged));
               if (CLOUD_CONFIG.ENABLED) CloudDataStore.writeDoc(storageKey, merged).catch(()=>{});
               console.log("[DocEditor] 📋→📊 운영계획안 → 결과보고서 자동 가져오기 완료");
               toast("📋 운영계획안 데이터를 결과보고서에 불러왔습니다", "success");
@@ -10099,6 +10143,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           } catch (err) {
             console.warn("[DocEditor] 운영계획안 가져오기 실패:", err.message);
           }
+        } else {
+          console.log("[DocEditor] ℹ️ 결과보고서 데이터 존재 — 운영계획안 자동 가져오기 건너뜀");
         }
       }
     })();
@@ -10181,24 +10227,33 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
 
   // ── Smart Save (IndexedDB 기본 + localStorage 보조 + 클라우드 동기화) ──
   const performSave = React.useCallback(async (data, options = {}) => {
+    // 🛡️ 저장 전 데이터 유효성 검증
+    if (!data || typeof data !== "object" || Object.keys(data).length === 0) {
+      console.warn("[DocEditor] ⚠️ 빈 데이터 저장 차단:", storageKey);
+      return;
+    }
+    if (!storageKey || !storageKey.startsWith("eventos_doc_")) {
+      console.error("[DocEditor] ❌ 잘못된 storageKey:", storageKey);
+      return;
+    }
     const silent = options.silent || false;
     // silent 모드 = 10초 주기 저장: 로컬에만 저장 (클라우드 부하 방지, 입력 방해 없음)
     // 일반 모드 = 사용자 입력 후 0.5초 디바운스: 클라우드 + 로컬 전체 저장
     const now = new Date();
     const ts = now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
     if (silent) {
-      // ── silent: 로컬에만 저장 (IDB + localStorage) ──
+      // ── silent: 로컬에만 저장 (IDB가 주 저장소, localStorage는 4MB 이하만) ──
       try { await saveToIDB(storageKey, data); } catch {}
-      try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
+      safeLocalSet(storageKey, JSON.stringify(data));
       return;
     }
     // ── 일반: 클라우드 + 로컬 전체 저장 ──
     setSaveStatus("saving");
     // ① 클라우드 저장 먼저 (source of truth)
     const cloudResult = await CloudDataStore.writeDoc(storageKey, data);
-    // ② 로컬 캐시 (IDB + localStorage)
+    // ② 로컬 캐시 (IDB가 주 저장소, localStorage는 4MB 이하만)
     try { await saveToIDB(storageKey, data); } catch {}
-    try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
+    safeLocalSet(storageKey, JSON.stringify(data));
     // ③ 상태 업데이트
     if (cloudResult.success) {
       setSaveStatus("saved"); setLastSavedAt(ts + " ☁️");
@@ -10226,7 +10281,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         const merged = mergePlanToResult(data, existingReport || {});
         CloudDataStore.writeDoc(reportKey, merged).catch(()=>{}); // 비동기 — 대기 안 함
         try { await saveToIDB(reportKey, merged); } catch {}
-        try { localStorage.setItem(reportKey, JSON.stringify(merged)); } catch {}
+        safeLocalSet(reportKey, JSON.stringify(merged));
       } catch (e) {
         console.warn("[DocEditor] plan→report 자동 동기화 실패:", e.message);
       }
@@ -10294,9 +10349,9 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           // 긴급 복구: 현재 메모리 데이터를 다시 저장
           performSave(memData).catch(e => console.warn("[DocEditor] 긴급 복구 저장 실패:", e.message));
         } else if (!lsOk && idbOk) {
-          console.warn("[DocEditor] ⚠️ localStorage 데이터 유실 → IndexedDB에서 복구");
-          try { localStorage.setItem(storageKey, JSON.stringify(idbData)); } catch {}
-          toast("localStorage 복구 완료 (IndexedDB 원본 사용)", "info");
+          // IDB에 데이터 있으면 정상 — localStorage는 캐시일 뿐 (대형 데이터는 IDB만 사용)
+          safeLocalSet(storageKey, JSON.stringify(idbData));
+          console.log("[DocEditor] ℹ️ localStorage 없음, IDB 정상 — 캐시 복원 시도");
         } else if (lsOk && !idbOk) {
           // IDB만 없으면 조용히 재저장
           saveToIDB(storageKey, memData).catch(()=>{});
@@ -10311,9 +10366,9 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     const handler = () => {
       const data = docDataLatestRef.current;
       if (!data || Object.keys(data).length === 0) return;
-      // ① 로컬 즉시 저장 (항상 실행)
-      try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
+      // ① 로컬 즉시 저장 (IDB가 주 저장소, localStorage는 4MB 이하만)
       saveToIDB(storageKey, data).catch(()=>{});
+      safeLocalSet(storageKey, JSON.stringify(data));
       // ② 클라우드로 sendBeacon (클라우드 로드 완료된 경우만 — stale 데이터 전송 방지)
       if (CLOUD_CONFIG.ENABLED && cloudDocLoadedRef.current) {
         try {
@@ -10428,7 +10483,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   const loadVersion = (ver) => {
     if (!window.confirm(`"${ver.name}" 버전을 불러오시겠습니까?\n현재 작성 중인 내용이 대체됩니다.`)) return;
     setDocData(ver.data);
-    try { localStorage.setItem(storageKey, JSON.stringify(ver.data)); } catch(e) { console.warn("[DocEditor] 버전 복원 localStorage 실패:", e); }
+    safeLocalSet(storageKey, JSON.stringify(ver.data));
     saveToIDB(storageKey, ver.data).catch(()=>{});
     setShowVersions(false);
     toast(`"${ver.name}" 버전을 불러왔습니다`, "success");
