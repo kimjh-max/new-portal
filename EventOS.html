@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v23d";
+  var CODE_VER = "20260312v23e";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -307,7 +307,9 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
 
       // ② 클라우드 doc 목록 가져오기
       var cloudDocs = await listCloudDocs();
-      var cloudDocKeys = cloudDocs.filter(function(d){ var k = d.doc_key; return (k.indexOf("eventos_doc_") === 0 || k.indexOf("eventos_docVersions_") === 0) && k.indexOf("__r2_test") === -1; });
+      var cloudDocKeys = cloudDocs.filter(function(d){ var k = d.doc_key; return (k.indexOf("eventos_doc_") === 0) && k.indexOf("eventos_docVersions_") === -1 && k.indexOf("__r2_test") === -1; });
+      // ★ docVersions는 D1+Drive 동기화에서 완전 제외 — R2(CloudDataStore)만 사용
+      // 이유: 버전 데이터(3스냅샷×55MB=165MB)를 청크 조합하면 메모리 크래시 발생
       console.log("[Sync] 로컬 IDB 키:" + localDocKeys.length + " | 클라우드 키:" + cloudDocKeys.length);
 
       var uploaded = 0, downloaded = 0;
@@ -327,23 +329,16 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
           if(Array.isArray(data)){ if(!data.length) continue; }
           else if(typeof data !== "object" || !Object.keys(data).length) continue;
 
-          // ✂️ 버전 이력 배열은 최신 N개로 트리밍 (메모리/대역폭 절약)
-          if(Array.isArray(data) && key.indexOf("eventos_docVersions_") === 0 && data.length > MAX_VERSIONS){
-            console.log("[Sync] ✂️ 버전 이력 트리밍: " + key + " (" + data.length + " → " + MAX_VERSIONS + ")");
-            data = data.slice(0, MAX_VERSIONS);
-            // IDB에도 트리밍된 데이터 저장
-            try { await putData(db, key, data); } catch(e){}
+          // ★ docVersions는 D1+Drive 동기화에서 완전 제외 — R2만 사용 (메모리 크래시 방지)
+          if(key.indexOf("eventos_docVersions_") === 0){
+            continue;
           }
 
           var localSize = JSON.stringify(data).length;
           var cloudDoc = cloudDocs.find(function(d){ return d.doc_key === key; });
           var cloudSize = cloudDoc ? cloudDoc.size : 0;
 
-          // 🛡️ 버전 이력은 클라우드에 이미 있으면 업로드 스킵 (대역폭 절약)
-          if(key.indexOf("eventos_docVersions_") === 0 && cloudSize > 0){
-            console.log("[Sync] ⏭️ 버전 이력 업로드 스킵 (클라우드에 이미 존재): " + key);
-            continue;
-          }
+          // (docVersions D1+Drive 업로드는 위에서 continue로 이미 차단됨)
 
           if(localSize > cloudSize){
             // 대용량 배열 데이터는 청크 분할 업로드
