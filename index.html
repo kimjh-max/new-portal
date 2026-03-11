@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v23b";
+  var CODE_VER = "20260312v23c";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10208,17 +10208,17 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           }
         }
       } catch {}
-      // ② 클라우드에서 백그라운드 로드 (더 많으면 업데이트)
+      // ② 클라우드에서 백그라운드 로드 (R2 = source of truth → 항상 R2 우선)
       try {
         const cv = await CloudSync.loadDoc(versionsKey);
-        if (cv && Array.isArray(cv) && cv.length > 0) {
-          if (!localVer || cv.length > localVer.length) {
-            if (!cancelled) {
-              setVersions(cv);
-              console.log("[DocEditor] ☁️ 클라우드 버전 " + cv.length + "개 (IDB보다 최신)");
-            }
-            saveToIDB(versionsKey, cv).catch(()=>{});
+        if (cv && Array.isArray(cv)) {
+          // R2 데이터가 존재하면 항상 적용 (삭제 후 0개여도 반영해야 함)
+          if (!cancelled) {
+            setVersions(cv);
+            console.log("[DocEditor] ☁️ R2 버전 " + cv.length + "개 적용 (source of truth)");
           }
+          saveToIDB(versionsKey, cv).catch(()=>{});
+          try { localStorage.setItem(versionsKey, JSON.stringify(cv)); } catch {}
         }
       } catch {}
     })();
@@ -10565,10 +10565,15 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     toast(`"${ver.name}" 버전을 불러왔습니다`, "success");
   };
 
-  // ── 버전 삭제 ──
-  const deleteVersion = (verId) => {
+  // ── 버전 삭제 (R2 + IDB + localStorage 모두 동기화) ──
+  const deleteVersion = async (verId) => {
     const updated = versions.filter(v => v.id !== verId);
     setVersions(updated);
+    // ① R2 클라우드 (source of truth) — 삭제 후 상태를 즉시 반영
+    try { await CloudDataStore.writeDoc(versionsKey, updated); console.log("[DocEditor] 🗑️ 버전 삭제 → R2 동기화 완료"); } catch(e) { console.warn("[DocEditor] 버전 삭제 R2 실패:", e.message); }
+    // ② IDB
+    try { await saveToIDB(versionsKey, updated); } catch {}
+    // ③ localStorage
     try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch(e) { console.warn("[DocEditor] 버전 삭제 localStorage 실패:", e); }
   };
 
