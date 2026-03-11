@@ -10114,36 +10114,40 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
 
   // ── Smart Save (IndexedDB 기본 + localStorage 보조 + 클라우드 동기화) ──
   const performSave = React.useCallback(async (data, options = {}) => {
-    const silent = options.silent || false; // silent: UI 상태 변경 없이 백그라운드 저장
+    const silent = options.silent || false;
+    // silent 모드 = 10초 주기 저장: 로컬에만 저장 (클라우드 부하 방지, 입력 방해 없음)
+    // 일반 모드 = 사용자 입력 후 0.5초 디바운스: 클라우드 + 로컬 전체 저장
     const now = new Date();
     const ts = now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-    if (!silent) setSaveStatus("saving");
+    if (silent) {
+      // ── silent: 로컬에만 저장 (IDB + localStorage) ──
+      try { await saveToIDB(storageKey, data); } catch {}
+      try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
+      return;
+    }
+    // ── 일반: 클라우드 + 로컬 전체 저장 ──
+    setSaveStatus("saving");
     // ① 클라우드 저장 먼저 (source of truth)
     const cloudResult = await CloudDataStore.writeDoc(storageKey, data);
     // ② 로컬 캐시 (IDB + localStorage)
     try { await saveToIDB(storageKey, data); } catch {}
     try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
-    // ③ 상태 업데이트 (silent 모드에서는 UI 건드리지 않음 — 입력 방해 방지)
-    if (!silent) {
-      if (cloudResult.success) {
-        setSaveStatus("saved"); setLastSavedAt(ts + " ☁️");
-        SyncManager.setStatus("success"); SyncManager._lastSyncTime = new Date(); SyncManager._notify();
-      } else if (cloudResult.queued) {
-        setSaveStatus("saved"); setLastSavedAt(ts + " 📤");
-        toast("⚠️ 클라우드 저장 대기 중 — 인터넷 연결 시 자동 전송됩니다", "warn");
-      } else {
-        setSaveStatus("saved"); setLastSavedAt(ts + " ⚠️");
-        toast("❌ 클라우드 저장 실패! 로컬에만 저장됨 — 네트워크를 확인하세요", "error");
-      }
+    // ③ 상태 업데이트
+    if (cloudResult.success) {
+      setSaveStatus("saved"); setLastSavedAt(ts + " ☁️");
+      SyncManager.setStatus("success"); SyncManager._lastSyncTime = new Date(); SyncManager._notify();
+    } else if (cloudResult.queued) {
+      setSaveStatus("saved"); setLastSavedAt(ts + " 📤");
+      toast("⚠️ 클라우드 저장 대기 중 — 인터넷 연결 시 자동 전송됩니다", "warn");
     } else {
-      // silent 모드에서도 SyncManager는 업데이트 (헤더 상태 반영)
-      if (cloudResult.success) { SyncManager.setStatus("success"); SyncManager._lastSyncTime = new Date(); SyncManager._notify(); }
+      setSaveStatus("saved"); setLastSavedAt(ts + " ⚠️");
+      toast("❌ 클라우드 저장 실패! 로컬에만 저장됨 — 네트워크를 확인하세요", "error");
     }
     // Drive 백업 (기존 호환)
     if (DRIVE_CONFIG.ENABLED) {
       SyncManager.queueSync("saveDoc_" + storageKey, { key: storageKey, data });
     }
-    // 운영계획안 저장 시 → 결과보고서에도 자동 반영 (실시간 동기화)
+    // 운영계획안 저장 시 → 결과보고서에도 로컬 반영
     if (isPlan) {
       const reportKey = storageKey.replace("_plan", "_report");
       try {
@@ -10153,7 +10157,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           try { const ls = localStorage.getItem(reportKey); if (ls) existingReport = JSON.parse(ls); } catch {}
         }
         const merged = mergePlanToResult(data, existingReport || {});
-        await CloudDataStore.writeDoc(reportKey, merged);
+        CloudDataStore.writeDoc(reportKey, merged).catch(()=>{}); // 비동기 — 대기 안 함
         try { await saveToIDB(reportKey, merged); } catch {}
         try { localStorage.setItem(reportKey, JSON.stringify(merged)); } catch {}
       } catch (e) {
