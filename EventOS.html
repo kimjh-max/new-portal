@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260310v17";
+  var CODE_VER = "20260310v15";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -309,7 +309,6 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
 
       // ② 로컬 → 클라우드 (로컬이 더 크면 업로드, 대용량은 청크 분할)
       var CHUNK_THRESHOLD = 40 * 1024 * 1024; // 40MB 이상이면 청크 분할
-      var MAX_VERSIONS = 2; // 버전 이력 최대 보관 수
       for(var i = 0; i < localDocKeys.length; i++){
         var key = localDocKeys[i];
         try {
@@ -321,25 +320,9 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
           if(!data) continue;
           if(Array.isArray(data)){ if(!data.length) continue; }
           else if(typeof data !== "object" || !Object.keys(data).length) continue;
-
-          // ✂️ 버전 이력 배열은 최신 N개로 트리밍 (메모리/대역폭 절약)
-          if(Array.isArray(data) && key.indexOf("eventos_docVersions_") === 0 && data.length > MAX_VERSIONS){
-            console.log("[Sync] ✂️ 버전 이력 트리밍: " + key + " (" + data.length + " → " + MAX_VERSIONS + ")");
-            data = data.slice(0, MAX_VERSIONS);
-            // IDB에도 트리밍된 데이터 저장
-            try { await putData(db, key, data); } catch(e){}
-          }
-
           var localSize = JSON.stringify(data).length;
           var cloudDoc = cloudDocs.find(function(d){ return d.doc_key === key; });
           var cloudSize = cloudDoc ? cloudDoc.size : 0;
-
-          // 🛡️ 버전 이력은 클라우드에 이미 있으면 업로드 스킵 (대역폭 절약)
-          if(key.indexOf("eventos_docVersions_") === 0 && cloudSize > 0){
-            console.log("[Sync] ⏭️ 버전 이력 업로드 스킵 (클라우드에 이미 존재): " + key);
-            continue;
-          }
-
           if(localSize > cloudSize){
             // 대용량 배열 데이터는 청크 분할 업로드
             if(Array.isArray(data) && localSize > CHUNK_THRESHOLD){
@@ -755,36 +738,10 @@ const CloudSync = {
     }
   },
 
-  // ── AI 타임라인 생성 ──
-  async generateTimeline(mode, options = {}) {
-    if (!CLOUD_CONFIG.ENABLED) return { success: false, error: "클라우드 미연결" };
-    try {
-      const res = await fetch(`${this._baseUrl()}/api/ai/generate-timeline`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode,
-          fileKey: options.fileKey || undefined,
-          message: options.message || undefined,
-          context: options.context || undefined,
-        }),
-      });
-      return await res.json();
-    } catch (err) {
-      console.error("[CloudSync] generateTimeline:", err);
-      return { success: false, error: err.message || "네트워크 오류" };
-    }
-  },
-
   // ── 문서(보고서) 데이터 저장 ──
   async saveDoc(key, data) {
     if (!CLOUD_CONFIG.ENABLED) return null;
     try {
-      // 버전 이력 배열은 최대 5개로 제한 (메모리/대역폭 절약)
-      if (Array.isArray(data) && key.indexOf("eventos_docVersions_") === 0 && data.length > 5) {
-        console.log("[CloudSync] ✂️ 버전 이력 트리밍:", key, data.length + " → 5");
-        data = data.slice(0, 5);
-      }
       const jsonSize = JSON.stringify(data).length;
       // 대용량 배열(버전 데이터 등)은 개별 청크로 분할 업로드
       if (Array.isArray(data) && jsonSize > 40 * 1024 * 1024) {
@@ -962,10 +919,6 @@ const CloudDataStore = {
       return { success: false, queued: true };
     }
     try {
-      // 버전 이력 배열은 최대 5개로 제한
-      if (Array.isArray(data) && key.indexOf("eventos_docVersions_") === 0 && data.length > 5) {
-        data = data.slice(0, 5);
-      }
       const jsonStr = JSON.stringify(data);
       const sizeBytes = jsonStr.length;
       let result;
@@ -1475,7 +1428,7 @@ function usePersistedState(key, defaultValue) {
   const setPersistedState = useCallback((valOrFn) => {
     setState(prev => {
       const next = typeof valOrFn === "function" ? valOrFn(prev) : valOrFn;
-      try { localStorage.setItem(key, JSON.stringify(next)); } catch(e) { console.warn("[usePersistedState] localStorage 저장 실패:", key, e); if (!CLOUD_CONFIG.ENABLED) showStorageUpgradeAlert(); }
+      try { localStorage.setItem(key, JSON.stringify(next)); } catch(e) { console.warn("[usePersistedState] localStorage 저장 실패:", key, e); showStorageUpgradeAlert(); }
       return next;
     });
   }, [key]);
@@ -5331,24 +5284,6 @@ function toast(msg, type="default") {
       }
       return kb;
     };
-
-    // 클라우드 활성 시: 자동 백업 + 버전 이력 즉시 삭제 (클라우드가 source of truth)
-    var cloudActive = false;
-    try { cloudActive = !!(CLOUD_CONFIG && CLOUD_CONFIG.ENABLED); } catch(e) {}
-    if (!cloudActive) {
-      try { cloudActive = !!(window.CLOUD_CONFIG && window.CLOUD_CONFIG.ENABLED); } catch(e) {}
-    }
-    if (cloudActive) {
-      try { localStorage.removeItem("eventos_autoBackups"); } catch {}
-      for (var ci = localStorage.length - 1; ci >= 0; ci--) {
-        var ck = localStorage.key(ci);
-        if (ck && ck.indexOf("eventos_docVersions_") === 0) {
-          try { localStorage.removeItem(ck); } catch {}
-        }
-      }
-      console.log("[EventOS] ☁️ 클라우드 활성 → 로컬 백업/버전이력 정리 완료");
-    }
-
     let usedKB = calcUsed();
     if (usedKB < 3 * 1024) return; // 3MB 미만이면 정리 불필요
     console.log("[EventOS] ⚡ 스토리지 " + (usedKB/1024).toFixed(1) + "MB → 선제 정리 시작");
@@ -9466,237 +9401,6 @@ function StorageIndicator() {
   );
 }
 
-// ── AI 타임테이블 생성 패널 ──
-function AITimelinePanel({ project, onApplyTimeline, onApplyCueSheet }) {
-  const [mode, setMode] = React.useState("chat");
-  const [loading, setLoading] = React.useState(false);
-  const [message, setMessage] = React.useState("");
-  const [selectedFileKey, setSelectedFileKey] = React.useState("");
-  const [result, setResult] = React.useState(null);
-  const [error, setError] = React.useState("");
-  const [collapsed, setCollapsed] = React.useState(true);
-  const fileInputRef = React.useRef(null);
-
-  const projectFiles = React.useMemo(() => {
-    return (project?.files || [])
-      .filter(f => typeof f === "object")
-      .filter(f => {
-        const mime = (f.mimeType || "").toLowerCase();
-        const name = (f.name || "").toLowerCase();
-        return mime.includes("pdf") || mime.startsWith("image/")
-          || name.endsWith(".pdf") || name.endsWith(".png")
-          || name.endsWith(".jpg") || name.endsWith(".jpeg");
-      });
-  }, [project?.files]);
-
-  const buildContext = () => ({
-    projectName: project?.name || "",
-    venue: project?.taskOrder?.venue || "",
-    attendance: project?.taskOrder?.attendance || "",
-  });
-
-  const handleGenerate = async () => {
-    setLoading(true);
-    setError("");
-    setResult(null);
-    try {
-      let res;
-      if (mode === "file") {
-        if (!selectedFileKey) { setError("파일을 선택해주세요"); setLoading(false); return; }
-        res = await CloudSync.generateTimeline("file", { fileKey: selectedFileKey, context: buildContext() });
-      } else {
-        if (!message.trim()) { setError("일정 설명을 입력해주세요"); setLoading(false); return; }
-        res = await CloudSync.generateTimeline("chat", { message: message.trim(), context: buildContext() });
-      }
-      if (!res) { setError("서버 연결 실패. 클라우드 연결 상태를 확인해주세요."); }
-      else if (!res.success) { setError(res.error || "AI 생성 실패"); }
-      else { setResult(res); }
-    } catch (e) { setError("오류 발생: " + e.message); }
-    setLoading(false);
-  };
-
-  const handleNewFileUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const mime = file.type.toLowerCase();
-    if (!mime.includes("pdf") && !mime.startsWith("image/")) {
-      toast("PDF 또는 이미지 파일만 업로드 가능합니다", "warn"); return;
-    }
-    toast(`"${file.name}" 업로드 중...`, "default");
-    try {
-      const uploadResult = await CloudSync.uploadFileBinary(project?.id, file, null, null);
-      if (uploadResult?.success) {
-        const key = uploadResult.r2Key || uploadResult.key || uploadResult.fileKey || "";
-        setSelectedFileKey(key);
-        toast(`"${file.name}" 업로드 완료`, "success");
-      } else { toast("파일 업로드 실패", "error"); }
-    } catch (err) { toast("업로드 오류: " + err.message, "error"); }
-  };
-
-  const applyTimeline = () => {
-    if (!result?.timeline?.length) return;
-    onApplyTimeline(result.timeline);
-    toast("타임테이블 " + result.timeline.length + "개 항목 적용 완료", "success");
-  };
-
-  const applyCueSheet = () => {
-    if (!result?.cueSheet?.length) return;
-    onApplyCueSheet(result.cueSheet);
-    toast("큐시트 " + result.cueSheet.length + "개 항목 적용 완료", "success");
-  };
-
-  if (!CLOUD_CONFIG.ENABLED) return null;
-
-  return (
-    <div style={{marginBottom:16,background:"rgba(99,102,241,.04)",border:"1px solid rgba(99,102,241,.15)",borderRadius:12,overflow:"hidden"}}>
-      {/* 헤더 (토글) */}
-      <div onClick={()=>setCollapsed(!collapsed)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",cursor:"pointer",userSelect:"none"}}>
-        <div style={{color:"#a5b4fc",fontWeight:700,fontSize:13}}>🤖 AI 타임테이블 생성</div>
-        <span style={{color:"var(--txt4)",fontSize:11}}>{collapsed?"▶ 펼치기":"▼ 접기"}</span>
-      </div>
-
-      {!collapsed && (
-        <div style={{padding:"0 14px 14px"}}>
-          {/* 모드 탭 */}
-          <div style={{display:"flex",gap:4,marginBottom:10}}>
-            <button onClick={()=>setMode("chat")} style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:mode==="chat"?700:500,background:mode==="chat"?"rgba(99,102,241,.2)":"transparent",color:mode==="chat"?"#a5b4fc":"var(--txt3)"}}>
-              💬 대화 입력
-            </button>
-            <button onClick={()=>setMode("file")} style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:mode==="file"?700:500,background:mode==="file"?"rgba(99,102,241,.2)":"transparent",color:mode==="file"?"#a5b4fc":"var(--txt3)"}}>
-              📄 파일 분석
-            </button>
-          </div>
-
-          {/* 대화 모드 */}
-          {mode === "chat" && (
-            <textarea className="form-input" rows={3} value={message}
-              onChange={e=>setMessage(e.target.value)}
-              placeholder={"행사 일정을 자유롭게 설명하세요.\n예: 오전 9시에 세팅 시작, 10시에 리허설, 11시 오프닝, 11시 10분 환영사, 11시 30분 축사..."}
-              style={{resize:"vertical",marginBottom:8,fontSize:12}}/>
-          )}
-
-          {/* 파일 모드 */}
-          {mode === "file" && (
-            <div style={{marginBottom:8}}>
-              {projectFiles.length > 0 && (
-                <div style={{marginBottom:8}}>
-                  <label style={{fontSize:11,color:"var(--txt3)",marginBottom:4,display:"block"}}>업로드된 파일 선택</label>
-                  <select className="form-input" value={selectedFileKey} onChange={e=>setSelectedFileKey(e.target.value)} style={{fontSize:12}}>
-                    <option value="">-- 파일 선택 --</option>
-                    {projectFiles.map((f,i) => (
-                      <option key={i} value={f.r2Key || f.name}>{f.name} ({(f.size/1024).toFixed(0)}KB)</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                <button className="btn btn-ghost" style={{fontSize:11,padding:"5px 12px"}} onClick={()=>fileInputRef.current?.click()}>
-                  📎 새 파일 업로드
-                </button>
-                <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" onChange={handleNewFileUpload} style={{display:"none"}}/>
-                <span style={{color:"var(--txt4)",fontSize:10}}>PDF, PNG, JPG 지원</span>
-              </div>
-            </div>
-          )}
-
-          {/* 생성 버튼 */}
-          <button onClick={handleGenerate} disabled={loading} style={{width:"100%",padding:"10px",borderRadius:8,border:"none",cursor:loading?"not-allowed":"pointer",fontSize:12,fontWeight:700,background:loading?"rgba(99,102,241,.1)":"rgba(99,102,241,.15)",color:loading?"var(--txt4)":"#a5b4fc",marginBottom:8,transition:"all .2s"}}>
-            {loading ? "🔄 AI 분석 중... (10~30초 소요)" : "🤖 타임테이블 생성"}
-          </button>
-
-          {/* 에러 */}
-          {error && (
-            <div style={{background:"rgba(239,68,68,.08)",border:"1px solid rgba(239,68,68,.2)",borderRadius:8,padding:"8px 12px",color:"#fca5a5",fontSize:11,marginBottom:8}}>
-              ⚠️ {error}
-            </div>
-          )}
-
-          {/* 결과 미리보기 */}
-          {result && (
-            <div style={{background:"rgba(16,185,129,.05)",border:"1px solid rgba(16,185,129,.2)",borderRadius:8,padding:12}}>
-              <div style={{color:"#34d399",fontWeight:700,fontSize:12,marginBottom:8}}>✅ AI 생성 결과</div>
-
-              {result.timeline?.length > 0 && (
-                <div style={{marginBottom:10}}>
-                  <div style={{color:"var(--txt2)",fontSize:11,fontWeight:600,marginBottom:4}}>
-                    📋 타임테이블: {result.timeline.length}개 항목
-                  </div>
-                  <div style={{maxHeight:140,overflowY:"auto",fontSize:11,color:"var(--txt3)",background:"rgba(0,0,0,.15)",borderRadius:6,padding:8}}>
-                    {result.timeline.map((t,i) => (
-                      <div key={i} style={{padding:"2px 0",borderBottom:"1px solid rgba(255,255,255,.05)"}}>
-                        <span style={{color:"#818cf8",fontWeight:600}}>{t.startTime}~{t.endTime}</span>
-                        <span style={{color:"var(--txt4)",margin:"0 6px"}}>({t.duration}분)</span>
-                        <span>{t.content}</span>
-                        {t.note && <span style={{color:"var(--txt4)",marginLeft:6}}>— {t.note}</span>}
-                      </div>
-                    ))}
-                  </div>
-                  <button onClick={applyTimeline} style={{marginTop:6,padding:"6px 14px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:700,background:"rgba(99,102,241,.15)",color:"#a5b4fc"}}>
-                    📋 타임테이블에 적용
-                  </button>
-                </div>
-              )}
-
-              {result.cueSheet?.length > 0 && (
-                <div>
-                  <div style={{color:"var(--txt2)",fontSize:11,fontWeight:600,marginBottom:4}}>
-                    🎬 큐시트: {result.cueSheet.length}개 항목
-                  </div>
-                  <button onClick={applyCueSheet} style={{padding:"6px 14px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:600,background:"rgba(16,185,129,.1)",color:"#34d399"}}>
-                    🎬 큐시트에도 적용
-                  </button>
-                </div>
-              )}
-
-              {result.usage && (
-                <div style={{color:"var(--txt4)",fontSize:9,marginTop:8,opacity:.7}}>
-                  토큰: {result.usage.inputTokens} in / {result.usage.outputTokens} out
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── 운영계획안 → 결과보고서 데이터 로드/병합 헬퍼 ──
-async function loadPlanDataForResult(projectId) {
-  const planKey = `eventos_doc_${projectId}_plan`;
-  if (CLOUD_CONFIG.ENABLED) {
-    try {
-      const cloud = await CloudSync.loadDoc(planKey);
-      if (cloud && typeof cloud === "object" && Object.keys(cloud).length) return cloud;
-    } catch {}
-  }
-  try {
-    const idb = await loadFromIDB(planKey);
-    if (idb && typeof idb === "object" && Object.keys(idb).length) return idb;
-  } catch {}
-  try {
-    const ls = localStorage.getItem(planKey);
-    if (ls && ls.length > 2) return JSON.parse(ls);
-  } catch {}
-  return null;
-}
-
-function mergePlanToResult(planData, existingResult) {
-  const merged = JSON.parse(JSON.stringify(planData));
-  merged._keyColor = "#10b981";
-  if (existingResult && typeof existingResult === "object" && Object.keys(existingResult).length > 0) {
-    for (const sectionId of Object.keys(existingResult)) {
-      if (sectionId.startsWith("_")) continue;
-      const rs = existingResult[sectionId];
-      if (rs && typeof rs === "object" && merged[sectionId]) {
-        if (rs.resultNotes) merged[sectionId].resultNotes = rs.resultNotes;
-        if (rs.images && rs.images.length) merged[sectionId].images = rs.images;
-      }
-    }
-  }
-  return merged;
-}
-
 function DocEditorPanel({docType, project}) {
   // docType: "plan" | "report"
   const isPlan = docType === "plan";
@@ -9768,32 +9472,6 @@ function DocEditorPanel({docType, project}) {
         } catch (err) {
           console.warn("[DocEditor] 클라우드 로드 실패 (캐시 사용):", err.message);
           cloudDocLoadedRef.current = true; // 클라우드 실패해도 해제 (로컬 캐시 모드)
-        }
-      }
-
-      // ③ 결과보고서가 비어있으면 → 운영계획안 자동 가져오기
-      if (!isPlan && !cancelled) {
-        // 현재 docData 상태를 직접 확인 (비동기 완료 후)
-        const checkEmpty = () => {
-          const current = loadDocFromStorage();
-          return !current || Object.keys(current).length === 0 ||
-            (Object.keys(current).length === 1 && current._keyColor);
-        };
-        if (checkEmpty()) {
-          try {
-            const planData = await loadPlanDataForResult(proj?.id);
-            if (planData && !cancelled) {
-              const merged = mergePlanToResult(planData, {});
-              setDocData(merged);
-              saveToIDB(storageKey, merged).catch(()=>{});
-              try { localStorage.setItem(storageKey, JSON.stringify(merged)); } catch {}
-              if (CLOUD_CONFIG.ENABLED) CloudDataStore.writeDoc(storageKey, merged).catch(()=>{});
-              console.log("[DocEditor] 📋→📊 운영계획안 → 결과보고서 자동 가져오기 완료");
-              toast("📋 운영계획안 데이터를 결과보고서에 불러왔습니다", "success");
-            }
-          } catch (err) {
-            console.warn("[DocEditor] 운영계획안 가져오기 실패:", err.message);
-          }
         }
       }
     })();
@@ -10044,7 +9722,7 @@ function DocEditorPanel({docType, project}) {
     const ts = now.toISOString();
     const displayName = label || `v${versions.length + 1} (${now.toLocaleDateString("ko-KR")} ${now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})})`;
     const newVersion = { id: Date.now(), name: displayName, timestamp: ts, data: JSON.parse(JSON.stringify(docData)) };
-    const updated = [newVersion, ...versions].slice(0, 5);
+    const updated = [newVersion, ...versions].slice(0, 30);
     setVersions(updated);
     // ① 클라우드 저장 먼저 (source of truth)
     const cloudResult = await CloudDataStore.writeDoc(versionsKey, updated);
@@ -10095,7 +9773,7 @@ function DocEditorPanel({docType, project}) {
   const loadVersion = (ver) => {
     if (!window.confirm(`"${ver.name}" 버전을 불러오시겠습니까?\n현재 작성 중인 내용이 대체됩니다.`)) return;
     setDocData(ver.data);
-    try { localStorage.setItem(storageKey, JSON.stringify(ver.data)); } catch(e) { console.warn("[DocEditor] 버전 복원 localStorage 실패:", e); }
+    try { localStorage.setItem(storageKey, JSON.stringify(ver.data)); } catch(e) { console.warn("[DocEditor] 버전 복원 localStorage 실패:", e); showStorageUpgradeAlert(); }
     saveToIDB(storageKey, ver.data).catch(()=>{});
     setShowVersions(false);
     toast(`"${ver.name}" 버전을 불러왔습니다`, "success");
@@ -10105,7 +9783,7 @@ function DocEditorPanel({docType, project}) {
   const deleteVersion = (verId) => {
     const updated = versions.filter(v => v.id !== verId);
     setVersions(updated);
-    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch(e) { console.warn("[DocEditor] 버전 삭제 localStorage 실패:", e); }
+    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch(e) { console.warn("[DocEditor] 버전 삭제 localStorage 실패:", e); showStorageUpgradeAlert(); }
   };
 
   // 현재 섹션 데이터
@@ -11379,34 +11057,6 @@ ${secEnabled("timeline") ? (()=>{
           toast("타임테이블에서 " + filledRows.length + "개 항목을 불러왔습니다", "success");
         };
 
-        // ── AI 타임라인/큐시트 적용 콜백 ──
-        const applyAITimeline = (aiTimeline) => {
-          const existingTl = sd("program").timeline || [];
-          const hasData = existingTl.some(t => t.content || t.startTime);
-          const newItems = aiTimeline.map(t => ({ ...t, _id: Date.now() + Math.random() }));
-          if (hasData) {
-            if (window.confirm("타임테이블에 이미 " + existingTl.length + "개 항목이 있습니다.\nAI 생성 " + aiTimeline.length + "개 항목으로 교체하시겠습니까?\n(취소하면 기존 항목 뒤에 추가됩니다)")) {
-              setList("program", "timeline", newItems);
-            } else {
-              setList("program", "timeline", [...existingTl, ...newItems]);
-            }
-          } else {
-            setList("program", "timeline", newItems);
-          }
-        };
-
-        const applyAICueSheet = (aiCueSheet) => {
-          const existingCs = sd("program").cueSheet || [];
-          const hasData = existingCs.some(c => c.content || c.startTime);
-          const newItems = aiCueSheet.map(c => ({ ...c, _id: Date.now() + Math.random() }));
-          if (hasData) {
-            if (!window.confirm("큐시트에 이미 " + existingCs.length + "개 항목이 있습니다.\nAI 생성 " + aiCueSheet.length + "개 항목을 추가하시겠습니까?")) return;
-            setList("program", "cueSheet", [...existingCs, ...newItems]);
-          } else {
-            setList("program", "cueSheet", newItems);
-          }
-        };
-
         // ── 프로그램 아이템 ──
         const getProgramItems = () => sd("program").programItems || [];
         const addProgramItem = () => {
@@ -11446,9 +11096,6 @@ ${secEnabled("timeline") ? (()=>{
             {/* ── 타임테이블 탭 ── */}
             {activeProgramTab === "timetable" && (
               <div>
-                {/* AI 타임테이블 생성 패널 */}
-                <AITimelinePanel project={proj} onApplyTimeline={applyAITimeline} onApplyCueSheet={applyAICueSheet} />
-
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
                   <label className="form-label" style={{margin:0}}>타임테이블 / 진행순서</label>
                   <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("program","timeline",{startTime:"",endTime:"",duration:"",content:"",note:""})}>+ 항목 추가</button>
@@ -11861,20 +11508,6 @@ ${secEnabled("timeline") ? (()=>{
           <button onClick={()=>setShowVersions(!showVersions)} className="btn" style={{background:"rgba(245,158,11,.08)",border:"1px solid rgba(245,158,11,.2)",color:"#fbbf24",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12,position:"relative"}}>
             📂 불러오기 {versions.length > 0 && <span style={{background:"#f59e0b",color:"#000",borderRadius:10,padding:"1px 6px",fontSize:10,fontWeight:800,marginLeft:4}}>{versions.length}</span>}
           </button>
-          {!isPlan && (
-            <button onClick={async()=>{
-              if(!confirm("운영계획안 데이터를 가져오시겠습니까?\n현재 입력된 결과 메모와 사진은 유지됩니다.")) return;
-              try {
-                const planData = await loadPlanDataForResult(proj?.id);
-                if(!planData || !Object.keys(planData).length){ toast("운영계획안 데이터가 없습니다","warn"); return; }
-                const merged = mergePlanToResult(planData, docData);
-                setDocData(merged);
-                toast("📋 운영계획안 데이터를 불러왔습니다","success");
-              } catch(e){ toast("불러오기 실패: "+e.message,"error"); }
-            }} className="btn" style={{background:"rgba(99,102,241,.08)",border:"1px solid rgba(99,102,241,.2)",color:"#818cf8",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
-              📋 운영계획안 불러오기
-            </button>
-          )}
           <div style={{width:1,height:24,background:"var(--border)"}}/>
           <button className="btn btn-primary" onClick={printPDF} style={{background:isPlan?"linear-gradient(135deg,#6366f1,#8b5cf6)":"linear-gradient(135deg,#10b981,#059669)"}}>
             PDF 출력
@@ -13371,18 +13004,13 @@ function App() {
       }
       lastBackupRef.current = json;
 
-      // localStorage에 최근 N개 백업 보관 (클라우드 활성 시 로컬 백업 스킵 → 용량 절약)
-      if (CLOUD_CONFIG.ENABLED) {
-        // 클라우드가 source of truth이므로 로컬 자동백업 불필요 → 기존 것도 정리
-        try { localStorage.removeItem("eventos_autoBackups"); } catch {}
-      } else {
-        try {
-          const backups = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
-          backups.unshift(snapshot);
-          if (backups.length > DRIVE_CONFIG.MAX_LOCAL_BACKUPS) backups.length = DRIVE_CONFIG.MAX_LOCAL_BACKUPS;
-          localStorage.setItem("eventos_autoBackups", JSON.stringify(backups));
-        } catch (e) { console.error("[EventOS] 자동 백업 저장 실패:", e); showStorageUpgradeAlert(); }
-      }
+      // localStorage에 최근 N개 백업 보관
+      try {
+        const backups = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
+        backups.unshift(snapshot);
+        if (backups.length > DRIVE_CONFIG.MAX_LOCAL_BACKUPS) backups.length = DRIVE_CONFIG.MAX_LOCAL_BACKUPS;
+        localStorage.setItem("eventos_autoBackups", JSON.stringify(backups));
+      } catch (e) { console.error("[EventOS] 자동 백업 저장 실패:", e); showStorageUpgradeAlert(); }
 
       // 클라우드 백업 (Cloudflare D1 + Drive, 둘 다 활성 시 모두 저장)
       if (CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED) {
@@ -13513,7 +13141,7 @@ function App() {
       localStorage.setItem("eventos_lastEmailNotify", JSON.stringify({
         date: today, sent, failed, noEmail, at: new Date().toISOString()
       }));
-    } catch(e) { console.warn("[EmailNotify] localStorage 저장 실패:", e); }
+    } catch(e) { console.warn("[EmailNotify] localStorage 저장 실패:", e); showStorageUpgradeAlert(); }
 
     console.log(`[EmailNotify] ${msg}`);
     return { sent, failed, noEmail };
