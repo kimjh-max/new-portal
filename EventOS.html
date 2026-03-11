@@ -9964,10 +9964,18 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         } catch {}
       }
 
-      // ② 클라우드에서 로드 (source of truth)
+      // ② 클라우드에서 로드 (source of truth) — 10초 타임아웃 안전장치
       if (CLOUD_CONFIG.ENABLED) {
+        // 타임아웃 안전장치: 10초 내 클라우드 응답 없으면 로컬 캐시 모드로 전환
+        const cloudTimeout = setTimeout(() => {
+          if (!cloudDocLoadedRef.current) {
+            cloudDocLoadedRef.current = true;
+            console.warn("[DocEditor] ⏰ 클라우드 로드 10초 타임아웃 — 로컬 캐시 모드로 전환");
+          }
+        }, 10 * 1000);
         try {
           const cloudData = await CloudSync.loadDoc(storageKey);
+          clearTimeout(cloudTimeout);
           if (cancelled) return;
           if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
             setDocData(cloudData);
@@ -9986,9 +9994,12 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           }
           cloudDocLoadedRef.current = true; // ✅ 클라우드 로드 완료 → auto-save 허용
         } catch (err) {
+          clearTimeout(cloudTimeout);
           console.warn("[DocEditor] 클라우드 로드 실패 (캐시 사용):", err.message);
           cloudDocLoadedRef.current = true; // 클라우드 실패해도 해제 (로컬 캐시 모드)
         }
+      } else {
+        cloudDocLoadedRef.current = true; // 클라우드 비활성 시 즉시 해제
       }
 
       // ③ 결과보고서 → 항상 운영계획안 최신 데이터 병합 (빈 보고서 + 기존 보고서 모두)
