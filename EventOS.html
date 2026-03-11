@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v22";
+  var CODE_VER = "20260312v23";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10106,16 +10106,18 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         cloudDocLoadedRef.current = true; // 클라우드 비활성 시 즉시 해제
       }
 
-      // ③ 결과보고서가 비어있을 때만 → 운영계획안 자동 가져오기
-      // ★ 중요: localStorage뿐 아니라 IDB/Cloud도 확인해야 함 (대형 데이터는 localStorage에 못 들어감)
+      // ③ 결과보고서 로드 시 → 항상 운영계획안 최신 데이터와 병합
+      // ★ 빈 결과보고서 = 계획 전체 가져오기 / 기존 결과보고서 = 계획 최신 병합 (결과 고유 데이터 유지)
       if (!isPlan && !cancelled) {
         // 현재까지 로드된 데이터 확인 (IDB/Cloud에서 이미 setDocData 호출됨)
         let hasExistingData = false;
+        let existingData = null;
         try {
           const idbCheck = await loadFromIDB(storageKey);
           if (idbCheck && typeof idbCheck === "object" && Object.keys(idbCheck).length > 0 &&
               !(Object.keys(idbCheck).length === 1 && idbCheck._keyColor)) {
             hasExistingData = true;
+            existingData = idbCheck;
           }
         } catch {}
         if (!hasExistingData) {
@@ -10126,15 +10128,17 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
               if (parsed && Object.keys(parsed).length > 0 &&
                   !(Object.keys(parsed).length === 1 && parsed._keyColor)) {
                 hasExistingData = true;
+                existingData = parsed;
               }
             }
           } catch {}
         }
-        if (!hasExistingData) {
-          console.log("[DocEditor] 📋→📊 결과보고서 비어있음 — 운영계획안 자동 가져오기 시도");
-          try {
-            const planData = await loadPlanDataForResult(proj?.id);
-            if (planData && !cancelled) {
+        // ★ 항상 운영계획안 최신 데이터와 병합 시도
+        try {
+          const planData = await loadPlanDataForResult(proj?.id);
+          if (planData && !cancelled) {
+            if (!hasExistingData) {
+              // 빈 결과보고서 → 운영계획안 전체 가져오기
               const merged = mergePlanToResult(planData, {});
               setDocData(merged);
               saveToIDB(storageKey, merged).catch(()=>{});
@@ -10142,12 +10146,24 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
               if (CLOUD_CONFIG.ENABLED) CloudDataStore.writeDoc(storageKey, merged).catch(()=>{});
               console.log("[DocEditor] 📋→📊 운영계획안 → 결과보고서 자동 가져오기 완료");
               toast("📋 운영계획안 데이터를 결과보고서에 불러왔습니다", "success");
+            } else {
+              // ★ 기존 결과보고서 + 운영계획안 최신 병합 (결과 고유 데이터 유지)
+              const merged = mergePlanToResult(planData, existingData);
+              const mergedJson = JSON.stringify(merged);
+              const currentJson = JSON.stringify(existingData);
+              if (mergedJson !== currentJson) {
+                setDocData(merged);
+                saveToIDB(storageKey, merged).catch(()=>{});
+                safeLocalSet(storageKey, JSON.stringify(merged));
+                if (CLOUD_CONFIG.ENABLED) CloudDataStore.writeDoc(storageKey, merged).catch(()=>{});
+                console.log("[DocEditor] 📋→📊 운영계획안 최신 데이터 → 결과보고서 병합 완료");
+              } else {
+                console.log("[DocEditor] ℹ️ 결과보고서 ↔ 운영계획안 이미 동기화됨");
+              }
             }
-          } catch (err) {
-            console.warn("[DocEditor] 운영계획안 가져오기 실패:", err.message);
           }
-        } else {
-          console.log("[DocEditor] ℹ️ 결과보고서 데이터 존재 — 운영계획안 자동 가져오기 건너뜀");
+        } catch (err) {
+          console.warn("[DocEditor] 운영계획안 가져오기 실패:", err.message);
         }
       }
     })();
@@ -10207,6 +10223,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   const periodicSaveRef = React.useRef(null);
   // ── 크래시 안전장치: 클라우드 데이터 로드 완료 전까지 auto-save 차단 ──
   const cloudDocLoadedRef = React.useRef(!CLOUD_CONFIG.ENABLED); // 클라우드 비활성 시 즉시 해제
+  // ── R2 클라우드 변경 감지: 동일 데이터 중복 전송 방지 ──
+  const lastCloudHashRef = React.useRef({});
 
   // ── cover / keyColor 데이터 ──
   const cv = docData._cover || {};
@@ -10240,14 +10258,39 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       return;
     }
     const silent = options.silent || false;
-    // silent 모드 = 10초 주기 저장: 로컬에만 저장 (클라우드 부하 방지, 입력 방해 없음)
-    // 일반 모드 = 사용자 입력 후 0.5초 디바운스: 클라우드 + 로컬 전체 저장
+    // silent 모드 = 10초 주기 저장: 로컬 + R2 클라우드 전부 저장 (데이터 유실 제로)
+    // 일반 모드 = 사용자 입력 후 0.5초 디바운스: 클라우드 + 로컬 전체 저장 + UI 업데이트
     const now = new Date();
     const ts = now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
     if (silent) {
-      // ── silent: 로컬에만 저장 (IDB가 주 저장소, localStorage는 4MB 이하만) ──
+      // ── silent: 로컬 저장 (IDB가 주 저장소, localStorage는 4MB 이하만) ──
       try { await saveToIDB(storageKey, data); } catch {}
       safeLocalSet(storageKey, JSON.stringify(data));
+      // ── ★ R2 클라우드에도 저장 (변경 감지 — 동일 데이터 중복 전송 방지) ──
+      if (CLOUD_CONFIG.ENABLED) {
+        try {
+          // 빠른 변경 감지: 데이터 길이 + 50개 샘플 위치 해시
+          const json = JSON.stringify(data);
+          let h = json.length;
+          const step = Math.max(1, Math.floor(json.length / 50));
+          for (let i = 0; i < json.length; i += step) { h = ((h << 5) - h + json.charCodeAt(i)) | 0; }
+          const prevHash = lastCloudHashRef.current[storageKey];
+          if (prevHash !== h) {
+            lastCloudHashRef.current[storageKey] = h;
+            CloudDataStore.writeDoc(storageKey, data).then(r => {
+              if (r.success) {
+                setLastSavedAt(ts + " ☁️");
+                console.log("[DocEditor] ☁️ R2 자동저장 완료:", storageKey, (json.length/1024/1024).toFixed(1) + "MB");
+              } else {
+                delete lastCloudHashRef.current[storageKey]; // 실패 → 다음 주기에 재시도
+              }
+            }).catch(e => {
+              delete lastCloudHashRef.current[storageKey]; // 실패 → 다음 주기에 재시도
+              console.warn("[DocEditor] ☁️ R2 자동저장 실패:", e.message);
+            });
+          }
+        } catch (e) { console.warn("[DocEditor] R2 해시 계산 실패:", e.message); }
+      }
       return;
     }
     // ── 일반: 클라우드 + 로컬 전체 저장 ──
@@ -10261,6 +10304,14 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     if (cloudResult.success) {
       setSaveStatus("saved"); setLastSavedAt(ts + " ☁️");
       SyncManager.setStatus("success"); SyncManager._lastSyncTime = new Date(); SyncManager._notify();
+      // ★ 클라우드 저장 성공 → 해시 갱신 (silent 모드에서 중복 전송 방지)
+      try {
+        const json = JSON.stringify(data);
+        let h = json.length;
+        const step = Math.max(1, Math.floor(json.length / 50));
+        for (let i = 0; i < json.length; i += step) { h = ((h << 5) - h + json.charCodeAt(i)) | 0; }
+        lastCloudHashRef.current[storageKey] = h;
+      } catch {}
     } else if (cloudResult.queued) {
       setSaveStatus("saved"); setLastSavedAt(ts + " 📤");
       toast("⚠️ 클라우드 저장 대기 중 — 인터넷 연결 시 자동 전송됩니다", "warn");
