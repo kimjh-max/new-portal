@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260310v17";
+  var CODE_VER = "20260311v18";
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -772,6 +772,27 @@ const CloudSync = {
       return await res.json();
     } catch (err) {
       console.error("[CloudSync] generateTimeline:", err);
+      return { success: false, error: err.message || "네트워크 오류" };
+    }
+  },
+
+  // ── AI 과업지시서 분석 → 개요 생성 ──
+  async generateOverview(mode, options = {}) {
+    if (!CLOUD_CONFIG.ENABLED) return { success: false, error: "클라우드 미연결" };
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/ai/analyze-taskorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode,
+          fileKey: options.fileKey || undefined,
+          message: options.message || undefined,
+          context: options.context || undefined,
+        }),
+      });
+      return await res.json();
+    } catch (err) {
+      console.error("[CloudSync] generateOverview:", err);
       return { success: false, error: err.message || "네트워크 오류" };
     }
   },
@@ -7929,7 +7950,7 @@ function ReportPanel({project}) {
 }
 
 // ─ Reports Tab Wrapper (보고서 탭 내 서브 탭) ─
-function ReportsTabWrapper({project}) {
+function ReportsTabWrapper({project, onUpdate}) {
   const [subTab, setSubTab] = React.useState("plan");
   const SUB_TABS = [
     {id:"plan",   icon:"📋", label:"운영계획안", color:"#6366f1"},
@@ -7952,8 +7973,8 @@ function ReportsTabWrapper({project}) {
         ))}
       </div>
       {/* 서브 탭 콘텐츠 */}
-      {subTab==="plan"  && <DocEditorPanel docType="plan"   project={project}/>}
-      {subTab==="report"&& <DocEditorPanel docType="report" project={project}/>}
+      {subTab==="plan"  && <DocEditorPanel docType="plan"   project={project} onUpdateProject={onUpdate}/>}
+      {subTab==="report"&& <DocEditorPanel docType="report" project={project} onUpdateProject={onUpdate}/>}
     </div>
   );
 }
@@ -8673,7 +8694,7 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
       {tab==="checklist"&&<ChecklistPanel project={project} onUpdate={onUpdate} currentUser={currentUser}/>}
       {tab==="gantt"&&<GanttChart project={project} onUpdate={onUpdate} users={users}/>}
       {tab==="logs"&&<WorkLog project={project} onUpdate={onUpdate} users={users} currentUser={currentUser}/>}
-      {tab==="reports"&&<ReportsTabWrapper project={project}/>}
+      {tab==="reports"&&<ReportsTabWrapper project={project} onUpdate={onUpdate}/>}
       {/* FileManager는 항상 마운트 — 업로드 중 탭 이동해도 끊기지 않도록 display:none으로 숨김 */}
       <div style={{display: tab==="files" ? "block" : "none"}}>
         <FileManager project={project} onUpdate={onUpdate} onUploadStateChange={setFileUploading}/>
@@ -9466,6 +9487,203 @@ function StorageIndicator() {
   );
 }
 
+// ── AI 과업지시서 분석 → 개요 자동 생성 패널 ──
+function AIOverviewPanel({ project, onApplyOverview, onApplyTaskOrder }) {
+  const [mode, setMode] = React.useState("file");
+  const [loading, setLoading] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+  const [selectedFileKey, setSelectedFileKey] = React.useState("");
+  const [result, setResult] = React.useState(null);
+  const [error, setError] = React.useState("");
+  const [collapsed, setCollapsed] = React.useState(true);
+  const fileInputRef = React.useRef(null);
+
+  const projectFiles = React.useMemo(() => {
+    return (project?.files || [])
+      .filter(f => typeof f === "object")
+      .filter(f => {
+        const mime = (f.mimeType || "").toLowerCase();
+        const name = (f.name || "").toLowerCase();
+        return mime.includes("pdf") || mime.startsWith("image/")
+          || name.endsWith(".pdf") || name.endsWith(".png")
+          || name.endsWith(".jpg") || name.endsWith(".jpeg");
+      });
+  }, [project?.files]);
+
+  const buildContext = () => ({
+    projectName: project?.name || "",
+    venue: project?.taskOrder?.venue || "",
+    attendance: project?.taskOrder?.attendance || "",
+  });
+
+  const handleGenerate = async () => {
+    setLoading(true);
+    setError("");
+    setResult(null);
+    try {
+      let res;
+      if (mode === "file") {
+        if (!selectedFileKey) { setError("파일을 선택해주세요"); setLoading(false); return; }
+        res = await CloudSync.generateOverview("file", { fileKey: selectedFileKey, context: buildContext() });
+      } else {
+        if (!message.trim()) { setError("과업 내용을 입력해주세요"); setLoading(false); return; }
+        res = await CloudSync.generateOverview("chat", { message: message.trim(), context: buildContext() });
+      }
+      if (!res) { setError("서버 연결 실패. 클라우드 연결 상태를 확인해주세요."); }
+      else if (!res.success) { setError(res.error || "AI 분석 실패"); }
+      else { setResult(res); }
+    } catch (e) { setError("오류 발생: " + e.message); }
+    setLoading(false);
+  };
+
+  const handleNewFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const mime = file.type.toLowerCase();
+    if (!mime.includes("pdf") && !mime.startsWith("image/")) {
+      toast("PDF 또는 이미지 파일만 업로드 가능합니다", "warn"); return;
+    }
+    toast(`"${file.name}" 업로드 중...`, "default");
+    try {
+      const uploadResult = await CloudSync.uploadFileBinary(project?.id, file, null, null);
+      if (uploadResult?.success) {
+        const key = uploadResult.r2Key || uploadResult.key || uploadResult.fileKey || "";
+        setSelectedFileKey(key);
+        toast(`"${file.name}" 업로드 완료`, "success");
+      } else { toast("파일 업로드 실패", "error"); }
+    } catch (err) { toast("업로드 오류: " + err.message, "error"); }
+  };
+
+  if (!CLOUD_CONFIG.ENABLED) return null;
+
+  const OVERVIEW_FIELDS = [
+    {key:"eventName",label:"행사명"},{key:"organizer",label:"주최사"},{key:"date",label:"일시"},
+    {key:"time",label:"시간"},{key:"venue",label:"장소"},{key:"content",label:"행사 내용"},
+    {key:"character",label:"행사 성격"},{key:"support",label:"지원 사항"},{key:"extraNotes",label:"기타사항"},
+  ];
+  const TASKORDER_FIELDS = [
+    {key:"sender",label:"발신인"},{key:"receivedDate",label:"수신일"},{key:"venue",label:"장소"},
+    {key:"attendance",label:"참석 규모"},{key:"purpose",label:"행사 목적"},{key:"tasks",label:"주요 과업"},
+    {key:"requirements",label:"요구사항"},{key:"notes",label:"참고사항"},
+  ];
+
+  return (
+    <div style={{marginBottom:16,background:"rgba(99,102,241,.04)",border:"1px solid rgba(99,102,241,.15)",borderRadius:12,overflow:"hidden"}}>
+      <div onClick={()=>setCollapsed(!collapsed)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",cursor:"pointer",userSelect:"none"}}>
+        <div style={{color:"#a5b4fc",fontWeight:700,fontSize:13}}>🤖 AI 과업지시서 분석</div>
+        <span style={{color:"var(--txt4)",fontSize:11}}>{collapsed?"▶ 펼치기":"▼ 접기"}</span>
+      </div>
+
+      {!collapsed && (
+        <div style={{padding:"0 14px 14px"}}>
+          {/* 모드 탭 */}
+          <div style={{display:"flex",gap:4,marginBottom:10}}>
+            <button onClick={()=>setMode("file")} style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:mode==="file"?700:500,background:mode==="file"?"rgba(99,102,241,.2)":"transparent",color:mode==="file"?"#a5b4fc":"var(--txt3)"}}>
+              📄 파일 분석
+            </button>
+            <button onClick={()=>setMode("chat")} style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:mode==="chat"?700:500,background:mode==="chat"?"rgba(99,102,241,.2)":"transparent",color:mode==="chat"?"#a5b4fc":"var(--txt3)"}}>
+              💬 직접 입력
+            </button>
+          </div>
+
+          {/* 파일 모드 */}
+          {mode === "file" && (
+            <div style={{marginBottom:8}}>
+              {projectFiles.length > 0 && (
+                <div style={{marginBottom:8}}>
+                  <label style={{fontSize:11,color:"var(--txt3)",marginBottom:4,display:"block"}}>과업지시서 파일 선택</label>
+                  <select className="form-input" value={selectedFileKey} onChange={e=>setSelectedFileKey(e.target.value)} style={{fontSize:12}}>
+                    <option value="">-- 파일 선택 --</option>
+                    {projectFiles.map((f,i) => (
+                      <option key={i} value={f.r2Key || f.name}>{f.name} ({(f.size/1024).toFixed(0)}KB)</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <button className="btn btn-ghost" style={{fontSize:11,padding:"5px 12px"}} onClick={()=>fileInputRef.current?.click()}>
+                  📎 새 파일 업로드
+                </button>
+                <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" onChange={handleNewFileUpload} style={{display:"none"}}/>
+                <span style={{color:"var(--txt4)",fontSize:10}}>PDF, PNG, JPG 지원</span>
+              </div>
+            </div>
+          )}
+
+          {/* 대화 모드 */}
+          {mode === "chat" && (
+            <textarea className="form-input" rows={4} value={message}
+              onChange={e=>setMessage(e.target.value)}
+              placeholder={"과업지시서 내용을 붙여넣거나 행사 정보를 자유롭게 입력하세요.\n예: 삼성전자 마케팅팀에서 의뢰한 신제품 런칭 행사. 코엑스 A홀에서 11월 25일 진행, 참석 300명 예상. 주요 과업: 무대 설치, 영상 제작, 케이터링..."}
+              style={{resize:"vertical",marginBottom:8,fontSize:12}}/>
+          )}
+
+          {/* 분석 버튼 */}
+          <button onClick={handleGenerate} disabled={loading} style={{width:"100%",padding:"10px",borderRadius:8,border:"none",cursor:loading?"not-allowed":"pointer",fontSize:12,fontWeight:700,background:loading?"rgba(99,102,241,.1)":"rgba(99,102,241,.15)",color:loading?"var(--txt4)":"#a5b4fc",marginBottom:8,transition:"all .2s"}}>
+            {loading ? "🔄 AI 분석 중... (10~30초 소요)" : "🤖 과업지시서 분석"}
+          </button>
+
+          {/* 에러 */}
+          {error && (
+            <div style={{background:"rgba(239,68,68,.08)",border:"1px solid rgba(239,68,68,.2)",borderRadius:8,padding:"8px 12px",color:"#fca5a5",fontSize:11,marginBottom:8}}>
+              ⚠️ {error}
+            </div>
+          )}
+
+          {/* 결과 미리보기 */}
+          {result && (
+            <div style={{background:"rgba(16,185,129,.05)",border:"1px solid rgba(16,185,129,.2)",borderRadius:8,padding:12}}>
+              <div style={{color:"#34d399",fontWeight:700,fontSize:12,marginBottom:10}}>✅ AI 분석 결과</div>
+
+              {/* 개요 미리보기 */}
+              {result.overview && Object.values(result.overview).some(v=>v) && (
+                <div style={{marginBottom:12}}>
+                  <div style={{color:"var(--txt2)",fontSize:11,fontWeight:700,marginBottom:6}}>📌 행사 개요</div>
+                  <div style={{maxHeight:160,overflowY:"auto",fontSize:11,color:"var(--txt3)",background:"rgba(0,0,0,.15)",borderRadius:6,padding:8}}>
+                    {OVERVIEW_FIELDS.filter(f=>result.overview[f.key]).map(f=>(
+                      <div key={f.key} style={{padding:"3px 0",borderBottom:"1px solid rgba(255,255,255,.05)"}}>
+                        <span style={{color:"#818cf8",fontWeight:600,marginRight:8}}>{f.label}:</span>
+                        <span style={{whiteSpace:"pre-wrap"}}>{result.overview[f.key]}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={()=>{onApplyOverview(result.overview);toast("개요에 적용 완료","success");}} style={{marginTop:6,padding:"6px 14px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:700,background:"rgba(99,102,241,.15)",color:"#a5b4fc"}}>
+                    📌 개요에 적용
+                  </button>
+                </div>
+              )}
+
+              {/* 과업지시서 미리보기 */}
+              {result.taskOrder && Object.values(result.taskOrder).some(v=>v) && (
+                <div style={{marginBottom:8}}>
+                  <div style={{color:"var(--txt2)",fontSize:11,fontWeight:700,marginBottom:6}}>📋 과업지시서</div>
+                  <div style={{maxHeight:140,overflowY:"auto",fontSize:11,color:"var(--txt3)",background:"rgba(0,0,0,.15)",borderRadius:6,padding:8}}>
+                    {TASKORDER_FIELDS.filter(f=>result.taskOrder[f.key]).map(f=>(
+                      <div key={f.key} style={{padding:"3px 0",borderBottom:"1px solid rgba(255,255,255,.05)"}}>
+                        <span style={{color:"#f59e0b",fontWeight:600,marginRight:8}}>{f.label}:</span>
+                        <span style={{whiteSpace:"pre-wrap"}}>{result.taskOrder[f.key]}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={()=>{onApplyTaskOrder(result.taskOrder);toast("과업지시서에 적용 완료","success");}} style={{marginTop:6,padding:"6px 14px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:600,background:"rgba(245,158,11,.1)",color:"#f59e0b"}}>
+                    📋 과업지시서에도 적용
+                  </button>
+                </div>
+              )}
+
+              {result.usage && (
+                <div style={{color:"var(--txt4)",fontSize:9,marginTop:8,opacity:.7}}>
+                  토큰: {result.usage.inputTokens} in / {result.usage.outputTokens} out
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── AI 타임테이블 생성 패널 ──
 function AITimelinePanel({ project, onApplyTimeline, onApplyCueSheet }) {
   const [mode, setMode] = React.useState("chat");
@@ -9697,7 +9915,7 @@ function mergePlanToResult(planData, existingResult) {
   return merged;
 }
 
-function DocEditorPanel({docType, project}) {
+function DocEditorPanel({docType, project, onUpdateProject}) {
   // docType: "plan" | "report"
   const isPlan = docType === "plan";
 
@@ -9705,6 +9923,8 @@ function DocEditorPanel({docType, project}) {
   const [activeDesignItem, setActiveDesignItem] = React.useState(null);
   const [activeVenueItem, setActiveVenueItem] = React.useState(null);
   const [activeProgramTab, setActiveProgramTab] = React.useState("timetable");
+  const [showOvHistory, setShowOvHistory] = React.useState(false);
+  const [viewingOvVersion, setViewingOvVersion] = React.useState(null);
 
   const proj = project;
   const docKey = `${proj?.id}_${docType}`;
@@ -10983,31 +11203,162 @@ ${secEnabled("timeline") ? (()=>{
     const op = sd("operation");
     const tl = sd("timeline");
 
-    if (activeSection === "overview") return (
-      <div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-          <DocFG label="행사명"><input className="form-input" value={ov.eventName||proj?.name||""} onChange={e=>updateDoc("overview","eventName",e.target.value)} placeholder="행사명 입력"/></DocFG>
-          <DocFG label="주최사"><input className="form-input" value={ov.organizer||proj?.client||""} onChange={e=>updateDoc("overview","organizer",e.target.value)} placeholder="주최사/클라이언트"/></DocFG>
-          <DocFG label="일시"><input className="form-input" value={ov.date||proj?.eventDate||""} onChange={e=>updateDoc("overview","date",e.target.value)} placeholder="예) 2025년 11월 25일(화)"/></DocFG>
-          <DocFG label="시간"><input className="form-input" value={ov.time||""} onChange={e=>updateDoc("overview","time",e.target.value)} placeholder="예) 오전 10:30 ~ 오후 1:30 (3시간)"/></DocFG>
-        </div>
-        <DocFG label="장소"><input className="form-input" value={ov.venue||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("overview","venue",e.target.value)} placeholder="행사 장소명"/></DocFG>
-        <DocFG label="행사 내용">
-          <textarea className="form-input" rows={3} value={ov.content||proj?.taskOrder?.purpose||""} onChange={e=>updateDoc("overview","content",e.target.value)} placeholder="행사의 주요 내용 및 목적" style={{resize:"vertical"}}/>
-        </DocFG>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-          <DocFG label="행사 성격">
-            <textarea className="form-input" rows={4} value={ov.character||""} onChange={e=>updateDoc("overview","character",e.target.value)} placeholder="예) 지역사회공헌인정제 시상식&#10;- 시상식&#10;- 네트워킹&#10;- 전시" style={{resize:"vertical"}}/>
+    if (activeSection === "overview") {
+      const overviewHistory = ov._history || [];
+
+      const saveOverviewVersion = () => {
+        const hasContent = ov.eventName || ov.content || ov.venue || ov.organizer;
+        if (!hasContent) return;
+        const prev = [...overviewHistory];
+        prev.push({
+          ...ov, _history: undefined,
+          savedAt: new Date().toISOString().slice(0,19).replace("T"," "),
+          version: prev.length + 1,
+        });
+        if (prev.length > 5) prev.shift();
+        updateDoc("overview", "_history", prev);
+      };
+
+      const applyAIOverview = (aiData) => {
+        saveOverviewVersion();
+        Object.entries(aiData).forEach(([key, val]) => {
+          if (val && key !== "_history") updateDoc("overview", key, val);
+        });
+      };
+
+      const applyAITaskOrder = (aiData) => {
+        if (!onUpdateProject || !proj) return;
+        const prevHistory = [...(proj.taskOrderHistory || [])];
+        const to = proj.taskOrder || {};
+        if (to.purpose || to.tasks || to.sender) {
+          prevHistory.push({...to, savedAt: new Date().toISOString().slice(0,19).replace("T"," "), version: prevHistory.length+1});
+        }
+        onUpdateProject({...proj,
+          taskOrder: {...(proj.taskOrder||{}), ...aiData},
+          taskOrderHistory: prevHistory,
+          logs:[...(proj.logs||[]),{id:Date.now(),date:today,author:"AI",type:"auto",content:`AI 과업지시서 v${prevHistory.length+1} 자동 생성`}]
+        });
+      };
+
+      const restoreOvVersion = (ver) => {
+        saveOverviewVersion();
+        const { savedAt, version, _history, ...fields } = ver;
+        Object.entries(fields).forEach(([key, val]) => {
+          if (val !== undefined) updateDoc("overview", key, val);
+        });
+        setViewingOvVersion(null);
+        setShowOvHistory(false);
+        toast("개요 v" + version + " 복원 완료", "success");
+      };
+
+      const OV_FIELDS_DISPLAY = [
+        {key:"eventName",label:"행사명",icon:"🎪"},{key:"organizer",label:"주최사",icon:"🏢"},
+        {key:"date",label:"일시",icon:"📅"},{key:"time",label:"시간",icon:"⏰"},
+        {key:"venue",label:"장소",icon:"📍"},{key:"content",label:"행사 내용",icon:"📝"},
+        {key:"character",label:"행사 성격",icon:"🎯"},{key:"support",label:"지원 사항",icon:"🔧"},
+        {key:"extraNotes",label:"기타사항",icon:"📌"},
+      ];
+
+      return (
+        <div>
+          {/* AI 과업지시서 분석 패널 */}
+          <AIOverviewPanel project={proj} onApplyOverview={applyAIOverview} onApplyTaskOrder={applyAITaskOrder} />
+
+          {/* 버전 관리 헤더 */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{color:"#a5b4fc",fontWeight:700,fontSize:13}}>📌 행사 개요</span>
+              {overviewHistory.length > 0 && (
+                <span style={{fontSize:10,color:"var(--txt4)",background:"rgba(99,102,241,.1)",padding:"2px 8px",borderRadius:4}}>
+                  v{overviewHistory.length + 1}
+                </span>
+              )}
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              {overviewHistory.length > 0 && (
+                <button onClick={()=>setShowOvHistory(!showOvHistory)} className="btn btn-ghost"
+                  style={{fontSize:11,padding:"4px 10px",borderColor:"rgba(255,255,255,.1)",color:"var(--txt3)"}}>
+                  📚 이력 ({overviewHistory.length})
+                </button>
+              )}
+              <button onClick={saveOverviewVersion} className="btn btn-ghost"
+                style={{fontSize:11,padding:"4px 10px",borderColor:"rgba(99,102,241,.3)",color:"#a5b4fc"}}>
+                💾 버전 저장
+              </button>
+            </div>
+          </div>
+
+          {/* 이력 패널 */}
+          {showOvHistory && overviewHistory.length > 0 && (
+            <div style={{background:"rgba(0,0,0,.15)",border:"1px solid rgba(99,102,241,.15)",borderRadius:8,padding:"12px 14px",marginBottom:14}}>
+              <div style={{color:"var(--txt3)",fontSize:12,fontWeight:700,marginBottom:8}}>📚 개요 변경 이력</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {overviewHistory.slice().reverse().map((ver,i) => (
+                  <div key={i} onClick={()=>setViewingOvVersion(ver)}
+                    style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                      background:"rgba(255,255,255,.03)",border:"1px solid var(--border)",borderRadius:8,
+                      padding:"8px 14px",cursor:"pointer",transition:"background .15s"}}>
+                    <div>
+                      <span style={{color:"#a5b4fc",fontSize:12,fontWeight:700}}>v{ver.version}</span>
+                      <span style={{color:"var(--txt4)",fontSize:11,marginLeft:8}}>{ver.savedAt}</span>
+                    </div>
+                    <div style={{color:"var(--txt4)",fontSize:11}}>
+                      {ver.eventName && ver.eventName}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 이전 버전 조회 모달 */}
+          {viewingOvVersion && (
+            <div className="modal-overlay" onClick={e=>e.target.classList.contains("modal-overlay")&&setViewingOvVersion(null)}>
+              <div className="modal-box" style={{maxWidth:600,maxHeight:"80vh",overflow:"auto"}}>
+                <div className="modal-title">📌 개요 v{viewingOvVersion.version} <span style={{color:"var(--txt4)",fontSize:12,fontWeight:400}}>({viewingOvVersion.savedAt})</span></div>
+                {OV_FIELDS_DISPLAY.filter(f=>viewingOvVersion[f.key]).map(f=>(
+                  <div key={f.key} style={{marginBottom:10}}>
+                    <div style={{color:"#a5b4fc",fontSize:11,fontWeight:700,marginBottom:4}}>{f.icon} {f.label}</div>
+                    <div style={{color:"var(--txt2)",fontSize:13,lineHeight:1.7,whiteSpace:"pre-wrap",
+                      background:"rgba(255,255,255,.02)",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)"}}>{viewingOvVersion[f.key]}</div>
+                  </div>
+                ))}
+                <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}}>
+                  <button onClick={()=>restoreOvVersion(viewingOvVersion)}
+                    className="btn btn-ghost" style={{fontSize:12,color:"#f59e0b",borderColor:"rgba(245,158,11,.3)"}}>
+                    🔄 이 버전으로 복원
+                  </button>
+                  <button className="btn-ghost" onClick={()=>setViewingOvVersion(null)}>닫기</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 개요 필드 */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <DocFG label="행사명"><input className="form-input" value={ov.eventName||proj?.name||""} onChange={e=>updateDoc("overview","eventName",e.target.value)} placeholder="행사명 입력"/></DocFG>
+            <DocFG label="주최사"><input className="form-input" value={ov.organizer||proj?.client||""} onChange={e=>updateDoc("overview","organizer",e.target.value)} placeholder="주최사/클라이언트"/></DocFG>
+            <DocFG label="일시"><input className="form-input" value={ov.date||proj?.eventDate||""} onChange={e=>updateDoc("overview","date",e.target.value)} placeholder="예) 2025년 11월 25일(화)"/></DocFG>
+            <DocFG label="시간"><input className="form-input" value={ov.time||""} onChange={e=>updateDoc("overview","time",e.target.value)} placeholder="예) 오전 10:30 ~ 오후 1:30 (3시간)"/></DocFG>
+          </div>
+          <DocFG label="장소"><input className="form-input" value={ov.venue||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("overview","venue",e.target.value)} placeholder="행사 장소명"/></DocFG>
+          <DocFG label="행사 내용">
+            <textarea className="form-input" rows={3} value={ov.content||proj?.taskOrder?.purpose||""} onChange={e=>updateDoc("overview","content",e.target.value)} placeholder="행사의 주요 내용 및 목적" style={{resize:"vertical"}}/>
           </DocFG>
-          <DocFG label="지원 사항">
-            <textarea className="form-input" rows={4} value={ov.support||""} onChange={e=>updateDoc("overview","support",e.target.value)} placeholder="예) 무대/음향/조명/LED&#10;사회자&#10;영상 제작&#10;인쇄물" style={{resize:"vertical"}}/>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <DocFG label="행사 성격">
+              <textarea className="form-input" rows={4} value={ov.character||""} onChange={e=>updateDoc("overview","character",e.target.value)} placeholder="예) 지역사회공헌인정제 시상식&#10;- 시상식&#10;- 네트워킹&#10;- 전시" style={{resize:"vertical"}}/>
+            </DocFG>
+            <DocFG label="지원 사항">
+              <textarea className="form-input" rows={4} value={ov.support||""} onChange={e=>updateDoc("overview","support",e.target.value)} placeholder="예) 무대/음향/조명/LED&#10;사회자&#10;영상 제작&#10;인쇄물" style={{resize:"vertical"}}/>
+            </DocFG>
+          </div>
+          <DocFG label="기타사항">
+            <textarea className="form-input" rows={2} value={ov.extraNotes||""} onChange={e=>updateDoc("overview","extraNotes",e.target.value)} placeholder="기타 특이사항" style={{resize:"vertical"}}/>
           </DocFG>
         </div>
-        <DocFG label="기타사항">
-          <textarea className="form-input" rows={2} value={ov.extraNotes||""} onChange={e=>updateDoc("overview","extraNotes",e.target.value)} placeholder="기타 특이사항" style={{resize:"vertical"}}/>
-        </DocFG>
-      </div>
-    );
+      );
+    }
 
     if (activeSection === "venue") {
       const eqList = getList("venue","equipList",{name:"",spec:"",qty:"",note:""});
