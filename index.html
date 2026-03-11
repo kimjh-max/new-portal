@@ -13,7 +13,12 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260310v16";
+  var CODE_VER = "20260312v23";
+  // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
+  window.addEventListener("unhandledrejection", function(e) {
+    console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
+    e.preventDefault(); // 브라우저 크래시 방지
+  });
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
@@ -309,6 +314,7 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
 
       // ② 로컬 → 클라우드 (로컬이 더 크면 업로드, 대용량은 청크 분할)
       var CHUNK_THRESHOLD = 40 * 1024 * 1024; // 40MB 이상이면 청크 분할
+      var MAX_VERSIONS = 2; // 버전 이력 최대 보관 수
       for(var i = 0; i < localDocKeys.length; i++){
         var key = localDocKeys[i];
         try {
@@ -320,9 +326,25 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
           if(!data) continue;
           if(Array.isArray(data)){ if(!data.length) continue; }
           else if(typeof data !== "object" || !Object.keys(data).length) continue;
+
+          // ✂️ 버전 이력 배열은 최신 N개로 트리밍 (메모리/대역폭 절약)
+          if(Array.isArray(data) && key.indexOf("eventos_docVersions_") === 0 && data.length > MAX_VERSIONS){
+            console.log("[Sync] ✂️ 버전 이력 트리밍: " + key + " (" + data.length + " → " + MAX_VERSIONS + ")");
+            data = data.slice(0, MAX_VERSIONS);
+            // IDB에도 트리밍된 데이터 저장
+            try { await putData(db, key, data); } catch(e){}
+          }
+
           var localSize = JSON.stringify(data).length;
           var cloudDoc = cloudDocs.find(function(d){ return d.doc_key === key; });
           var cloudSize = cloudDoc ? cloudDoc.size : 0;
+
+          // 🛡️ 버전 이력은 클라우드에 이미 있으면 업로드 스킵 (대역폭 절약)
+          if(key.indexOf("eventos_docVersions_") === 0 && cloudSize > 0){
+            console.log("[Sync] ⏭️ 버전 이력 업로드 스킵 (클라우드에 이미 존재): " + key);
+            continue;
+          }
+
           if(localSize > cloudSize){
             // 대용량 배열 데이터는 청크 분할 업로드
             if(Array.isArray(data) && localSize > CHUNK_THRESHOLD){
@@ -738,10 +760,57 @@ const CloudSync = {
     }
   },
 
+  // ── AI 타임라인 생성 ──
+  async generateTimeline(mode, options = {}) {
+    if (!CLOUD_CONFIG.ENABLED) return { success: false, error: "클라우드 미연결" };
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/ai/generate-timeline`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode,
+          fileKey: options.fileKey || undefined,
+          message: options.message || undefined,
+          context: options.context || undefined,
+        }),
+      });
+      return await res.json();
+    } catch (err) {
+      console.error("[CloudSync] generateTimeline:", err);
+      return { success: false, error: err.message || "네트워크 오류" };
+    }
+  },
+
+  // ── AI 과업지시서 분석 → 개요 생성 ──
+  async generateOverview(mode, options = {}) {
+    if (!CLOUD_CONFIG.ENABLED) return { success: false, error: "클라우드 미연결" };
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/ai/analyze-taskorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode,
+          fileKey: options.fileKey || undefined,
+          message: options.message || undefined,
+          context: options.context || undefined,
+        }),
+      });
+      return await res.json();
+    } catch (err) {
+      console.error("[CloudSync] generateOverview:", err);
+      return { success: false, error: err.message || "네트워크 오류" };
+    }
+  },
+
   // ── 문서(보고서) 데이터 저장 ──
   async saveDoc(key, data) {
     if (!CLOUD_CONFIG.ENABLED) return null;
     try {
+      // 버전 이력 배열은 최대 5개로 제한 (메모리/대역폭 절약)
+      if (Array.isArray(data) && key.indexOf("eventos_docVersions_") === 0 && data.length > 5) {
+        console.log("[CloudSync] ✂️ 버전 이력 트리밍:", key, data.length + " → 5");
+        data = data.slice(0, 5);
+      }
       const jsonSize = JSON.stringify(data).length;
       // 대용량 배열(버전 데이터 등)은 개별 청크로 분할 업로드
       if (Array.isArray(data) && jsonSize > 40 * 1024 * 1024) {
@@ -919,6 +988,10 @@ const CloudDataStore = {
       return { success: false, queued: true };
     }
     try {
+      // 버전 이력 배열은 최대 5개로 제한
+      if (Array.isArray(data) && key.indexOf("eventos_docVersions_") === 0 && data.length > 5) {
+        data = data.slice(0, 5);
+      }
       const jsonStr = JSON.stringify(data);
       const sizeBytes = jsonStr.length;
       let result;
@@ -996,8 +1069,13 @@ const CloudDataStore = {
         }
         console.log("[CloudDataStore] ✅ 큐 항목 전송:", item.type, item.key || "");
       } catch (err) {
-        console.error("[CloudDataStore] ❌ 큐 항목 실패, 재큐잉:", err.message);
-        this._enqueue(item);
+        const retries = (item._retries || 0) + 1;
+        if (retries < 5) {
+          console.warn("[CloudDataStore] ❌ 큐 항목 실패 (재시도 " + retries + "/5):", err.message);
+          this._enqueue({ ...item, _retries: retries });
+        } else {
+          console.error("[CloudDataStore] ❌ 큐 항목 최대 재시도 초과 — 폐기:", item.type, item.key || "");
+        }
       }
     }
   },
@@ -1428,7 +1506,7 @@ function usePersistedState(key, defaultValue) {
   const setPersistedState = useCallback((valOrFn) => {
     setState(prev => {
       const next = typeof valOrFn === "function" ? valOrFn(prev) : valOrFn;
-      try { localStorage.setItem(key, JSON.stringify(next)); } catch(e) { console.warn("[usePersistedState] localStorage 저장 실패:", key, e); showStorageUpgradeAlert(); }
+      try { localStorage.setItem(key, JSON.stringify(next)); } catch(e) { console.warn("[usePersistedState] localStorage 저장 실패:", key, e); if (!CLOUD_CONFIG.ENABLED) showStorageUpgradeAlert(); }
       return next;
     });
   }, [key]);
@@ -1475,14 +1553,14 @@ function useCloudState(key, defaultValue, opts) {
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       CloudDataStore.writeAppData({ [key]: stateRef.current }).then(result => {
-        if (result.success) {
+        if (result && result.success) {
           SyncManager.setStatus("success");
           SyncManager._lastSyncTime = new Date();
           SyncManager._notify();
-        } else if (result.queued) {
+        } else if (result && result.queued) {
           console.log("[useCloudState] 📤 " + key + " 큐잉됨 (오프라인)");
         }
-      });
+      }).catch(e => console.warn("[useCloudState] " + key + " 저장 실패:", e.message));
       // Drive 백업도 전송
       if (DRIVE_CONFIG.ENABLED) {
         SyncManager.queueSync("saveAppData", { data: { [key]: stateRef.current } });
@@ -5284,6 +5362,24 @@ function toast(msg, type="default") {
       }
       return kb;
     };
+
+    // 클라우드 활성 시: 자동 백업 + 버전 이력 즉시 삭제 (클라우드가 source of truth)
+    var cloudActive = false;
+    try { cloudActive = !!(CLOUD_CONFIG && CLOUD_CONFIG.ENABLED); } catch(e) {}
+    if (!cloudActive) {
+      try { cloudActive = !!(window.CLOUD_CONFIG && window.CLOUD_CONFIG.ENABLED); } catch(e) {}
+    }
+    if (cloudActive) {
+      try { localStorage.removeItem("eventos_autoBackups"); } catch {}
+      for (var ci = localStorage.length - 1; ci >= 0; ci--) {
+        var ck = localStorage.key(ci);
+        if (ck && ck.indexOf("eventos_docVersions_") === 0) {
+          try { localStorage.removeItem(ck); } catch {}
+        }
+      }
+      console.log("[EventOS] ☁️ 클라우드 활성 → 로컬 백업/버전이력 정리 완료");
+    }
+
     let usedKB = calcUsed();
     if (usedKB < 3 * 1024) return; // 3MB 미만이면 정리 불필요
     console.log("[EventOS] ⚡ 스토리지 " + (usedKB/1024).toFixed(1) + "MB → 선제 정리 시작");
@@ -7864,7 +7960,7 @@ function ReportPanel({project}) {
 }
 
 // ─ Reports Tab Wrapper (보고서 탭 내 서브 탭) ─
-function ReportsTabWrapper({project}) {
+function ReportsTabWrapper({project, onUpdate}) {
   const [subTab, setSubTab] = React.useState("plan");
   const SUB_TABS = [
     {id:"plan",   icon:"📋", label:"운영계획안", color:"#6366f1"},
@@ -7887,8 +7983,8 @@ function ReportsTabWrapper({project}) {
         ))}
       </div>
       {/* 서브 탭 콘텐츠 */}
-      {subTab==="plan"  && <DocEditorPanel docType="plan"   project={project}/>}
-      {subTab==="report"&& <DocEditorPanel docType="report" project={project}/>}
+      {subTab==="plan"  && <DocEditorPanel docType="plan"   project={project} onUpdateProject={onUpdate}/>}
+      {subTab==="report"&& <DocEditorPanel docType="report" project={project} onUpdateProject={onUpdate}/>}
     </div>
   );
 }
@@ -7921,7 +8017,7 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
     SyncManager.listFiles(project.name).then(files => {
       setDriveFiles(files);
       setLoadingFiles(false);
-    });
+    }).catch(e => { console.warn("[Files] 파일 목록 로드 실패:", e.message); setLoadingFiles(false); });
   }, [project.name]);
 
   // ⚡ R2-first 병렬 업로드 핸들러 (속도 최적화)
@@ -8286,7 +8382,7 @@ function FileManager({project, onUpdate, onUploadStateChange}) {
             {loadingFiles && <span style={{color:"var(--txt4)",fontSize:11}}>로딩 중...</span>}
             {DRIVE_CONFIG.ENABLED && !loadingFiles && (
               <button className="btn btn-ghost" style={{padding:"2px 8px",fontSize:10}}
-                onClick={()=>{setLoadingFiles(true);SyncManager.listFiles(project.name).then(f=>{setDriveFiles(f);setLoadingFiles(false)})}}>
+                onClick={()=>{setLoadingFiles(true);SyncManager.listFiles(project.name).then(f=>{setDriveFiles(f);setLoadingFiles(false)}).catch(()=>setLoadingFiles(false))}}>
                 🔄 새로고침
               </button>
             )}
@@ -8557,6 +8653,27 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
       {/* 탭 콘텐츠 */}
       {tab==="overview"&&(
         <div style={{display:"flex",flexDirection:"column",gap:20}}>
+          {/* AI 과업지시서 분석 → 개요/과업 자동 생성 */}
+          <AIOverviewPanel project={project}
+            onApplyOverview={(ovData) => {
+              // 🛡️ 기존 데이터 있으면 사용자 확인
+              if (project.name && !window.confirm("⚠️ AI 분석 결과를 프로젝트 개요에 반영하시겠습니까?")) return;
+              const updated = { ...project };
+              if (ovData.eventName && !project.name) updated.name = ovData.eventName;
+              if (ovData.venue && !project.taskOrder?.venue) {
+                updated.taskOrder = { ...(project.taskOrder || {}), venue: ovData.venue };
+              }
+              onUpdate(updated);
+              toast("AI 분석 결과가 프로젝트에 반영되었습니다", "success");
+            }}
+            onApplyTaskOrder={(toData) => {
+              const to = project.taskOrder || {};
+              if ((to.purpose || to.tasks || to.sender) && !window.confirm("⚠️ 기존 과업지시서 데이터가 있습니다.\nAI 분석 결과로 덮어쓰시겠습니까?")) return;
+              const updated = { ...project, taskOrder: { ...(project.taskOrder || {}), ...toData } };
+              onUpdate(updated);
+              toast("과업지시서에 AI 분석 결과가 반영되었습니다", "success");
+            }}
+          />
           {/* 긴급건 알림 */}
           <UrgentTasksPanel project={project} onUpdate={onUpdate}/>
           {/* 월별 달력 — 간트 일정 표시 */}
@@ -8608,7 +8725,7 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
       {tab==="checklist"&&<ChecklistPanel project={project} onUpdate={onUpdate} currentUser={currentUser}/>}
       {tab==="gantt"&&<GanttChart project={project} onUpdate={onUpdate} users={users}/>}
       {tab==="logs"&&<WorkLog project={project} onUpdate={onUpdate} users={users} currentUser={currentUser}/>}
-      {tab==="reports"&&<ReportsTabWrapper project={project}/>}
+      {tab==="reports"&&<ReportsTabWrapper project={project} onUpdate={onUpdate}/>}
       {/* FileManager는 항상 마운트 — 업로드 중 탭 이동해도 끊기지 않도록 display:none으로 숨김 */}
       <div style={{display: tab==="files" ? "block" : "none"}}>
         <FileManager project={project} onUpdate={onUpdate} onUploadStateChange={setFileUploading}/>
@@ -9146,9 +9263,36 @@ function FilesPage({projects}) {
   function openIDB(){return new Promise((res,rej)=>{const r=indexedDB.open(IDB_NAME,IDB_VER);r.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains(IDB_STORE))db.createObjectStore(IDB_STORE)};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
   // 옛 IDB(EventOS_DocEditor) 정리
   try{indexedDB.deleteDatabase("EventOS_DocEditor")}catch(e){}
-  async function saveToIDB(key,data){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readwrite");tx.objectStore(IDB_STORE).put(data,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
-  async function loadFromIDB(key){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
-  async function getAllIDBKeys(){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).getAllKeys();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error)})}
+  // IDB 연결 풀 — 단일 연결 재사용으로 연결 누수 방지
+  let _idbInstance = null;
+  let _idbOpening = null;
+  function getIDB(){
+    if(_idbInstance) return Promise.resolve(_idbInstance);
+    if(_idbOpening) return _idbOpening;
+    _idbOpening = openIDB().then(db=>{_idbInstance=db;db.onclose=()=>{_idbInstance=null};_idbOpening=null;return db}).catch(e=>{_idbOpening=null;throw e});
+    return _idbOpening;
+  }
+  async function saveToIDB(key,data){const db=await getIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readwrite");tx.objectStore(IDB_STORE).put(data,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
+  async function loadFromIDB(key){const db=await getIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+  async function getAllIDBKeys(){const db=await getIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,"readonly");const r=tx.objectStore(IDB_STORE).getAllKeys();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error)})}
+
+  // ── localStorage 안전 저장: 4MB 초과 데이터는 localStorage에 쓰지 않음 (IDB만 사용) ──
+  const LS_MAX_BYTES = 4 * 1024 * 1024; // 4MB
+  function safeLocalSet(key, jsonStr) {
+    try {
+      if (typeof jsonStr !== "string") jsonStr = JSON.stringify(jsonStr);
+      if (jsonStr.length > LS_MAX_BYTES) {
+        console.log("[safeLocalSet] ⚠️ " + key + " 크기 " + (jsonStr.length/1024/1024).toFixed(1) + "MB → localStorage 건너뜀 (IDB만 사용)");
+        return false;
+      }
+      localStorage.setItem(key, jsonStr);
+      return true;
+    } catch (e) {
+      console.warn("[safeLocalSet] localStorage 쓰기 실패:", key, e.message);
+      // QuotaExceeded 시 해당 키 삭제 후 재시도하지 않음 (데이터 보호)
+      return false;
+    }
+  }
 
     /* ──────── Draggable Tab List ──────── */
     function DraggableTabList({items, activeId, onSelect, onReorder, onAdd, renderLabel, addLabel="+ 추가"}) {
@@ -9401,6 +9545,428 @@ function StorageIndicator() {
   );
 }
 
+// ── AI 과업지시서 분석 → 개요 자동 생성 패널 ──
+function AIOverviewPanel({ project, onApplyOverview, onApplyTaskOrder }) {
+  const [mode, setMode] = React.useState("file");
+  const [loading, setLoading] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+  const [selectedFileKey, setSelectedFileKey] = React.useState("");
+  const [result, setResult] = React.useState(null);
+  const [error, setError] = React.useState("");
+  const [collapsed, setCollapsed] = React.useState(true);
+  const [uploadStatus, setUploadStatus] = React.useState(null); // {state:"uploading"|"success"|"error", name, size?, msg?}
+  const fileInputRef = React.useRef(null);
+
+  const projectFiles = React.useMemo(() => {
+    return (project?.files || [])
+      .filter(f => typeof f === "object")
+      .filter(f => {
+        const mime = (f.mimeType || "").toLowerCase();
+        const name = (f.name || "").toLowerCase();
+        return mime.includes("pdf") || mime.startsWith("image/")
+          || name.endsWith(".pdf") || name.endsWith(".png")
+          || name.endsWith(".jpg") || name.endsWith(".jpeg");
+      });
+  }, [project?.files]);
+
+  const buildContext = () => ({
+    projectName: project?.name || "",
+    venue: project?.taskOrder?.venue || "",
+    attendance: project?.taskOrder?.attendance || "",
+  });
+
+  const handleGenerate = async () => {
+    setLoading(true);
+    setError("");
+    setResult(null);
+    try {
+      let res;
+      if (mode === "file") {
+        if (!selectedFileKey) { setError("파일을 선택해주세요"); setLoading(false); return; }
+        res = await CloudSync.generateOverview("file", { fileKey: selectedFileKey, context: buildContext() });
+      } else {
+        if (!message.trim()) { setError("과업 내용을 입력해주세요"); setLoading(false); return; }
+        res = await CloudSync.generateOverview("chat", { message: message.trim(), context: buildContext() });
+      }
+      if (!res) { setError("서버 연결 실패. 클라우드 연결 상태를 확인해주세요."); }
+      else if (!res.success) { setError(res.error || "AI 분석 실패"); }
+      else { setResult(res); }
+    } catch (e) { setError("오류 발생: " + e.message); }
+    setLoading(false);
+  };
+
+  const handleNewFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const mime = file.type.toLowerCase();
+    if (!mime.includes("pdf") && !mime.startsWith("image/")) {
+      setUploadStatus({state:"error",name:file.name,msg:"PDF 또는 이미지 파일만 업로드 가능합니다"});
+      return;
+    }
+    const sizeStr = file.size > 1024*1024 ? (file.size/1024/1024).toFixed(1)+"MB" : (file.size/1024).toFixed(0)+"KB";
+    setUploadStatus({state:"uploading",name:file.name,size:sizeStr});
+    try {
+      const uploadResult = await CloudSync.uploadFileBinary(project?.id, file, null, null);
+      if (uploadResult?.success) {
+        const key = uploadResult.r2Key || uploadResult.key || uploadResult.fileKey || "";
+        setSelectedFileKey(key);
+        setUploadStatus({state:"success",name:file.name,size:sizeStr});
+      } else {
+        setUploadStatus({state:"error",name:file.name,msg:"서버 업로드 실패 — 네트워크를 확인하세요"});
+      }
+    } catch (err) {
+      setUploadStatus({state:"error",name:file.name,msg:err.message||"업로드 중 오류 발생"});
+    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  if (!CLOUD_CONFIG.ENABLED) return null;
+
+  const OVERVIEW_FIELDS = [
+    {key:"eventName",label:"행사명"},{key:"organizer",label:"주최사"},{key:"date",label:"일시"},
+    {key:"time",label:"시간"},{key:"venue",label:"장소"},{key:"content",label:"행사 내용"},
+    {key:"character",label:"행사 성격"},{key:"support",label:"지원 사항"},{key:"extraNotes",label:"기타사항"},
+  ];
+  const TASKORDER_FIELDS = [
+    {key:"sender",label:"발신인"},{key:"receivedDate",label:"수신일"},{key:"venue",label:"장소"},
+    {key:"attendance",label:"참석 규모"},{key:"purpose",label:"행사 목적"},{key:"tasks",label:"주요 과업"},
+    {key:"requirements",label:"요구사항"},{key:"notes",label:"참고사항"},
+  ];
+
+  return (
+    <div style={{marginBottom:16,background:"rgba(99,102,241,.04)",border:"1px solid rgba(99,102,241,.15)",borderRadius:12,overflow:"hidden"}}>
+      <div onClick={()=>setCollapsed(!collapsed)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",cursor:"pointer",userSelect:"none"}}>
+        <div style={{color:"#a5b4fc",fontWeight:700,fontSize:13}}>🤖 AI 과업지시서 분석</div>
+        <span style={{color:"var(--txt4)",fontSize:11}}>{collapsed?"▶ 펼치기":"▼ 접기"}</span>
+      </div>
+
+      {!collapsed && (
+        <div style={{padding:"0 14px 14px"}}>
+          {/* 모드 탭 */}
+          <div style={{display:"flex",gap:4,marginBottom:10}}>
+            <button onClick={()=>setMode("file")} style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:mode==="file"?700:500,background:mode==="file"?"rgba(99,102,241,.2)":"transparent",color:mode==="file"?"#a5b4fc":"var(--txt3)"}}>
+              📄 파일 분석
+            </button>
+            <button onClick={()=>setMode("chat")} style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:mode==="chat"?700:500,background:mode==="chat"?"rgba(99,102,241,.2)":"transparent",color:mode==="chat"?"#a5b4fc":"var(--txt3)"}}>
+              💬 직접 입력
+            </button>
+          </div>
+
+          {/* 파일 모드 */}
+          {mode === "file" && (
+            <div style={{marginBottom:8}}>
+              {projectFiles.length > 0 && (
+                <div style={{marginBottom:8}}>
+                  <label style={{fontSize:11,color:"var(--txt3)",marginBottom:4,display:"block"}}>과업지시서 파일 선택</label>
+                  <select className="form-input" value={selectedFileKey} onChange={e=>setSelectedFileKey(e.target.value)} style={{fontSize:12}}>
+                    <option value="">-- 파일 선택 --</option>
+                    {projectFiles.map((f,i) => (
+                      <option key={i} value={f.r2Key || f.name}>{f.name} ({(f.size/1024).toFixed(0)}KB)</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <button className="btn btn-ghost" style={{fontSize:11,padding:"5px 12px"}} disabled={uploadStatus?.state==="uploading"} onClick={()=>fileInputRef.current?.click()}>
+                  {uploadStatus?.state==="uploading" ? "⏳ 업로드 중..." : "📎 새 파일 업로드"}
+                </button>
+                <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" onChange={handleNewFileUpload} style={{display:"none"}}/>
+                <span style={{color:"var(--txt4)",fontSize:10}}>PDF, PNG, JPG 지원</span>
+              </div>
+              {/* 업로드 상태 표시 */}
+              {uploadStatus && (
+                <div style={{marginTop:8,padding:"8px 12px",borderRadius:8,fontSize:11,display:"flex",alignItems:"center",gap:8,
+                  background: uploadStatus.state==="uploading" ? "rgba(99,102,241,.08)" : uploadStatus.state==="success" ? "rgba(16,185,129,.08)" : "rgba(239,68,68,.08)",
+                  border: `1px solid ${uploadStatus.state==="uploading" ? "rgba(99,102,241,.2)" : uploadStatus.state==="success" ? "rgba(16,185,129,.25)" : "rgba(239,68,68,.2)"}`,
+                  color: uploadStatus.state==="uploading" ? "#a5b4fc" : uploadStatus.state==="success" ? "#34d399" : "#fca5a5"}}>
+                  <span style={{fontSize:16}}>{uploadStatus.state==="uploading" ? "⏳" : uploadStatus.state==="success" ? "✅" : "❌"}</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:600}}>
+                      {uploadStatus.state==="uploading" && `"${uploadStatus.name}" 업로드 중...`}
+                      {uploadStatus.state==="success" && `"${uploadStatus.name}" 업로드 완료`}
+                      {uploadStatus.state==="error" && `"${uploadStatus.name}" 업로드 실패`}
+                    </div>
+                    {uploadStatus.size && uploadStatus.state!=="error" && <div style={{opacity:.7,fontSize:10,marginTop:2}}>파일 크기: {uploadStatus.size}</div>}
+                    {uploadStatus.state==="success" && <div style={{opacity:.7,fontSize:10,marginTop:2}}>파일이 선택되었습니다 — "과업지시서 분석" 버튼을 눌러주세요</div>}
+                    {uploadStatus.state==="error" && uploadStatus.msg && <div style={{opacity:.8,fontSize:10,marginTop:2}}>{uploadStatus.msg}</div>}
+                  </div>
+                  {uploadStatus.state!=="uploading" && (
+                    <button onClick={()=>setUploadStatus(null)} style={{background:"none",border:"none",cursor:"pointer",color:"inherit",fontSize:14,opacity:.6,padding:0}}>✕</button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 대화 모드 */}
+          {mode === "chat" && (
+            <textarea className="form-input" rows={4} value={message}
+              onChange={e=>setMessage(e.target.value)}
+              placeholder={"과업지시서 내용을 붙여넣거나 행사 정보를 자유롭게 입력하세요.\n예: 삼성전자 마케팅팀에서 의뢰한 신제품 런칭 행사. 코엑스 A홀에서 11월 25일 진행, 참석 300명 예상. 주요 과업: 무대 설치, 영상 제작, 케이터링..."}
+              style={{resize:"vertical",marginBottom:8,fontSize:12}}/>
+          )}
+
+          {/* 분석 버튼 */}
+          <button onClick={handleGenerate} disabled={loading} style={{width:"100%",padding:"10px",borderRadius:8,border:"none",cursor:loading?"not-allowed":"pointer",fontSize:12,fontWeight:700,background:loading?"rgba(99,102,241,.1)":"rgba(99,102,241,.15)",color:loading?"var(--txt4)":"#a5b4fc",marginBottom:8,transition:"all .2s"}}>
+            {loading ? "🔄 AI 분석 중... (10~30초 소요)" : "🤖 과업지시서 분석"}
+          </button>
+
+          {/* 에러 */}
+          {error && (
+            <div style={{background:"rgba(239,68,68,.08)",border:"1px solid rgba(239,68,68,.2)",borderRadius:8,padding:"8px 12px",color:"#fca5a5",fontSize:11,marginBottom:8}}>
+              ⚠️ {error}
+            </div>
+          )}
+
+          {/* 결과 미리보기 */}
+          {result && (
+            <div style={{background:"rgba(16,185,129,.05)",border:"1px solid rgba(16,185,129,.2)",borderRadius:8,padding:12}}>
+              <div style={{color:"#34d399",fontWeight:700,fontSize:12,marginBottom:10}}>✅ AI 분석 결과</div>
+
+              {/* 개요 미리보기 */}
+              {result.overview && Object.values(result.overview).some(v=>v) && (
+                <div style={{marginBottom:12}}>
+                  <div style={{color:"var(--txt2)",fontSize:11,fontWeight:700,marginBottom:6}}>📌 행사 개요</div>
+                  <div style={{maxHeight:160,overflowY:"auto",fontSize:11,color:"var(--txt3)",background:"rgba(0,0,0,.15)",borderRadius:6,padding:8}}>
+                    {OVERVIEW_FIELDS.filter(f=>result.overview[f.key]).map(f=>(
+                      <div key={f.key} style={{padding:"3px 0",borderBottom:"1px solid rgba(255,255,255,.05)"}}>
+                        <span style={{color:"#818cf8",fontWeight:600,marginRight:8}}>{f.label}:</span>
+                        <span style={{whiteSpace:"pre-wrap"}}>{result.overview[f.key]}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={()=>{onApplyOverview(result.overview);toast("개요에 적용 완료","success");}} style={{marginTop:6,padding:"6px 14px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:700,background:"rgba(99,102,241,.15)",color:"#a5b4fc"}}>
+                    📌 개요에 적용
+                  </button>
+                </div>
+              )}
+
+              {/* 과업지시서 미리보기 */}
+              {result.taskOrder && Object.values(result.taskOrder).some(v=>v) && (
+                <div style={{marginBottom:8}}>
+                  <div style={{color:"var(--txt2)",fontSize:11,fontWeight:700,marginBottom:6}}>📋 과업지시서</div>
+                  <div style={{maxHeight:140,overflowY:"auto",fontSize:11,color:"var(--txt3)",background:"rgba(0,0,0,.15)",borderRadius:6,padding:8}}>
+                    {TASKORDER_FIELDS.filter(f=>result.taskOrder[f.key]).map(f=>(
+                      <div key={f.key} style={{padding:"3px 0",borderBottom:"1px solid rgba(255,255,255,.05)"}}>
+                        <span style={{color:"#f59e0b",fontWeight:600,marginRight:8}}>{f.label}:</span>
+                        <span style={{whiteSpace:"pre-wrap"}}>{result.taskOrder[f.key]}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={()=>{onApplyTaskOrder(result.taskOrder);toast("과업지시서에 적용 완료","success");}} style={{marginTop:6,padding:"6px 14px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:600,background:"rgba(245,158,11,.1)",color:"#f59e0b"}}>
+                    📋 과업지시서에도 적용
+                  </button>
+                </div>
+              )}
+
+              {result.usage && (
+                <div style={{color:"var(--txt4)",fontSize:9,marginTop:8,opacity:.7}}>
+                  토큰: {result.usage.inputTokens} in / {result.usage.outputTokens} out
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── AI 타임테이블 생성 패널 ──
+function AITimelinePanel({ project, onApplyTimeline, onApplyCueSheet }) {
+  const [mode, setMode] = React.useState("chat");
+  const [loading, setLoading] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+  const [selectedFileKey, setSelectedFileKey] = React.useState("");
+  const [result, setResult] = React.useState(null);
+  const [error, setError] = React.useState("");
+  const [collapsed, setCollapsed] = React.useState(true);
+  const fileInputRef = React.useRef(null);
+
+  const projectFiles = React.useMemo(() => {
+    return (project?.files || [])
+      .filter(f => typeof f === "object")
+      .filter(f => {
+        const mime = (f.mimeType || "").toLowerCase();
+        const name = (f.name || "").toLowerCase();
+        return mime.includes("pdf") || mime.startsWith("image/")
+          || name.endsWith(".pdf") || name.endsWith(".png")
+          || name.endsWith(".jpg") || name.endsWith(".jpeg");
+      });
+  }, [project?.files]);
+
+  const buildContext = () => ({
+    projectName: project?.name || "",
+    venue: project?.taskOrder?.venue || "",
+    attendance: project?.taskOrder?.attendance || "",
+  });
+
+  const handleGenerate = async () => {
+    setLoading(true);
+    setError("");
+    setResult(null);
+    try {
+      let res;
+      if (mode === "file") {
+        if (!selectedFileKey) { setError("파일을 선택해주세요"); setLoading(false); return; }
+        res = await CloudSync.generateTimeline("file", { fileKey: selectedFileKey, context: buildContext() });
+      } else {
+        if (!message.trim()) { setError("일정 설명을 입력해주세요"); setLoading(false); return; }
+        res = await CloudSync.generateTimeline("chat", { message: message.trim(), context: buildContext() });
+      }
+      if (!res) { setError("서버 연결 실패. 클라우드 연결 상태를 확인해주세요."); }
+      else if (!res.success) { setError(res.error || "AI 생성 실패"); }
+      else { setResult(res); }
+    } catch (e) { setError("오류 발생: " + e.message); }
+    setLoading(false);
+  };
+
+  const handleNewFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const mime = file.type.toLowerCase();
+    if (!mime.includes("pdf") && !mime.startsWith("image/")) {
+      toast("PDF 또는 이미지 파일만 업로드 가능합니다", "warn"); return;
+    }
+    toast(`"${file.name}" 업로드 중...`, "default");
+    try {
+      const uploadResult = await CloudSync.uploadFileBinary(project?.id, file, null, null);
+      if (uploadResult?.success) {
+        const key = uploadResult.r2Key || uploadResult.key || uploadResult.fileKey || "";
+        setSelectedFileKey(key);
+        toast(`"${file.name}" 업로드 완료`, "success");
+      } else { toast("파일 업로드 실패", "error"); }
+    } catch (err) { toast("업로드 오류: " + err.message, "error"); }
+  };
+
+  const applyTimeline = () => {
+    if (!result?.timeline?.length) return;
+    onApplyTimeline(result.timeline);
+    toast("타임테이블 " + result.timeline.length + "개 항목 적용 완료", "success");
+  };
+
+  const applyCueSheet = () => {
+    if (!result?.cueSheet?.length) return;
+    onApplyCueSheet(result.cueSheet);
+    toast("큐시트 " + result.cueSheet.length + "개 항목 적용 완료", "success");
+  };
+
+  if (!CLOUD_CONFIG.ENABLED) return null;
+
+  return (
+    <div style={{marginBottom:16,background:"rgba(99,102,241,.04)",border:"1px solid rgba(99,102,241,.15)",borderRadius:12,overflow:"hidden"}}>
+      {/* 헤더 (토글) */}
+      <div onClick={()=>setCollapsed(!collapsed)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",cursor:"pointer",userSelect:"none"}}>
+        <div style={{color:"#a5b4fc",fontWeight:700,fontSize:13}}>🤖 AI 타임테이블 생성</div>
+        <span style={{color:"var(--txt4)",fontSize:11}}>{collapsed?"▶ 펼치기":"▼ 접기"}</span>
+      </div>
+
+      {!collapsed && (
+        <div style={{padding:"0 14px 14px"}}>
+          {/* 모드 탭 */}
+          <div style={{display:"flex",gap:4,marginBottom:10}}>
+            <button onClick={()=>setMode("chat")} style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:mode==="chat"?700:500,background:mode==="chat"?"rgba(99,102,241,.2)":"transparent",color:mode==="chat"?"#a5b4fc":"var(--txt3)"}}>
+              💬 대화 입력
+            </button>
+            <button onClick={()=>setMode("file")} style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:mode==="file"?700:500,background:mode==="file"?"rgba(99,102,241,.2)":"transparent",color:mode==="file"?"#a5b4fc":"var(--txt3)"}}>
+              📄 파일 분석
+            </button>
+          </div>
+
+          {/* 대화 모드 */}
+          {mode === "chat" && (
+            <textarea className="form-input" rows={3} value={message}
+              onChange={e=>setMessage(e.target.value)}
+              placeholder={"행사 일정을 자유롭게 설명하세요.\n예: 오전 9시에 세팅 시작, 10시에 리허설, 11시 오프닝, 11시 10분 환영사, 11시 30분 축사..."}
+              style={{resize:"vertical",marginBottom:8,fontSize:12}}/>
+          )}
+
+          {/* 파일 모드 */}
+          {mode === "file" && (
+            <div style={{marginBottom:8}}>
+              {projectFiles.length > 0 && (
+                <div style={{marginBottom:8}}>
+                  <label style={{fontSize:11,color:"var(--txt3)",marginBottom:4,display:"block"}}>업로드된 파일 선택</label>
+                  <select className="form-input" value={selectedFileKey} onChange={e=>setSelectedFileKey(e.target.value)} style={{fontSize:12}}>
+                    <option value="">-- 파일 선택 --</option>
+                    {projectFiles.map((f,i) => (
+                      <option key={i} value={f.r2Key || f.name}>{f.name} ({(f.size/1024).toFixed(0)}KB)</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <button className="btn btn-ghost" style={{fontSize:11,padding:"5px 12px"}} onClick={()=>fileInputRef.current?.click()}>
+                  📎 새 파일 업로드
+                </button>
+                <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" onChange={handleNewFileUpload} style={{display:"none"}}/>
+                <span style={{color:"var(--txt4)",fontSize:10}}>PDF, PNG, JPG 지원</span>
+              </div>
+            </div>
+          )}
+
+          {/* 생성 버튼 */}
+          <button onClick={handleGenerate} disabled={loading} style={{width:"100%",padding:"10px",borderRadius:8,border:"none",cursor:loading?"not-allowed":"pointer",fontSize:12,fontWeight:700,background:loading?"rgba(99,102,241,.1)":"rgba(99,102,241,.15)",color:loading?"var(--txt4)":"#a5b4fc",marginBottom:8,transition:"all .2s"}}>
+            {loading ? "🔄 AI 분석 중... (10~30초 소요)" : "🤖 타임테이블 생성"}
+          </button>
+
+          {/* 에러 */}
+          {error && (
+            <div style={{background:"rgba(239,68,68,.08)",border:"1px solid rgba(239,68,68,.2)",borderRadius:8,padding:"8px 12px",color:"#fca5a5",fontSize:11,marginBottom:8}}>
+              ⚠️ {error}
+            </div>
+          )}
+
+          {/* 결과 미리보기 */}
+          {result && (
+            <div style={{background:"rgba(16,185,129,.05)",border:"1px solid rgba(16,185,129,.2)",borderRadius:8,padding:12}}>
+              <div style={{color:"#34d399",fontWeight:700,fontSize:12,marginBottom:8}}>✅ AI 생성 결과</div>
+
+              {result.timeline?.length > 0 && (
+                <div style={{marginBottom:10}}>
+                  <div style={{color:"var(--txt2)",fontSize:11,fontWeight:600,marginBottom:4}}>
+                    📋 타임테이블: {result.timeline.length}개 항목
+                  </div>
+                  <div style={{maxHeight:140,overflowY:"auto",fontSize:11,color:"var(--txt3)",background:"rgba(0,0,0,.15)",borderRadius:6,padding:8}}>
+                    {result.timeline.map((t,i) => (
+                      <div key={i} style={{padding:"2px 0",borderBottom:"1px solid rgba(255,255,255,.05)"}}>
+                        <span style={{color:"#818cf8",fontWeight:600}}>{t.startTime}~{t.endTime}</span>
+                        <span style={{color:"var(--txt4)",margin:"0 6px"}}>({t.duration}분)</span>
+                        <span>{t.content}</span>
+                        {t.note && <span style={{color:"var(--txt4)",marginLeft:6}}>— {t.note}</span>}
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={applyTimeline} style={{marginTop:6,padding:"6px 14px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:700,background:"rgba(99,102,241,.15)",color:"#a5b4fc"}}>
+                    📋 타임테이블에 적용
+                  </button>
+                </div>
+              )}
+
+              {result.cueSheet?.length > 0 && (
+                <div>
+                  <div style={{color:"var(--txt2)",fontSize:11,fontWeight:600,marginBottom:4}}>
+                    🎬 큐시트: {result.cueSheet.length}개 항목
+                  </div>
+                  <button onClick={applyCueSheet} style={{padding:"6px 14px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:600,background:"rgba(16,185,129,.1)",color:"#34d399"}}>
+                    🎬 큐시트에도 적용
+                  </button>
+                </div>
+              )}
+
+              {result.usage && (
+                <div style={{color:"var(--txt4)",fontSize:9,marginTop:8,opacity:.7}}>
+                  토큰: {result.usage.inputTokens} in / {result.usage.outputTokens} out
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 운영계획안 → 결과보고서 데이터 로드/병합 헬퍼 ──
 async function loadPlanDataForResult(projectId) {
   const planKey = `eventos_doc_${projectId}_plan`;
@@ -9425,19 +9991,29 @@ function mergePlanToResult(planData, existingResult) {
   const merged = JSON.parse(JSON.stringify(planData));
   merged._keyColor = "#10b981";
   if (existingResult && typeof existingResult === "object" && Object.keys(existingResult).length > 0) {
+    // 기존 결과보고서의 메타 필드 보존 (_keyColor 제외)
+    for (const key of Object.keys(existingResult)) {
+      if (key.startsWith("_") && key !== "_keyColor") {
+        merged[key] = existingResult[key];
+      }
+    }
+    // 각 섹션의 결과보고서 고유 데이터 보존
     for (const sectionId of Object.keys(existingResult)) {
       if (sectionId.startsWith("_")) continue;
       const rs = existingResult[sectionId];
-      if (rs && typeof rs === "object" && merged[sectionId]) {
+      if (rs && typeof rs === "object") {
+        if (!merged[sectionId]) merged[sectionId] = {};
         if (rs.resultNotes) merged[sectionId].resultNotes = rs.resultNotes;
+        if (rs.resultStatus) merged[sectionId].resultStatus = rs.resultStatus;
         if (rs.images && rs.images.length) merged[sectionId].images = rs.images;
+        if (rs.attachments && rs.attachments.length) merged[sectionId].attachments = rs.attachments;
       }
     }
   }
   return merged;
 }
 
-function DocEditorPanel({docType, project}) {
+function DocEditorPanel({docType, project, onUpdateProject}) {
   // docType: "plan" | "report"
   const isPlan = docType === "plan";
 
@@ -9445,6 +10021,8 @@ function DocEditorPanel({docType, project}) {
   const [activeDesignItem, setActiveDesignItem] = React.useState(null);
   const [activeVenueItem, setActiveVenueItem] = React.useState(null);
   const [activeProgramTab, setActiveProgramTab] = React.useState("timetable");
+  const [showOvHistory, setShowOvHistory] = React.useState(false);
+  const [viewingOvVersion, setViewingOvVersion] = React.useState(null);
 
   const proj = project;
   const docKey = `${proj?.id}_${docType}`;
@@ -9484,16 +10062,30 @@ function DocEditorPanel({docType, project}) {
         } catch {}
       }
 
-      // ② 클라우드에서 로드 (source of truth)
+      // ② 클라우드에서 로드 (source of truth) — 10초 타임아웃 안전장치
       if (CLOUD_CONFIG.ENABLED) {
+        // 타임아웃 안전장치: 10초 내 클라우드 응답 없으면 로컬 캐시 모드로 전환
+        let cloudTimedOut = false;
+        const cloudTimeout = setTimeout(() => {
+          if (!cloudDocLoadedRef.current) {
+            cloudDocLoadedRef.current = true;
+            cloudTimedOut = true;
+            console.warn("[DocEditor] ⏰ 클라우드 로드 10초 타임아웃 — 로컬 캐시 모드로 전환");
+          }
+        }, 10 * 1000);
         try {
           const cloudData = await CloudSync.loadDoc(storageKey);
+          clearTimeout(cloudTimeout);
           if (cancelled) return;
-          if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
+          if (cloudTimedOut) {
+            // 타임아웃 후 도착한 클라우드 데이터 — 완전 무시 (사용자 편집 덮어쓰기 방지)
+            // 로컬 캐시도 갱신하지 않음 (사용자가 이미 편집한 데이터가 저장되어 있으므로)
+            console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 무시 (사용자 편집 보호)");
+          } else if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
             setDocData(cloudData);
             // 로컬 캐시 갱신
             saveToIDB(storageKey, cloudData).catch(()=>{});
-            try { localStorage.setItem(storageKey, JSON.stringify(cloudData)); } catch {}
+            safeLocalSet(storageKey, JSON.stringify(cloudData));
             console.log("[DocEditor] ☁️ 클라우드 데이터 적용:", storageKey);
           } else {
             // 클라우드에 데이터 없음 → 로컬 데이터를 클라우드에 업로드
@@ -9506,34 +10098,72 @@ function DocEditorPanel({docType, project}) {
           }
           cloudDocLoadedRef.current = true; // ✅ 클라우드 로드 완료 → auto-save 허용
         } catch (err) {
+          clearTimeout(cloudTimeout);
           console.warn("[DocEditor] 클라우드 로드 실패 (캐시 사용):", err.message);
           cloudDocLoadedRef.current = true; // 클라우드 실패해도 해제 (로컬 캐시 모드)
         }
+      } else {
+        cloudDocLoadedRef.current = true; // 클라우드 비활성 시 즉시 해제
       }
 
-      // ③ 결과보고서가 비어있으면 → 운영계획안 자동 가져오기
+      // ③ 결과보고서 로드 시 → 항상 운영계획안 최신 데이터와 병합
+      // ★ 빈 결과보고서 = 계획 전체 가져오기 / 기존 결과보고서 = 계획 최신 병합 (결과 고유 데이터 유지)
       if (!isPlan && !cancelled) {
-        // 현재 docData 상태를 직접 확인 (비동기 완료 후)
-        const checkEmpty = () => {
-          const current = loadDocFromStorage();
-          return !current || Object.keys(current).length === 0 ||
-            (Object.keys(current).length === 1 && current._keyColor);
-        };
-        if (checkEmpty()) {
+        // 현재까지 로드된 데이터 확인 (IDB/Cloud에서 이미 setDocData 호출됨)
+        let hasExistingData = false;
+        let existingData = null;
+        try {
+          const idbCheck = await loadFromIDB(storageKey);
+          if (idbCheck && typeof idbCheck === "object" && Object.keys(idbCheck).length > 0 &&
+              !(Object.keys(idbCheck).length === 1 && idbCheck._keyColor)) {
+            hasExistingData = true;
+            existingData = idbCheck;
+          }
+        } catch {}
+        if (!hasExistingData) {
           try {
-            const planData = await loadPlanDataForResult(proj?.id);
-            if (planData && !cancelled) {
+            const lsCheck = localStorage.getItem(storageKey);
+            if (lsCheck && lsCheck.length > 10) {
+              const parsed = JSON.parse(lsCheck);
+              if (parsed && Object.keys(parsed).length > 0 &&
+                  !(Object.keys(parsed).length === 1 && parsed._keyColor)) {
+                hasExistingData = true;
+                existingData = parsed;
+              }
+            }
+          } catch {}
+        }
+        // ★ 항상 운영계획안 최신 데이터와 병합 시도
+        try {
+          const planData = await loadPlanDataForResult(proj?.id);
+          if (planData && !cancelled) {
+            if (!hasExistingData) {
+              // 빈 결과보고서 → 운영계획안 전체 가져오기
               const merged = mergePlanToResult(planData, {});
               setDocData(merged);
               saveToIDB(storageKey, merged).catch(()=>{});
-              try { localStorage.setItem(storageKey, JSON.stringify(merged)); } catch {}
+              safeLocalSet(storageKey, JSON.stringify(merged));
               if (CLOUD_CONFIG.ENABLED) CloudDataStore.writeDoc(storageKey, merged).catch(()=>{});
               console.log("[DocEditor] 📋→📊 운영계획안 → 결과보고서 자동 가져오기 완료");
               toast("📋 운영계획안 데이터를 결과보고서에 불러왔습니다", "success");
+            } else {
+              // ★ 기존 결과보고서 + 운영계획안 최신 병합 (결과 고유 데이터 유지)
+              const merged = mergePlanToResult(planData, existingData);
+              const mergedJson = JSON.stringify(merged);
+              const currentJson = JSON.stringify(existingData);
+              if (mergedJson !== currentJson) {
+                setDocData(merged);
+                saveToIDB(storageKey, merged).catch(()=>{});
+                safeLocalSet(storageKey, JSON.stringify(merged));
+                if (CLOUD_CONFIG.ENABLED) CloudDataStore.writeDoc(storageKey, merged).catch(()=>{});
+                console.log("[DocEditor] 📋→📊 운영계획안 최신 데이터 → 결과보고서 병합 완료");
+              } else {
+                console.log("[DocEditor] ℹ️ 결과보고서 ↔ 운영계획안 이미 동기화됨");
+              }
             }
-          } catch (err) {
-            console.warn("[DocEditor] 운영계획안 가져오기 실패:", err.message);
           }
+        } catch (err) {
+          console.warn("[DocEditor] 운영계획안 가져오기 실패:", err.message);
         }
       }
     })();
@@ -9593,6 +10223,8 @@ function DocEditorPanel({docType, project}) {
   const periodicSaveRef = React.useRef(null);
   // ── 크래시 안전장치: 클라우드 데이터 로드 완료 전까지 auto-save 차단 ──
   const cloudDocLoadedRef = React.useRef(!CLOUD_CONFIG.ENABLED); // 클라우드 비활성 시 즉시 해제
+  // ── R2 클라우드 변경 감지: 동일 데이터 중복 전송 방지 ──
+  const lastCloudHashRef = React.useRef({});
 
   // ── cover / keyColor 데이터 ──
   const cv = docData._cover || {};
@@ -9615,19 +10247,71 @@ function DocEditorPanel({docType, project}) {
   }, [docKey]);
 
   // ── Smart Save (IndexedDB 기본 + localStorage 보조 + 클라우드 동기화) ──
-  const performSave = React.useCallback(async (data) => {
+  const performSave = React.useCallback(async (data, options = {}) => {
+    // 🛡️ 저장 전 데이터 유효성 검증
+    if (!data || typeof data !== "object" || Object.keys(data).length === 0) {
+      console.warn("[DocEditor] ⚠️ 빈 데이터 저장 차단:", storageKey);
+      return;
+    }
+    if (!storageKey || !storageKey.startsWith("eventos_doc_")) {
+      console.error("[DocEditor] ❌ 잘못된 storageKey:", storageKey);
+      return;
+    }
+    const silent = options.silent || false;
+    // silent 모드 = 10초 주기 저장: 로컬 + R2 클라우드 전부 저장 (데이터 유실 제로)
+    // 일반 모드 = 사용자 입력 후 0.5초 디바운스: 클라우드 + 로컬 전체 저장 + UI 업데이트
     const now = new Date();
     const ts = now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+    if (silent) {
+      // ── silent: 로컬 저장 (IDB가 주 저장소, localStorage는 4MB 이하만) ──
+      try { await saveToIDB(storageKey, data); } catch {}
+      safeLocalSet(storageKey, JSON.stringify(data));
+      // ── ★ R2 클라우드에도 저장 (변경 감지 — 동일 데이터 중복 전송 방지) ──
+      if (CLOUD_CONFIG.ENABLED) {
+        try {
+          // 빠른 변경 감지: 데이터 길이 + 50개 샘플 위치 해시
+          const json = JSON.stringify(data);
+          let h = json.length;
+          const step = Math.max(1, Math.floor(json.length / 50));
+          for (let i = 0; i < json.length; i += step) { h = ((h << 5) - h + json.charCodeAt(i)) | 0; }
+          const prevHash = lastCloudHashRef.current[storageKey];
+          if (prevHash !== h) {
+            lastCloudHashRef.current[storageKey] = h;
+            CloudDataStore.writeDoc(storageKey, data).then(r => {
+              if (r.success) {
+                setLastSavedAt(ts + " ☁️");
+                console.log("[DocEditor] ☁️ R2 자동저장 완료:", storageKey, (json.length/1024/1024).toFixed(1) + "MB");
+              } else {
+                delete lastCloudHashRef.current[storageKey]; // 실패 → 다음 주기에 재시도
+              }
+            }).catch(e => {
+              delete lastCloudHashRef.current[storageKey]; // 실패 → 다음 주기에 재시도
+              console.warn("[DocEditor] ☁️ R2 자동저장 실패:", e.message);
+            });
+          }
+        } catch (e) { console.warn("[DocEditor] R2 해시 계산 실패:", e.message); }
+      }
+      return;
+    }
+    // ── 일반: 클라우드 + 로컬 전체 저장 ──
     setSaveStatus("saving");
     // ① 클라우드 저장 먼저 (source of truth)
     const cloudResult = await CloudDataStore.writeDoc(storageKey, data);
-    // ② 로컬 캐시 (IDB + localStorage)
+    // ② 로컬 캐시 (IDB가 주 저장소, localStorage는 4MB 이하만)
     try { await saveToIDB(storageKey, data); } catch {}
-    try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
-    // ③ 상태 업데이트 + 실패 시 명확한 경고
+    safeLocalSet(storageKey, JSON.stringify(data));
+    // ③ 상태 업데이트
     if (cloudResult.success) {
       setSaveStatus("saved"); setLastSavedAt(ts + " ☁️");
       SyncManager.setStatus("success"); SyncManager._lastSyncTime = new Date(); SyncManager._notify();
+      // ★ 클라우드 저장 성공 → 해시 갱신 (silent 모드에서 중복 전송 방지)
+      try {
+        const json = JSON.stringify(data);
+        let h = json.length;
+        const step = Math.max(1, Math.floor(json.length / 50));
+        for (let i = 0; i < json.length; i += step) { h = ((h << 5) - h + json.charCodeAt(i)) | 0; }
+        lastCloudHashRef.current[storageKey] = h;
+      } catch {}
     } else if (cloudResult.queued) {
       setSaveStatus("saved"); setLastSavedAt(ts + " 📤");
       toast("⚠️ 클라우드 저장 대기 중 — 인터넷 연결 시 자동 전송됩니다", "warn");
@@ -9639,7 +10323,24 @@ function DocEditorPanel({docType, project}) {
     if (DRIVE_CONFIG.ENABLED) {
       SyncManager.queueSync("saveDoc_" + storageKey, { key: storageKey, data });
     }
-  }, [storageKey]);
+    // 운영계획안 저장 시 → 결과보고서에도 로컬 반영
+    if (isPlan) {
+      const reportKey = storageKey.replace("_plan", "_report");
+      try {
+        let existingReport = null;
+        try { existingReport = await loadFromIDB(reportKey); } catch {}
+        if (!existingReport) {
+          try { const ls = localStorage.getItem(reportKey); if (ls) existingReport = JSON.parse(ls); } catch {}
+        }
+        const merged = mergePlanToResult(data, existingReport || {});
+        CloudDataStore.writeDoc(reportKey, merged).catch(()=>{}); // 비동기 — 대기 안 함
+        try { await saveToIDB(reportKey, merged); } catch {}
+        safeLocalSet(reportKey, JSON.stringify(merged));
+      } catch (e) {
+        console.warn("[DocEditor] plan→report 자동 동기화 실패:", e.message);
+      }
+    }
+  }, [storageKey, isPlan]);
 
   // 디바운스 0.5초 저장 (프로듀서 입력 즉시 반영)
   // ⚠️ cloudDocLoadedRef: 클라우드 로드 완료 전 auto-save 차단 (크래시 후 stale 데이터 덮어쓰기 방지)
@@ -9650,26 +10351,25 @@ function DocEditorPanel({docType, project}) {
     window.__docEditorUnsaved = true; // 탭 전환 감지용 플래그
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      performSave(docData);
-      window.__docEditorUnsaved = false;
+      performSave(docData).catch(e => console.warn("[DocEditor] 디바운스 저장 실패:", e.message)).finally(() => { window.__docEditorUnsaved = false; });
     }, 500);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [docData, docKey, performSave]);
 
-  // 5분 주기 강제 저장
-  React.useEffect(() => {
-    if (!docKey) return;
-    const docDataRef = { current: docData };
-    periodicSaveRef.current = setInterval(() => {
-      if (!cloudDocLoadedRef.current) return; // 🛡️ 클라우드 로드 전 저장 차단
-      if (Object.keys(docDataRef.current).length > 0) { performSave(docDataRef.current); toast("자동 저장 완료","success"); }
-    }, 5 * 60 * 1000);
-    return () => { if (periodicSaveRef.current) clearInterval(periodicSaveRef.current); };
-  }, [docKey, performSave]);
-
   // docData ref 업데이트 (주기적 저장에서 최신 값 사용)
   const docDataLatestRef = React.useRef(docData);
   React.useEffect(() => { docDataLatestRef.current = docData; }, [docData]);
+
+  // 10초 주기 자동저장 (silent 모드 — UI 상태 변경 없이 백그라운드 저장, 입력 방해 없음)
+  React.useEffect(() => {
+    if (!docKey) return;
+    periodicSaveRef.current = setInterval(() => {
+      if (!cloudDocLoadedRef.current) return; // 🛡️ 클라우드 로드 전 저장 차단
+      const latestData = docDataLatestRef.current;
+      if (latestData && Object.keys(latestData).length > 0) { performSave(latestData, { silent: true }).catch(e => console.warn("[DocEditor] 주기적 저장 실패:", e.message)); }
+    }, 10 * 1000);
+    return () => { if (periodicSaveRef.current) clearInterval(periodicSaveRef.current); };
+  }, [docKey, performSave]);
 
   // 외부에서 호출 가능한 글로벌 강제 저장 함수 등록 (탭 전환 시 사용)
   React.useEffect(() => {
@@ -9678,8 +10378,7 @@ function DocEditorPanel({docType, project}) {
       const data = docDataLatestRef.current;
       if (!data || Object.keys(data).length === 0) return;
       if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
-      performSave(data);
-      window.__docEditorUnsaved = false;
+      performSave(data).catch(e => console.warn("[DocEditor] 강제 저장 실패:", e.message)).finally(() => { window.__docEditorUnsaved = false; });
     };
     return () => { delete window.__forceDocEditorSave; };
   }, [performSave]);
@@ -9702,17 +10401,17 @@ function DocEditorPanel({docType, project}) {
           console.error("[DocEditor] 🚨 무결성 위반! localStorage & IndexedDB 모두 데이터 없음");
           toast("🚨 보고서 데이터 유실 감지! 긴급 복구 중...", "error");
           // 긴급 복구: 현재 메모리 데이터를 다시 저장
-          performSave(memData);
+          performSave(memData).catch(e => console.warn("[DocEditor] 긴급 복구 저장 실패:", e.message));
         } else if (!lsOk && idbOk) {
-          console.warn("[DocEditor] ⚠️ localStorage 데이터 유실 → IndexedDB에서 복구");
-          try { localStorage.setItem(storageKey, JSON.stringify(idbData)); } catch {}
-          toast("localStorage 복구 완료 (IndexedDB 원본 사용)", "info");
+          // IDB에 데이터 있으면 정상 — localStorage는 캐시일 뿐 (대형 데이터는 IDB만 사용)
+          safeLocalSet(storageKey, JSON.stringify(idbData));
+          console.log("[DocEditor] ℹ️ localStorage 없음, IDB 정상 — 캐시 복원 시도");
         } else if (lsOk && !idbOk) {
           // IDB만 없으면 조용히 재저장
           saveToIDB(storageKey, memData).catch(()=>{});
         }
       }).catch(()=>{});
-    }, 3 * 60 * 1000); // 3분
+    }, 60 * 1000); // 1분 (저장 안정성 강화)
     return () => clearInterval(integrityCheck);
   }, [storageKey, performSave]);
 
@@ -9721,16 +10420,19 @@ function DocEditorPanel({docType, project}) {
     const handler = () => {
       const data = docDataLatestRef.current;
       if (!data || Object.keys(data).length === 0) return;
-      // ① 로컬 즉시 저장 (항상 실행)
-      try { localStorage.setItem(storageKey, JSON.stringify(data)); } catch {}
+      // ① 로컬 즉시 저장 (IDB가 주 저장소, localStorage는 4MB 이하만)
       saveToIDB(storageKey, data).catch(()=>{});
+      safeLocalSet(storageKey, JSON.stringify(data));
       // ② 클라우드로 sendBeacon (클라우드 로드 완료된 경우만 — stale 데이터 전송 방지)
       if (CLOUD_CONFIG.ENABLED && cloudDocLoadedRef.current) {
         try {
-          navigator.sendBeacon(
-            CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "") + "/api/doc",
-            new Blob([JSON.stringify({ key: storageKey, data })], { type: "application/json" })
-          );
+          const payload = JSON.stringify({ key: storageKey, data });
+          if (payload.length < 60000) { // sendBeacon 64KB 제한
+            navigator.sendBeacon(
+              CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "") + "/api/doc",
+              new Blob([payload], { type: "application/json" })
+            );
+          }
         } catch (e) { console.error("[DocEditor] sendBeacon fail:", e); }
       }
     };
@@ -9784,7 +10486,7 @@ function DocEditorPanel({docType, project}) {
     const ts = now.toISOString();
     const displayName = label || `v${versions.length + 1} (${now.toLocaleDateString("ko-KR")} ${now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})})`;
     const newVersion = { id: Date.now(), name: displayName, timestamp: ts, data: JSON.parse(JSON.stringify(docData)) };
-    const updated = [newVersion, ...versions].slice(0, 30);
+    const updated = [newVersion, ...versions].slice(0, 5);
     setVersions(updated);
     // ① 클라우드 저장 먼저 (source of truth)
     const cloudResult = await CloudDataStore.writeDoc(versionsKey, updated);
@@ -9835,7 +10537,7 @@ function DocEditorPanel({docType, project}) {
   const loadVersion = (ver) => {
     if (!window.confirm(`"${ver.name}" 버전을 불러오시겠습니까?\n현재 작성 중인 내용이 대체됩니다.`)) return;
     setDocData(ver.data);
-    try { localStorage.setItem(storageKey, JSON.stringify(ver.data)); } catch(e) { console.warn("[DocEditor] 버전 복원 localStorage 실패:", e); showStorageUpgradeAlert(); }
+    safeLocalSet(storageKey, JSON.stringify(ver.data));
     saveToIDB(storageKey, ver.data).catch(()=>{});
     setShowVersions(false);
     toast(`"${ver.name}" 버전을 불러왔습니다`, "success");
@@ -9845,7 +10547,7 @@ function DocEditorPanel({docType, project}) {
   const deleteVersion = (verId) => {
     const updated = versions.filter(v => v.id !== verId);
     setVersions(updated);
-    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch(e) { console.warn("[DocEditor] 버전 삭제 localStorage 실패:", e); showStorageUpgradeAlert(); }
+    try { localStorage.setItem(versionsKey, JSON.stringify(updated)); } catch(e) { console.warn("[DocEditor] 버전 삭제 localStorage 실패:", e); }
   };
 
   // 현재 섹션 데이터
@@ -10723,31 +11425,170 @@ ${secEnabled("timeline") ? (()=>{
     const op = sd("operation");
     const tl = sd("timeline");
 
-    if (activeSection === "overview") return (
-      <div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-          <DocFG label="행사명"><input className="form-input" value={ov.eventName||proj?.name||""} onChange={e=>updateDoc("overview","eventName",e.target.value)} placeholder="행사명 입력"/></DocFG>
-          <DocFG label="주최사"><input className="form-input" value={ov.organizer||proj?.client||""} onChange={e=>updateDoc("overview","organizer",e.target.value)} placeholder="주최사/클라이언트"/></DocFG>
-          <DocFG label="일시"><input className="form-input" value={ov.date||proj?.eventDate||""} onChange={e=>updateDoc("overview","date",e.target.value)} placeholder="예) 2025년 11월 25일(화)"/></DocFG>
-          <DocFG label="시간"><input className="form-input" value={ov.time||""} onChange={e=>updateDoc("overview","time",e.target.value)} placeholder="예) 오전 10:30 ~ 오후 1:30 (3시간)"/></DocFG>
-        </div>
-        <DocFG label="장소"><input className="form-input" value={ov.venue||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("overview","venue",e.target.value)} placeholder="행사 장소명"/></DocFG>
-        <DocFG label="행사 내용">
-          <textarea className="form-input" rows={3} value={ov.content||proj?.taskOrder?.purpose||""} onChange={e=>updateDoc("overview","content",e.target.value)} placeholder="행사의 주요 내용 및 목적" style={{resize:"vertical"}}/>
-        </DocFG>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-          <DocFG label="행사 성격">
-            <textarea className="form-input" rows={4} value={ov.character||""} onChange={e=>updateDoc("overview","character",e.target.value)} placeholder="예) 지역사회공헌인정제 시상식&#10;- 시상식&#10;- 네트워킹&#10;- 전시" style={{resize:"vertical"}}/>
+    if (activeSection === "overview") {
+      const overviewHistory = ov._history || [];
+
+      const saveOverviewVersion = () => {
+        const hasContent = ov.eventName || ov.content || ov.venue || ov.organizer;
+        if (!hasContent) return;
+        const prev = [...overviewHistory];
+        prev.push({
+          ...ov, _history: undefined,
+          savedAt: new Date().toISOString().slice(0,19).replace("T"," "),
+          version: prev.length + 1,
+        });
+        if (prev.length > 5) prev.shift();
+        updateDoc("overview", "_history", prev);
+      };
+
+      const applyAIOverview = (aiData) => {
+        // 🛡️ 기존 개요 데이터가 있으면 사용자 확인 필수
+        const ov = docData.overview || {};
+        const hasExisting = ov.eventName || ov.content || ov.venue || ov.organizer;
+        if (hasExisting && !window.confirm("⚠️ 기존 행사 개요 데이터가 있습니다.\nAI 분석 결과로 덮어쓰시겠습니까?\n(기존 데이터는 버전 이력에 자동 백업됩니다)")) return;
+        saveOverviewVersion();
+        Object.entries(aiData).forEach(([key, val]) => {
+          if (val && key !== "_history") updateDoc("overview", key, val);
+        });
+      };
+
+      const applyAITaskOrder = (aiData) => {
+        if (!onUpdateProject || !proj) return;
+        // 🛡️ 기존 과업지시서가 있으면 사용자 확인 필수
+        const to = proj.taskOrder || {};
+        if (to.purpose || to.tasks || to.sender) {
+          if (!window.confirm("⚠️ 기존 과업지시서 데이터가 있습니다.\nAI 분석 결과로 덮어쓰시겠습니까?\n(기존 데이터는 이력에 자동 백업됩니다)")) return;
+        }
+        const prevHistory = [...(proj.taskOrderHistory || [])];
+        if (to.purpose || to.tasks || to.sender) {
+          prevHistory.push({...to, savedAt: new Date().toISOString().slice(0,19).replace("T"," "), version: prevHistory.length+1});
+        }
+        onUpdateProject({...proj,
+          taskOrder: {...(proj.taskOrder||{}), ...aiData},
+          taskOrderHistory: prevHistory,
+          logs:[...(proj.logs||[]),{id:Date.now(),date:today,author:"AI",type:"auto",content:`AI 과업지시서 v${prevHistory.length+1} 자동 생성`}]
+        });
+      };
+
+      const restoreOvVersion = (ver) => {
+        saveOverviewVersion();
+        const { savedAt, version, _history, ...fields } = ver;
+        Object.entries(fields).forEach(([key, val]) => {
+          if (val !== undefined) updateDoc("overview", key, val);
+        });
+        setViewingOvVersion(null);
+        setShowOvHistory(false);
+        toast("개요 v" + version + " 복원 완료", "success");
+      };
+
+      const OV_FIELDS_DISPLAY = [
+        {key:"eventName",label:"행사명",icon:"🎪"},{key:"organizer",label:"주최사",icon:"🏢"},
+        {key:"date",label:"일시",icon:"📅"},{key:"time",label:"시간",icon:"⏰"},
+        {key:"venue",label:"장소",icon:"📍"},{key:"content",label:"행사 내용",icon:"📝"},
+        {key:"character",label:"행사 성격",icon:"🎯"},{key:"support",label:"지원 사항",icon:"🔧"},
+        {key:"extraNotes",label:"기타사항",icon:"📌"},
+      ];
+
+      return (
+        <div>
+          {/* AI 과업지시서 분석 패널 */}
+          <AIOverviewPanel project={proj} onApplyOverview={applyAIOverview} onApplyTaskOrder={applyAITaskOrder} />
+
+          {/* 버전 관리 헤더 */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{color:"#a5b4fc",fontWeight:700,fontSize:13}}>📌 행사 개요</span>
+              {overviewHistory.length > 0 && (
+                <span style={{fontSize:10,color:"var(--txt4)",background:"rgba(99,102,241,.1)",padding:"2px 8px",borderRadius:4}}>
+                  v{overviewHistory.length + 1}
+                </span>
+              )}
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              {overviewHistory.length > 0 && (
+                <button onClick={()=>setShowOvHistory(!showOvHistory)} className="btn btn-ghost"
+                  style={{fontSize:11,padding:"4px 10px",borderColor:"rgba(255,255,255,.1)",color:"var(--txt3)"}}>
+                  📚 이력 ({overviewHistory.length})
+                </button>
+              )}
+              <button onClick={saveOverviewVersion} className="btn btn-ghost"
+                style={{fontSize:11,padding:"4px 10px",borderColor:"rgba(99,102,241,.3)",color:"#a5b4fc"}}>
+                💾 버전 저장
+              </button>
+            </div>
+          </div>
+
+          {/* 이력 패널 */}
+          {showOvHistory && overviewHistory.length > 0 && (
+            <div style={{background:"rgba(0,0,0,.15)",border:"1px solid rgba(99,102,241,.15)",borderRadius:8,padding:"12px 14px",marginBottom:14}}>
+              <div style={{color:"var(--txt3)",fontSize:12,fontWeight:700,marginBottom:8}}>📚 개요 변경 이력</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {overviewHistory.slice().reverse().map((ver,i) => (
+                  <div key={i} onClick={()=>setViewingOvVersion(ver)}
+                    style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                      background:"rgba(255,255,255,.03)",border:"1px solid var(--border)",borderRadius:8,
+                      padding:"8px 14px",cursor:"pointer",transition:"background .15s"}}>
+                    <div>
+                      <span style={{color:"#a5b4fc",fontSize:12,fontWeight:700}}>v{ver.version}</span>
+                      <span style={{color:"var(--txt4)",fontSize:11,marginLeft:8}}>{ver.savedAt}</span>
+                    </div>
+                    <div style={{color:"var(--txt4)",fontSize:11}}>
+                      {ver.eventName && ver.eventName}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 이전 버전 조회 모달 */}
+          {viewingOvVersion && (
+            <div className="modal-overlay" onClick={e=>e.target.classList.contains("modal-overlay")&&setViewingOvVersion(null)}>
+              <div className="modal-box" style={{maxWidth:600,maxHeight:"80vh",overflow:"auto"}}>
+                <div className="modal-title">📌 개요 v{viewingOvVersion.version} <span style={{color:"var(--txt4)",fontSize:12,fontWeight:400}}>({viewingOvVersion.savedAt})</span></div>
+                {OV_FIELDS_DISPLAY.filter(f=>viewingOvVersion[f.key]).map(f=>(
+                  <div key={f.key} style={{marginBottom:10}}>
+                    <div style={{color:"#a5b4fc",fontSize:11,fontWeight:700,marginBottom:4}}>{f.icon} {f.label}</div>
+                    <div style={{color:"var(--txt2)",fontSize:13,lineHeight:1.7,whiteSpace:"pre-wrap",
+                      background:"rgba(255,255,255,.02)",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)"}}>{viewingOvVersion[f.key]}</div>
+                  </div>
+                ))}
+                <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}}>
+                  <button onClick={()=>restoreOvVersion(viewingOvVersion)}
+                    className="btn btn-ghost" style={{fontSize:12,color:"#f59e0b",borderColor:"rgba(245,158,11,.3)"}}>
+                    🔄 이 버전으로 복원
+                  </button>
+                  <button className="btn-ghost" onClick={()=>setViewingOvVersion(null)}>닫기</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 개요 필드 */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <DocFG label="행사명"><input className="form-input" value={ov.eventName != null ? ov.eventName : (proj?.name||"")} onChange={e=>updateDoc("overview","eventName",e.target.value)} placeholder="행사명 입력"/></DocFG>
+            <DocFG label="주최사"><input className="form-input" value={ov.organizer != null ? ov.organizer : (proj?.client||"")} onChange={e=>updateDoc("overview","organizer",e.target.value)} placeholder="주최사/클라이언트"/></DocFG>
+            <DocFG label="일시"><input className="form-input" value={ov.date != null ? ov.date : (proj?.eventDate||"")} onChange={e=>updateDoc("overview","date",e.target.value)} placeholder="예) 2025년 11월 25일(화)"/></DocFG>
+            <DocFG label="시간"><input className="form-input" value={ov.time ?? ""} onChange={e=>updateDoc("overview","time",e.target.value)} placeholder="예) 오전 10:30 ~ 오후 1:30 (3시간)"/></DocFG>
+          </div>
+          <DocFG label="장소"><input className="form-input" value={ov.venue != null ? ov.venue : (proj?.taskOrder?.venue||"")} onChange={e=>updateDoc("overview","venue",e.target.value)} placeholder="행사 장소명"/></DocFG>
+          <DocFG label="행사 내용">
+            <textarea className="form-input" rows={3} value={ov.content != null ? ov.content : (proj?.taskOrder?.purpose||"")} onChange={e=>updateDoc("overview","content",e.target.value)} placeholder="행사의 주요 내용 및 목적" style={{resize:"vertical"}}/>
           </DocFG>
-          <DocFG label="지원 사항">
-            <textarea className="form-input" rows={4} value={ov.support||""} onChange={e=>updateDoc("overview","support",e.target.value)} placeholder="예) 무대/음향/조명/LED&#10;사회자&#10;영상 제작&#10;인쇄물" style={{resize:"vertical"}}/>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <DocFG label="행사 성격">
+              <textarea className="form-input" rows={4} value={ov.character ?? ""} onChange={e=>updateDoc("overview","character",e.target.value)} placeholder="예) 지역사회공헌인정제 시상식&#10;- 시상식&#10;- 네트워킹&#10;- 전시" style={{resize:"vertical"}}/>
+            </DocFG>
+            <DocFG label="지원 사항">
+              <textarea className="form-input" rows={4} value={ov.support ?? ""} onChange={e=>updateDoc("overview","support",e.target.value)} placeholder="예) 무대/음향/조명/LED&#10;사회자&#10;영상 제작&#10;인쇄물" style={{resize:"vertical"}}/>
+            </DocFG>
+          </div>
+          <DocFG label="기타사항">
+            <textarea className="form-input" rows={2} value={ov.extraNotes ?? ""} onChange={e=>updateDoc("overview","extraNotes",e.target.value)} placeholder="기타 특이사항" style={{resize:"vertical"}}/>
           </DocFG>
         </div>
-        <DocFG label="기타사항">
-          <textarea className="form-input" rows={2} value={ov.extraNotes||""} onChange={e=>updateDoc("overview","extraNotes",e.target.value)} placeholder="기타 특이사항" style={{resize:"vertical"}}/>
-        </DocFG>
-      </div>
-    );
+      );
+    }
 
     if (activeSection === "venue") {
       const eqList = getList("venue","equipList",{name:"",spec:"",qty:"",note:""});
@@ -10810,7 +11651,7 @@ ${secEnabled("timeline") ? (()=>{
             <div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:4}}>
                 <DocFG label="장소명"><input className="form-input" value={ve.venueName||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("venue","venueName",e.target.value)} placeholder="장소명"/></DocFG>
-                <DocFG label="수용 인원"><input className="form-input" value={ve.capacity||proj?.taskOrder?.attendance||""} onChange={e=>updateDoc("venue","capacity",e.target.value)} placeholder="예) 300명"/></DocFG>
+                <DocFG label="수용 인원"><input className="form-input" value={ve.capacity != null ? ve.capacity : (proj?.taskOrder?.attendance||"")} onChange={e=>updateDoc("venue","capacity",e.target.value)} placeholder="예) 300명"/></DocFG>
                 <DocFG label="주소"><input className="form-input" value={ve.address||""} onChange={e=>updateDoc("venue","address",e.target.value)} placeholder="도로명 주소"/></DocFG>
                 <DocFG label="층/홀"><input className="form-input" value={ve.floor||""} onChange={e=>updateDoc("venue","floor",e.target.value)} placeholder="예) B1층 그랜드볼룸"/></DocFG>
               </div>
@@ -11119,6 +11960,34 @@ ${secEnabled("timeline") ? (()=>{
           toast("타임테이블에서 " + filledRows.length + "개 항목을 불러왔습니다", "success");
         };
 
+        // ── AI 타임라인/큐시트 적용 콜백 ──
+        const applyAITimeline = (aiTimeline) => {
+          const existingTl = sd("program").timeline || [];
+          const hasData = existingTl.some(t => t.content || t.startTime);
+          const newItems = aiTimeline.map(t => ({ ...t, _id: Date.now() + Math.random() }));
+          if (hasData) {
+            if (window.confirm("타임테이블에 이미 " + existingTl.length + "개 항목이 있습니다.\nAI 생성 " + aiTimeline.length + "개 항목으로 교체하시겠습니까?\n(취소하면 기존 항목 뒤에 추가됩니다)")) {
+              setList("program", "timeline", newItems);
+            } else {
+              setList("program", "timeline", [...existingTl, ...newItems]);
+            }
+          } else {
+            setList("program", "timeline", newItems);
+          }
+        };
+
+        const applyAICueSheet = (aiCueSheet) => {
+          const existingCs = sd("program").cueSheet || [];
+          const hasData = existingCs.some(c => c.content || c.startTime);
+          const newItems = aiCueSheet.map(c => ({ ...c, _id: Date.now() + Math.random() }));
+          if (hasData) {
+            if (!window.confirm("큐시트에 이미 " + existingCs.length + "개 항목이 있습니다.\nAI 생성 " + aiCueSheet.length + "개 항목을 추가하시겠습니까?")) return;
+            setList("program", "cueSheet", [...existingCs, ...newItems]);
+          } else {
+            setList("program", "cueSheet", newItems);
+          }
+        };
+
         // ── 프로그램 아이템 ──
         const getProgramItems = () => sd("program").programItems || [];
         const addProgramItem = () => {
@@ -11158,6 +12027,9 @@ ${secEnabled("timeline") ? (()=>{
             {/* ── 타임테이블 탭 ── */}
             {activeProgramTab === "timetable" && (
               <div>
+                {/* AI 타임테이블 생성 패널 */}
+                <AITimelinePanel project={proj} onApplyTimeline={applyAITimeline} onApplyCueSheet={applyAICueSheet} />
+
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
                   <label className="form-label" style={{margin:0}}>타임테이블 / 진행순서</label>
                   <button className="btn btn-ghost" style={{padding:"4px 10px",fontSize:12}} onClick={()=>addListItem("program","timeline",{startTime:"",endTime:"",duration:"",content:"",note:""})}>+ 항목 추가</button>
@@ -12893,12 +13765,12 @@ function App() {
     if (projectsRef.current === json) return;
     projectsRef.current = json;
     CloudDataStore.writeProjectsBulk(projects).then(result => {
-      if (result.success) {
+      if (result && result.success) {
         SyncManager.setStatus("success");
         SyncManager._lastSyncTime = new Date();
         SyncManager._notify();
       }
-    });
+    }).catch(e => console.warn("[App] 프로젝트 벌크 저장 실패:", e.message));
     // Drive 백업도 전송 (기존 호환)
     if (DRIVE_CONFIG.ENABLED) {
       projects.forEach(p => {
@@ -13080,13 +13952,18 @@ function App() {
       }
       lastBackupRef.current = json;
 
-      // localStorage에 최근 N개 백업 보관
-      try {
-        const backups = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
-        backups.unshift(snapshot);
-        if (backups.length > DRIVE_CONFIG.MAX_LOCAL_BACKUPS) backups.length = DRIVE_CONFIG.MAX_LOCAL_BACKUPS;
-        localStorage.setItem("eventos_autoBackups", JSON.stringify(backups));
-      } catch (e) { console.error("[EventOS] 자동 백업 저장 실패:", e); showStorageUpgradeAlert(); }
+      // localStorage에 최근 N개 백업 보관 (클라우드 활성 시 로컬 백업 스킵 → 용량 절약)
+      if (CLOUD_CONFIG.ENABLED) {
+        // 클라우드가 source of truth이므로 로컬 자동백업 불필요 → 기존 것도 정리
+        try { localStorage.removeItem("eventos_autoBackups"); } catch {}
+      } else {
+        try {
+          const backups = JSON.parse(localStorage.getItem("eventos_autoBackups") || "[]");
+          backups.unshift(snapshot);
+          if (backups.length > DRIVE_CONFIG.MAX_LOCAL_BACKUPS) backups.length = DRIVE_CONFIG.MAX_LOCAL_BACKUPS;
+          localStorage.setItem("eventos_autoBackups", JSON.stringify(backups));
+        } catch (e) { console.error("[EventOS] 자동 백업 저장 실패:", e); showStorageUpgradeAlert(); }
+      }
 
       // 클라우드 백업 (Cloudflare D1 + Drive, 둘 다 활성 시 모두 저장)
       if (CLOUD_CONFIG.ENABLED || DRIVE_CONFIG.ENABLED) {
@@ -13217,7 +14094,7 @@ function App() {
       localStorage.setItem("eventos_lastEmailNotify", JSON.stringify({
         date: today, sent, failed, noEmail, at: new Date().toISOString()
       }));
-    } catch(e) { console.warn("[EmailNotify] localStorage 저장 실패:", e); showStorageUpgradeAlert(); }
+    } catch(e) { console.warn("[EmailNotify] localStorage 저장 실패:", e); }
 
     console.log(`[EmailNotify] ${msg}`);
     return { sent, failed, noEmail };
