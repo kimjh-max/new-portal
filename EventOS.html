@@ -468,6 +468,8 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
       }
 
       console.log("[Sync] ✅ 완료! 업로드:" + uploaded + " 다운로드:" + downloaded);
+      // ★ v27b5: 전역 Sync 완료 플래그 (마이그레이션이 이 플래그를 대기)
+      window.__globalSyncDone = true;
       // 다운로드한 데이터를 window에 직접 캐시 (React DocEditor에서 즉시 참조 가능)
       if(downloaded > 0){
         window.__cloudSyncDownloaded = true;
@@ -477,6 +479,7 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
       try { db.close(); } catch(e){}
     } catch(err){
       console.log("[Sync] IDB 초기화:", err.message || err);
+      window.__globalSyncDone = true; // ★ v27b5: 실패 시에도 플래그 설정
     }
   }
 
@@ -10375,6 +10378,13 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         if (cancelled) return;
       }
       if (cancelled || !cloudDocLoadedRef.current) return;
+      // ★ v27b5: 전역 Sync 완료 대기 (Sync가 IDB를 덮어쓰는 것 방지)
+      for (let wait = 0; wait < 60 && !window.__globalSyncDone; wait++) {
+        await new Promise(r => setTimeout(r, 3000));
+        if (cancelled) return;
+      }
+      if (cancelled) return;
+      console.log("[DocImage] 🔄 전역 Sync " + (window.__globalSyncDone ? "완료됨" : "타임아웃") + " — IDB 로드 시작");
       // ★ IDB에서 직접 데이터 로드 (React state가 아닌 persisted 데이터 사용)
       let data;
       try {
