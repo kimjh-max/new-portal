@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v26b";
+  var CODE_VER = "20260312v26c";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -5652,16 +5652,17 @@ function Topbar({page, setPage, user, onLogout, onExport, onImport, onShowBackup
       <div className="logo">
         <div className="logo-icon">E</div>
         <div className="logo-text">EventOS</div>
+        <span style={{fontSize:9,color:"rgba(255,255,255,.3)",marginLeft:-10,marginTop:2,fontFamily:"monospace"}}>v26c</span>
       </div>
       <nav>
         {pages.map(p=>(
           <button key={p.id} className={page===p.id?"active":""} onClick={()=>{
-            if (window.__docEditorUnsaved && page !== p.id) {
-              if (window.confirm("저장되지 않은 변경사항이 있습니다.\n저장 후 이동하시겠습니까?")) {
-                if (typeof window.__forceDocEditorSave === "function") window.__forceDocEditorSave();
-                setTimeout(() => setPage(p.id), 300);
-              }
-            } else { setPage(p.id); }
+            // ★ v26b: 페이지 전환 시 무조건 자동 저장
+            if (page !== p.id && typeof window.__forceDocEditorSave === "function") {
+              window.__forceDocEditorSave();
+              console.log("[Nav] 💾 페이지 전환 자동 저장:", page, "→", p.id);
+            }
+            setPage(p.id);
           }}
             style={p.id==="admin"?{color:"#c084fc"}:{}}>
             {p.label}
@@ -7987,7 +7988,14 @@ function ReportsTabWrapper({project, onUpdate}) {
       {/* 서브 탭 헤더 */}
       <div style={{display:"flex",gap:6,marginBottom:20,padding:"4px",background:"rgba(255,255,255,.03)",borderRadius:10,border:"1px solid var(--border)",width:"fit-content"}}>
         {SUB_TABS.map(t=>(
-          <button key={t.id} onClick={()=>setSubTab(t.id)} style={{
+          <button key={t.id} onClick={()=>{
+            // ★ v26b: 운영계획안↔결과보고서 탭 전환 시 강제 저장
+            if (subTab !== t.id && window.__forceDocEditorSave) {
+              window.__forceDocEditorSave();
+              console.log("[Report] 💾 탭 전환 강제 저장:", subTab, "→", t.id);
+            }
+            setSubTab(t.id);
+          }} style={{
             background: subTab===t.id ? (t.id==="plan" ? "linear-gradient(135deg,#6366f1,#8b5cf6)" : "linear-gradient(135deg,#10b981,#059669)") : "transparent",
             border:"none",borderRadius:8,padding:"8px 18px",cursor:"pointer",
             color: subTab===t.id ? "#fff" : "var(--txt3)",
@@ -8657,12 +8665,12 @@ function ProjectDetail({project, onBack, onUpdate, currentUser, users}) {
       <div className="tab-bar">
         {tabs.map(t=>(
           <button key={t.id} className={`tab-btn${tab===t.id?" active":""}`} onClick={()=>{
-            if (window.__docEditorUnsaved && tab !== t.id) {
-              if (window.confirm("저장되지 않은 변경사항이 있습니다.\n저장 후 이동하시겠습니까?")) {
-                if (typeof window.__forceDocEditorSave === "function") window.__forceDocEditorSave();
-                setTimeout(() => setTab(t.id), 300);
-              }
-            } else { setTab(t.id); }
+            // ★ v26b: 탭 전환 시 무조건 자동 저장 (확인 대화상자 없이)
+            if (tab !== t.id && typeof window.__forceDocEditorSave === "function") {
+              window.__forceDocEditorSave();
+              console.log("[Tab] 💾 탭 전환 자동 저장:", tab, "→", t.id);
+            }
+            setTab(t.id);
           }}>{t.label}</button>
         ))}
       </div>
@@ -9433,9 +9441,15 @@ function SectionImages({sectionId, images, onUpdate, layoutMode, onLayoutChange}
       </div>
       <input ref={fileRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>handleUpload(e.target.files)}/>
 
+      {/* ★ v26b: 드래그앤드롭 영역 */}
       {(images||[]).length===0 && (
-        <div style={{textAlign:"center",color:"var(--txt4)",fontSize:12,padding:"16px 0",border:"1px dashed rgba(255,255,255,.08)",borderRadius:8}}>
-          이미지를 추가하면 보고서 PDF/PPT에 포함됩니다
+        <div
+          onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor="#818cf8";e.currentTarget.style.background="rgba(99,102,241,.1)";}}
+          onDragLeave={e=>{e.currentTarget.style.borderColor="rgba(255,255,255,.08)";e.currentTarget.style.background="transparent";}}
+          onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor="rgba(255,255,255,.08)";e.currentTarget.style.background="transparent";if(e.dataTransfer.files.length)handleUpload(e.dataTransfer.files);}}
+          onClick={()=>fileRef.current?.click()}
+          style={{textAlign:"center",color:"var(--txt4)",fontSize:12,padding:"24px 0",border:"2px dashed rgba(255,255,255,.08)",borderRadius:8,cursor:"pointer",transition:"all .2s"}}>
+          📷 이미지를 드래그하여 놓거나, 클릭하여 추가하세요
         </div>
       )}
 
@@ -9469,7 +9483,12 @@ function SectionImages({sectionId, images, onUpdate, layoutMode, onLayoutChange}
             </div>
           )}
 
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10,marginTop:8}}>
+      {/* 이미지 있을 때도 드래그앤드롭 가능 */}
+      <div
+        onDragOver={e=>{e.preventDefault();e.currentTarget.style.outline="2px dashed #818cf8";}}
+        onDragLeave={e=>{e.currentTarget.style.outline="none";}}
+        onDrop={e=>{e.preventDefault();e.currentTarget.style.outline="none";if(e.dataTransfer.files.length)handleUpload(e.dataTransfer.files);}}
+        style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10,marginTop:8,borderRadius:8,transition:"all .2s"}}>
         {(images||[]).map((img,idx)=>(
           <div key={img.id||idx} style={{position:"relative",borderRadius:8,overflow:"hidden",border:"none",background:"transparent"}}>
             <img src={img.data} alt={img.name} style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",display:"block"}}/>
@@ -10609,6 +10628,26 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     return String(d);
   };
 
+  // ★ H:MM 포맷 헬퍼 — 타임테이블/큐시트 시간 통일
+  const fmtHMM = (t) => {
+    if (!t) return "";
+    const p = t.split(":");
+    if (p.length < 2) return t;
+    return parseInt(p[0]) + ":" + p[1];
+  };
+  const fmtDurHMM = (d) => {
+    if (!d) return "";
+    const m = parseInt(d);
+    if (isNaN(m) || m <= 0) return "";
+    return Math.floor(m / 60) + ":" + String(m % 60).padStart(2, "0");
+  };
+  const fmtTimeRange = (st, et) => {
+    const s = fmtHMM(st);
+    const e = fmtHMM(et);
+    if (s && e) return s + " ~ " + e;
+    return s || e || "";
+  };
+
   // 동적 리스트 헬퍼 — 기본 행을 docData에 자동 저장
   const getList = (sectionId, field, defaultItem) => {
     const val = sd(sectionId)[field];
@@ -10722,9 +10761,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       <tr><td>${i+1}</td><td>${b.name||""}</td><td>${b.category||""}</td><td>${b.size||""}</td><td style="text-align:center">${b.qty||""}</td></tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
 
     const programRows = (pr.timeline||[]).map((t,i)=>{
-      const dur = t.duration ? parseInt(t.duration) : 0;
-      const durStr = dur ? Math.floor(dur/60)+":"+String(dur%60).padStart(2,"0") : "";
-      return `<tr><td style="text-align:center">${i+1}</td><td style="white-space:nowrap">${t.startTime||t.time||""}${(t.startTime&&t.endTime)?" ~ ":""}${t.endTime||""}</td><td style="text-align:center">${durStr}</td><td>${t.content||""}</td><td>${t.note||""}</td></tr>`;
+      const durStr = fmtDurHMM(t.duration);
+      return `<tr><td style="text-align:center">${i+1}</td><td style="white-space:nowrap">${fmtTimeRange(t.startTime||t.time, t.endTime)}</td><td style="text-align:center">${durStr}</td><td>${t.content||""}</td><td>${t.note||""}</td></tr>`;
     }).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
 
     const staffRows = (op.staffList||[]).map((s,i)=>`
@@ -11035,9 +11073,9 @@ ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).len
   const csExCols = pr._cueSheetExtraCols||[];
   const csClientLabel = pr._cueSheetClientName||"주최측";
   const csAllRows = csFiltered.map((c,i)=>{
-    const dur = c.duration ? Math.floor(parseInt(c.duration)/60)+":"+String(parseInt(c.duration)%60).padStart(2,"0") : "";
+    const dur = fmtDurHMM(c.duration);
     const exTds = csExCols.map((_,ci)=>"<td>"+(c["extra_"+ci]||"")+"</td>").join("");
-    return `<tr><td style="text-align:center;width:18px">${i+1}</td><td style="font-weight:600">${c.session||""}</td><td class="cs-wrap">${c.content||""}</td><td>${c.startTime||""}${c.startTime&&c.endTime?"~":""}${c.endTime||""}</td><td style="text-align:center">${dur}</td><td class="cs-wrap">${c.details||""}</td><td>${c.reference||""}</td><td>${c.screen||""}</td><td>${c.bgm||""}</td><td>${c.mic||""}</td><td>${c.staffEpic||""}</td><td>${c.staffClient||""}</td>${exTds}</tr>`;
+    return `<tr><td style="text-align:center;width:18px">${i+1}</td><td style="font-weight:600">${c.session||""}</td><td class="cs-wrap">${c.content||""}</td><td>${fmtTimeRange(c.startTime,c.endTime)}</td><td style="text-align:center">${dur}</td><td class="cs-wrap">${c.details||""}</td><td>${c.reference||""}</td><td>${c.screen||""}</td><td>${c.bgm||""}</td><td>${c.mic||""}</td><td>${c.staffEpic||""}</td><td>${c.staffClient||""}</td>${exTds}</tr>`;
   });
   const csRowsPerPage = 30;
   const csPages = [];
@@ -11371,8 +11409,8 @@ ${secEnabled("timeline") ? (()=>{
     if (secEnabled("program")) (() => {
       const d = sd("program");
       const pm = new PageMgr(secNum("program"),"Program","진행 순서 | EVENT PROGRAM");
-      pmTable(pm,"타임테이블 / 진행순서",tblHdr(["#","시간","소요(분)","내용","비고"]),
-        (d.timeline||[]).filter(t=>t.startTime||t.time||t.content).map((t,i)=>tblRow([i+1,(t.startTime||t.time||"")+(t.startTime&&t.endTime?" ~ ":"")+( t.endTime||""),t.duration?(t.duration+"분"):"",t.content,t.note])),
+      pmTable(pm,"타임테이블 / 진행순서",tblHdr(["#","시간","소요","내용","비고"]),
+        (d.timeline||[]).filter(t=>t.startTime||t.time||t.content).map((t,i)=>tblRow([i+1,fmtTimeRange(t.startTime||t.time,t.endTime),fmtDurHMM(t.duration),t.content,t.note])),
         [0.5,2,1.2,5.63,3]);
       pmField(pm,"MC / 진행 메모",d.mcInfo,12.33,0.8);
       if (!isPlan) pmField(pm,"프로그램 결과 메모",d.resultNotes,12.33,0.8);
@@ -11385,8 +11423,8 @@ ${secEnabled("timeline") ? (()=>{
         pmTable(csPm, "큐시트",
           tblHdr(["#","세션","내용","시간","경과","상세","화면","에픽",d._cueSheetClientName||"주최측","의전"]),
           _csList.map((c,i)=>{
-            const dur = c.duration?Math.floor(parseInt(c.duration)/60)+":"+String(parseInt(c.duration)%60).padStart(2,"0"):"";
-            return tblRow([i+1,c.session,c.content,(c.startTime||"")+(c.startTime&&c.endTime?"~":"")+(c.endTime||""),dur,c.details||"",c.screen||"",c.staffEpic||"",c.staffClient||"",c.staffProtocol||""]);
+            const dur = fmtDurHMM(c.duration);
+            return tblRow([i+1,c.session,c.content,fmtTimeRange(c.startTime,c.endTime),dur,c.details||"",c.screen||"",c.staffEpic||"",c.staffClient||"",c.staffProtocol||""]);
           }),
           [0.3,1.0,2.0,1.0,0.6,2.0,1.2,1.5,1.5,1.23]);
       }
@@ -12090,7 +12128,7 @@ ${secEnabled("timeline") ? (()=>{
                     <tbody>
                       {pgList.map((item,idx)=>{
                         const autoDur = calcDuration(item.startTime, item.endTime);
-                        const tlDurDisplay = autoDur ? Math.floor(parseInt(autoDur)/60)+":"+String(parseInt(autoDur)%60).padStart(2,"0") : item.duration||"";
+                        const tlDurDisplay = fmtDurHMM(autoDur) || fmtDurHMM(item.duration) || item.duration || "";
                         const rdp = tlDrag.rowDragProps(idx);
                         return (
                           <tr key={item._id||idx} {...rdp}>
@@ -12155,7 +12193,7 @@ ${secEnabled("timeline") ? (()=>{
                     <tbody>
                       {csList.map((item,idx)=>{
                         const autoDur = calcDuration(item.startTime, item.endTime);
-                        const durDisplay = autoDur ? Math.floor(parseInt(autoDur)/60)+":"+String(parseInt(autoDur)%60).padStart(2,"0") : item.duration||"";
+                        const durDisplay = fmtDurHMM(autoDur) || fmtDurHMM(item.duration) || item.duration || "";
                         const crdp = csDrag.rowDragProps(idx);
                         return (
                           <tr key={item._id||idx} {...crdp}>
