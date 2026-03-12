@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260313v27c3";
+  var CODE_VER = "20260313v27d";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10208,6 +10208,28 @@ function mergePlanToResult(planData, existingResult) {
   return merged;
 }
 
+// ★ v27d: 성능 최적화 — 디바운스 입력 컴포넌트 (키 입력마다 전체 리렌더 방지)
+const DocInput = React.memo(function DocInput({ value, onCommit, multiline, type, ...props }) {
+  const [local, setLocal] = React.useState(value ?? "");
+  const committed = React.useRef(value);
+  const timerRef = React.useRef(null);
+  React.useEffect(() => {
+    if (value !== committed.current) { setLocal(value ?? ""); committed.current = value; }
+  }, [value]);
+  React.useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+  const handleChange = (e) => {
+    const v = e.target.value; setLocal(v);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => { committed.current = v; onCommit(v); }, 300);
+  };
+  const handleBlur = () => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    if (local !== committed.current) { committed.current = local; onCommit(local); }
+  };
+  if (multiline) return React.createElement('textarea', { ...props, value: local, onChange: handleChange, onBlur: handleBlur });
+  return React.createElement('input', { ...props, type: type || 'text', value: local, onChange: handleChange, onBlur: handleBlur });
+});
+
 function DocEditorPanel({docType, project, onUpdateProject}) {
   // docType: "plan" | "report"
   const isPlan = docType === "plan";
@@ -10244,6 +10266,9 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         if (!cancelled) setDocData(preloaded);
         saveToIDB(storageKey, preloaded).catch(()=>{});
         console.log("[DocEditor] ✅ preloaded 데이터 사용:", storageKey);
+        // ★ v27d: 세션 캐시에도 저장
+        const sessionCache2 = window.__docSessionCache = window.__docSessionCache || {};
+        sessionCache2[storageKey] = preloaded;
       }
 
       // ① IDB 캐시로 즉시 렌더 (클라우드 응답 전 UX)
@@ -10257,18 +10282,31 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         } catch {}
       }
 
-      // ② 클라우드에서 로드 (source of truth) — 10초 타임아웃 안전장치
+      // ★ v27d: 세션 캐시 — 같은 세션에서 이미 로드한 문서는 클라우드 재요청 스킵
+      const sessionCache = window.__docSessionCache = window.__docSessionCache || {};
+      if (sessionCache[storageKey]) {
+        console.log("[DocEditor] 📦 세션 캐시 사용:", storageKey);
+        if (!cancelled) setDocData(sessionCache[storageKey]);
+        cloudDocLoadedRef.current = true;
+        cloudLoadSuccessRef.current = true;
+        // 버전도 세션 캐시에서 로드
+        if (sessionCache[storageKey + "_versions"]) {
+          setVersions(sessionCache[storageKey + "_versions"]);
+        }
+        return; // 클라우드 fetch 스킵
+      }
+
+      // ② 클라우드에서 로드 (source of truth) — ★ v27d: 5초 타임아웃 (IDB 캐시 있으므로 안전)
       if (CLOUD_CONFIG.ENABLED) {
-        // 타임아웃 안전장치: 10초 내 클라우드 응답 없으면 로컬 캐시 모드로 전환
         let cloudTimedOut = false;
         let cloudLoadSuccess = false; // ★ v27a: 마이그레이션 안전장치 — 실제 성공 여부
         const cloudTimeout = setTimeout(() => {
           if (!cloudDocLoadedRef.current) {
             cloudDocLoadedRef.current = true;
             cloudTimedOut = true;
-            console.warn("[DocEditor] ⏰ 클라우드 로드 10초 타임아웃 — 로컬 캐시 모드로 전환");
+            console.warn("[DocEditor] ⏰ 클라우드 로드 5초 타임아웃 — 로컬 캐시 모드로 전환");
           }
-        }, 10 * 1000);
+        }, 5 * 1000);
         try {
           const cloudData = await CloudSync.loadDoc(storageKey);
           clearTimeout(cloudTimeout);
@@ -10308,6 +10346,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
             saveToIDB(storageKey, cloudData).catch(()=>{});
             safeLocalSet(storageKey, JSON.stringify(cloudData));
             console.log("[DocEditor] ☁️ 클라우드 데이터 적용:", storageKey);
+            // ★ v27d: 세션 캐시에 저장 (탭 전환 시 재사용)
+            sessionCache[storageKey] = cloudData;
           } else {
             // 클라우드에 데이터 없음 → 로컬 데이터를 클라우드에 업로드
             const localData = await loadFromIDB(storageKey);
@@ -10382,6 +10422,11 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   const imgMigrationRanRef = React.useRef(false);
   React.useEffect(() => {
     if (!CLOUD_CONFIG.ENABLED || !docKey) return;
+    // ★ v27d: 이미 마이그레이션 완료된 문서는 폴링/스캔 전부 스킵
+    if (docData._imgMigrated) {
+      console.log("[DocImage] ✅ 이미 마이그레이션 완료 — 스킵");
+      return;
+    }
     let cancelled = false;
     const tryMigrate = async () => {
       if (cancelled || imgMigrationRanRef.current) return;
@@ -10593,9 +10638,10 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   // ── cover / keyColor 데이터 ──
   const cv = docData._cover || {};
   const kc = docData._keyColor || "#6366f1";
-  const updateCover = (field, value) => {
+  // ★ v27d: useCallback 래핑
+  const updateCover = React.useCallback((field, value) => {
     setDocData(prev => ({...prev, _cover: {...(prev._cover||{}), [field]: value}}));
-  };
+  }, []);
 
   // ── 동적 섹션 구성 (순서 반영) ──
   const enabledIds = docData._enabledSections || ALL_DOC_SECTIONS.map(s=>s.id);
@@ -10662,6 +10708,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     // 일반 모드 = 사용자 입력 후 0.5초 디바운스: 클라우드 + 로컬 전체 저장 + UI 업데이트
     const now = new Date();
     const ts = now.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+    // ★ v27d: 저장 시 세션 캐시 업데이트 (탭 전환 시 최신 데이터 반환)
+    if (window.__docSessionCache) window.__docSessionCache[storageKey] = data;
     if (silent) {
       // ── silent: IDB 저장 (structured clone — 메모리 효율적, JSON.stringify 불필요) ──
       try { await saveToIDB(storageKey, data); } catch {}
@@ -10853,7 +10901,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     return () => document.removeEventListener("visibilitychange", handler);
   }, [performSave]);
 
-  const updateDoc = (sectionId, field, value) => {
+  // ★ v27d: useCallback 래핑 — DocInput의 React.memo가 리렌더를 스킵할 수 있도록
+  const updateDoc = React.useCallback((sectionId, field, value) => {
     setDocData(prev => ({
       ...prev,
       [sectionId]: {
@@ -10861,14 +10910,14 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         [field]: value,
       }
     }));
-  };
+  }, []);
 
-  const updateDocSection = (sectionId, obj) => {
+  const updateDocSection = React.useCallback((sectionId, obj) => {
     setDocData(prev => ({
       ...prev,
       [sectionId]: { ...(prev[sectionId] || {}), ...obj }
     }));
-  };
+  }, []);
 
   // ── 버전 저장 (v25: 로컬 먼저 → 클라우드, 전체 try/catch) ──
   const saveVersion = async (label) => {
@@ -11021,31 +11070,37 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     if (cur.length <= 1) return; // 최소 1행 유지
     setList(sectionId, field, cur.filter((_,i)=>i!==idx));
   };
-  const updateListItem = (sectionId, field, idx, key, val) => {
-    let cur = sd(sectionId)[field] || [];
-    // 기본 행이 아직 저장 안 된 경우 → 빈 객체로 초기화
-    while (cur.length <= idx) cur = [...cur, {_id: Date.now() + cur.length}];
-    const updated = cur.map((item,i) => i===idx ? {...item, [key]:val} : item);
-    setList(sectionId, field, updated);
-  };
-  // 여러 필드를 한번에 업데이트 (stale state 방지)
-  const updateListItemMulti = (sectionId, field, idx, updates) => {
-    let cur = sd(sectionId)[field] || [];
-    while (cur.length <= idx) cur = [...cur, {_id: Date.now() + cur.length}];
-    const updated = cur.map((item,i) => i===idx ? {...item, ...updates} : item);
-    setList(sectionId, field, updated);
-  };
-  // 현재 행 + 다음 행을 한번에 업데이트 (시간 자동연결용, stale state 방지)
-  const updateListItemCascade = (sectionId, field, idx, updates, nextUpdates) => {
-    let cur = sd(sectionId)[field] || [];
-    while (cur.length <= idx + 1) cur = [...cur, {_id: Date.now() + cur.length}];
-    const updated = cur.map((item, i) => {
-      if (i === idx) return {...item, ...updates};
-      if (i === idx + 1 && nextUpdates) return {...item, ...nextUpdates};
-      return item;
+  // ★ v27d: useCallback + setDocData(prev=>) 패턴 (stale closure 방지)
+  const updateListItem = React.useCallback((sectionId, field, idx, key, val) => {
+    setDocData(prev => {
+      let cur = [...((prev[sectionId]||{})[field]||[])];
+      while (cur.length <= idx) cur.push({_id: Date.now() + cur.length});
+      cur[idx] = {...cur[idx], [key]: val};
+      return {...prev, [sectionId]: {...(prev[sectionId]||{}), [field]: cur}};
     });
-    setList(sectionId, field, updated);
-  };
+  }, []);
+  // 여러 필드를 한번에 업데이트 (stale state 방지)
+  const updateListItemMulti = React.useCallback((sectionId, field, idx, updates) => {
+    setDocData(prev => {
+      let cur = [...((prev[sectionId]||{})[field]||[])];
+      while (cur.length <= idx) cur.push({_id: Date.now() + cur.length});
+      cur[idx] = {...cur[idx], ...updates};
+      return {...prev, [sectionId]: {...(prev[sectionId]||{}), [field]: cur}};
+    });
+  }, []);
+  // 현재 행 + 다음 행을 한번에 업데이트 (시간 자동연결용, stale state 방지)
+  const updateListItemCascade = React.useCallback((sectionId, field, idx, updates, nextUpdates) => {
+    setDocData(prev => {
+      let cur = [...((prev[sectionId]||{})[field]||[])];
+      while (cur.length <= idx + 1) cur.push({_id: Date.now() + cur.length});
+      const updated = cur.map((item, i) => {
+        if (i === idx) return {...item, ...updates};
+        if (i === idx + 1 && nextUpdates) return {...item, ...nextUpdates};
+        return item;
+      });
+      return {...prev, [sectionId]: {...(prev[sectionId]||{}), [field]: updated}};
+    });
+  }, []);
 
   // ── 섹션 순서 이동 함수 ──
   const moveSection = (id, dir) => {
@@ -12029,25 +12084,25 @@ ${secEnabled("timeline") ? (()=>{
 
           {/* 개요 필드 */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <DocFG label="행사명"><input className="form-input" value={ov.eventName != null ? ov.eventName : (proj?.name||"")} onChange={e=>updateDoc("overview","eventName",e.target.value)} placeholder="행사명 입력"/></DocFG>
-            <DocFG label="주최사"><input className="form-input" value={ov.organizer != null ? ov.organizer : (proj?.client||"")} onChange={e=>updateDoc("overview","organizer",e.target.value)} placeholder="주최사/클라이언트"/></DocFG>
-            <DocFG label="일시"><input className="form-input" value={ov.date != null ? ov.date : (proj?.eventDate||"")} onChange={e=>updateDoc("overview","date",e.target.value)} placeholder="예) 2025년 11월 25일(화)"/></DocFG>
-            <DocFG label="시간"><input className="form-input" value={ov.time ?? ""} onChange={e=>updateDoc("overview","time",e.target.value)} placeholder="예) 오전 10:30 ~ 오후 1:30 (3시간)"/></DocFG>
+            <DocFG label="행사명"><DocInput className="form-input" value={ov.eventName != null ? ov.eventName : (proj?.name||"")} onCommit={v=>updateDoc("overview","eventName",v)} placeholder="행사명 입력"/></DocFG>
+            <DocFG label="주최사"><DocInput className="form-input" value={ov.organizer != null ? ov.organizer : (proj?.client||"")} onCommit={v=>updateDoc("overview","organizer",v)} placeholder="주최사/클라이언트"/></DocFG>
+            <DocFG label="일시"><DocInput className="form-input" value={ov.date != null ? ov.date : (proj?.eventDate||"")} onCommit={v=>updateDoc("overview","date",v)} placeholder="예) 2025년 11월 25일(화)"/></DocFG>
+            <DocFG label="시간"><DocInput className="form-input" value={ov.time ?? ""} onCommit={v=>updateDoc("overview","time",v)} placeholder="예) 오전 10:30 ~ 오후 1:30 (3시간)"/></DocFG>
           </div>
-          <DocFG label="장소"><input className="form-input" value={ov.venue != null ? ov.venue : (proj?.taskOrder?.venue||"")} onChange={e=>updateDoc("overview","venue",e.target.value)} placeholder="행사 장소명"/></DocFG>
+          <DocFG label="장소"><DocInput className="form-input" value={ov.venue != null ? ov.venue : (proj?.taskOrder?.venue||"")} onCommit={v=>updateDoc("overview","venue",v)} placeholder="행사 장소명"/></DocFG>
           <DocFG label="행사 내용">
-            <textarea className="form-input" rows={3} value={ov.content != null ? ov.content : (proj?.taskOrder?.purpose||"")} onChange={e=>updateDoc("overview","content",e.target.value)} placeholder="행사의 주요 내용 및 목적" style={{resize:"vertical"}}/>
+            <DocInput multiline className="form-input" rows={3} value={ov.content != null ? ov.content : (proj?.taskOrder?.purpose||"")} onCommit={v=>updateDoc("overview","content",v)} placeholder="행사의 주요 내용 및 목적" style={{resize:"vertical"}}/>
           </DocFG>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
             <DocFG label="행사 성격">
-              <textarea className="form-input" rows={4} value={ov.character ?? ""} onChange={e=>updateDoc("overview","character",e.target.value)} placeholder="예) 지역사회공헌인정제 시상식&#10;- 시상식&#10;- 네트워킹&#10;- 전시" style={{resize:"vertical"}}/>
+              <DocInput multiline className="form-input" rows={4} value={ov.character ?? ""} onCommit={v=>updateDoc("overview","character",v)} placeholder="예) 지역사회공헌인정제 시상식&#10;- 시상식&#10;- 네트워킹&#10;- 전시" style={{resize:"vertical"}}/>
             </DocFG>
             <DocFG label="지원 사항">
-              <textarea className="form-input" rows={4} value={ov.support ?? ""} onChange={e=>updateDoc("overview","support",e.target.value)} placeholder="예) 무대/음향/조명/LED&#10;사회자&#10;영상 제작&#10;인쇄물" style={{resize:"vertical"}}/>
+              <DocInput multiline className="form-input" rows={4} value={ov.support ?? ""} onCommit={v=>updateDoc("overview","support",v)} placeholder="예) 무대/음향/조명/LED&#10;사회자&#10;영상 제작&#10;인쇄물" style={{resize:"vertical"}}/>
             </DocFG>
           </div>
           <DocFG label="기타사항">
-            <textarea className="form-input" rows={2} value={ov.extraNotes ?? ""} onChange={e=>updateDoc("overview","extraNotes",e.target.value)} placeholder="기타 특이사항" style={{resize:"vertical"}}/>
+            <DocInput multiline className="form-input" rows={2} value={ov.extraNotes ?? ""} onCommit={v=>updateDoc("overview","extraNotes",v)} placeholder="기타 특이사항" style={{resize:"vertical"}}/>
           </DocFG>
         </div>
       );
@@ -12113,13 +12168,13 @@ ${secEnabled("timeline") ? (()=>{
           {activeVenueItem===null && (
             <div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:4}}>
-                <DocFG label="장소명"><input className="form-input" value={ve.venueName||proj?.taskOrder?.venue||""} onChange={e=>updateDoc("venue","venueName",e.target.value)} placeholder="장소명"/></DocFG>
-                <DocFG label="수용 인원"><input className="form-input" value={ve.capacity != null ? ve.capacity : (proj?.taskOrder?.attendance||"")} onChange={e=>updateDoc("venue","capacity",e.target.value)} placeholder="예) 300명"/></DocFG>
-                <DocFG label="주소"><input className="form-input" value={ve.address||""} onChange={e=>updateDoc("venue","address",e.target.value)} placeholder="도로명 주소"/></DocFG>
-                <DocFG label="층/홀"><input className="form-input" value={ve.floor||""} onChange={e=>updateDoc("venue","floor",e.target.value)} placeholder="예) B1층 그랜드볼룸"/></DocFG>
+                <DocFG label="장소명"><DocInput className="form-input" value={ve.venueName||proj?.taskOrder?.venue||""} onCommit={v=>updateDoc("venue","venueName",v)} placeholder="장소명"/></DocFG>
+                <DocFG label="수용 인원"><DocInput className="form-input" value={ve.capacity != null ? ve.capacity : (proj?.taskOrder?.attendance||"")} onCommit={v=>updateDoc("venue","capacity",v)} placeholder="예) 300명"/></DocFG>
+                <DocFG label="주소"><DocInput className="form-input" value={ve.address||""} onCommit={v=>updateDoc("venue","address",v)} placeholder="도로명 주소"/></DocFG>
+                <DocFG label="층/홀"><DocInput className="form-input" value={ve.floor||""} onCommit={v=>updateDoc("venue","floor",v)} placeholder="예) B1층 그랜드볼룸"/></DocFG>
               </div>
               <DocFG label="장소 특이사항">
-                <textarea className="form-input" rows={2} value={ve.notes||""} onChange={e=>updateDoc("venue","notes",e.target.value)} placeholder="장소 관련 특이사항" style={{resize:"vertical"}}/>
+                <DocInput multiline className="form-input" rows={2} value={ve.notes||""} onCommit={v=>updateDoc("venue","notes",v)} placeholder="장소 관련 특이사항" style={{resize:"vertical"}}/>
               </DocFG>
               {/* 장비/시설 목록 */}
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,marginTop:8}}>
@@ -12137,10 +12192,10 @@ ${secEnabled("timeline") ? (()=>{
                     {eqList.map((item,idx)=>(
                       <tr key={idx}>
                         <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.name||""} onChange={e=>updateListItem("venue","equipList",idx,"name",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="장비명"/></td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.spec||""} onChange={e=>updateListItem("venue","equipList",idx,"spec",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="규격"/></td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.qty||""} onChange={e=>updateListItem("venue","equipList",idx,"qty",e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="수량"/></td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.note||""} onChange={e=>updateListItem("venue","equipList",idx,"note",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.name||""} onCommit={v=>updateListItem("venue","equipList",idx,"name",v)} style={{padding:"4px 8px",fontSize:12}} placeholder="장비명"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.spec||""} onCommit={v=>updateListItem("venue","equipList",idx,"spec",v)} style={{padding:"4px 8px",fontSize:12}} placeholder="규격"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.qty||""} onCommit={v=>updateListItem("venue","equipList",idx,"qty",v)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="수량"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.note||""} onCommit={v=>updateListItem("venue","equipList",idx,"note",v)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
                         <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("venue","equipList",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
                       </tr>
                     ))}
@@ -12309,10 +12364,10 @@ ${secEnabled("timeline") ? (()=>{
                     {bnList.map((item,idx)=>(
                       <tr key={idx}>
                         <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.name||""} onChange={e=>updateListItem("design","bannerList",idx,"name",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="품목명/용도"/></td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.category||""} onChange={e=>updateListItem("design","bannerList",idx,"category",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="현수막, 배너, 포스터 등"/></td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.size||""} onChange={e=>updateListItem("design","bannerList",idx,"size",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="예) 3000*2000"/></td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.qty||""} onChange={e=>updateListItem("design","bannerList",idx,"qty",e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="0"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.name||""} onCommit={v=>updateListItem("design","bannerList",idx,"name",v)} style={{padding:"4px 8px",fontSize:12}} placeholder="품목명/용도"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.category||""} onCommit={v=>updateListItem("design","bannerList",idx,"category",v)} style={{padding:"4px 8px",fontSize:12}} placeholder="현수막, 배너, 포스터 등"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.size||""} onCommit={v=>updateListItem("design","bannerList",idx,"size",v)} style={{padding:"4px 8px",fontSize:12}} placeholder="예) 3000*2000"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.qty||""} onCommit={v=>updateListItem("design","bannerList",idx,"qty",v)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="0"/></td>
                         <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("design","bannerList",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
                       </tr>
                     ))}
@@ -12321,18 +12376,18 @@ ${secEnabled("timeline") ? (()=>{
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
                 <DocFG label="디지털/영상 계획">
-                  <textarea className="form-input" rows={4} value={de.videoNotes||""} onChange={e=>updateDoc("design","videoNotes",e.target.value)} placeholder="예) DIDID(7대), 영상 계획&#10;- 오프닝 영상 (1분 30초)&#10;- 시상 영상 (각 30초)" style={{resize:"vertical"}}/>
+                  <DocInput multiline className="form-input" rows={4} value={de.videoNotes||""} onCommit={v=>updateDoc("design","videoNotes",v)} placeholder="예) DIDID(7대), 영상 계획&#10;- 오프닝 영상 (1분 30초)&#10;- 시상 영상 (각 30초)" style={{resize:"vertical"}}/>
                 </DocFG>
                 <DocFG label="인쇄물">
-                  <textarea className="form-input" rows={4} value={de.printNotes||""} onChange={e=>updateDoc("design","printNotes",e.target.value)} placeholder="예) 팸플릿 A3&#10;좌석 안내판&#10;명패 등" style={{resize:"vertical"}}/>
+                  <DocInput multiline className="form-input" rows={4} value={de.printNotes||""} onCommit={v=>updateDoc("design","printNotes",v)} placeholder="예) 팸플릿 A3&#10;좌석 안내판&#10;명패 등" style={{resize:"vertical"}}/>
                 </DocFG>
               </div>
               <DocFG label="LED/스크린 계획">
-                <textarea className="form-input" rows={3} value={de.ledNotes||""} onChange={e=>updateDoc("design","ledNotes",e.target.value)} placeholder="예) LED 스크린 4853x960 / 메인 프로젝터 12,000 DLP" style={{resize:"vertical"}}/>
+                <DocInput multiline className="form-input" rows={3} value={de.ledNotes||""} onCommit={v=>updateDoc("design","ledNotes",v)} placeholder="예) LED 스크린 4853x960 / 메인 프로젝터 12,000 DLP" style={{resize:"vertical"}}/>
               </DocFG>
               {!isPlan && (
                 <DocFG label="결과 메모">
-                  <textarea className="form-input" rows={2} value={de.resultNotes||""} onChange={e=>updateDoc("design","resultNotes",e.target.value)} placeholder="디자인 실제 적용 결과 메모" style={{resize:"vertical"}}/>
+                  <DocInput multiline className="form-input" rows={2} value={de.resultNotes||""} onCommit={v=>updateDoc("design","resultNotes",v)} placeholder="디자인 실제 적용 결과 메모" style={{resize:"vertical"}}/>
                 </DocFG>
               )}
             </div>
@@ -12515,9 +12570,9 @@ ${secEnabled("timeline") ? (()=>{
                             <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
                             <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(v,item.endTime);updateListItemMulti("program","timeline",idx,{startTime:v,...(d?{duration:d}:{})});}} style={{padding:"4px 8px",fontSize:12}}/></td>
                             <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(item.startTime,v);const myUp={endTime:v,...(d?{duration:d}:{})};const nr=pgList[idx+1];let nUp=null;if(v&&nr&&!nr.startTime){const nd=calcDuration(v,nr.endTime);nUp={startTime:v,...(nd?{duration:nd}:{})};}updateListItemCascade("program","timeline",idx,myUp,nUp);}} style={{padding:"4px 8px",fontSize:12}}/></td>
-                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:autoDur?"#10b981":"var(--txt3)",fontWeight:autoDur?700:400,fontSize:12}}>{tlDurDisplay || <input className="form-input" value={item.duration||""} onChange={e=>updateListItem("program","timeline",idx,"duration",e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="소요시간"/>}</td>
-                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.content||""} onChange={e=>updateListItem("program","timeline",idx,"content",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="순서 내용"/></td>
-                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.note||""} onChange={e=>updateListItem("program","timeline",idx,"note",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
+                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:autoDur?"#10b981":"var(--txt3)",fontWeight:autoDur?700:400,fontSize:12}}>{tlDurDisplay || <DocInput className="form-input" value={item.duration||""} onCommit={v=>updateListItem("program","timeline",idx,"duration",v)} style={{padding:"4px 8px",fontSize:12,textAlign:"center"}} placeholder="소요시간"/>}</td>
+                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.content||""} onCommit={v=>updateListItem("program","timeline",idx,"content",v)} style={{padding:"4px 8px",fontSize:12}} placeholder="순서 내용"/></td>
+                            <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.note||""} onCommit={v=>updateListItem("program","timeline",idx,"note",v)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
                             <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("program","timeline",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
                           </tr>
                         );
@@ -12526,11 +12581,11 @@ ${secEnabled("timeline") ? (()=>{
                   </table>
                 </div>
                 <DocFG label="MC / 진행 메모">
-                  <textarea className="form-input" rows={2} value={pr.mcInfo||""} onChange={e=>updateDoc("program","mcInfo",e.target.value)} placeholder="MC 진행 관련 특이사항" style={{resize:"vertical"}}/>
+                  <DocInput multiline className="form-input" rows={2} value={pr.mcInfo||""} onCommit={v=>updateDoc("program","mcInfo",v)} placeholder="MC 진행 관련 특이사항" style={{resize:"vertical"}}/>
                 </DocFG>
                 {!isPlan && (
                   <DocFG label="프로그램 결과 메모">
-                    <textarea className="form-input" rows={2} value={pr.resultNotes||""} onChange={e=>updateDoc("program","resultNotes",e.target.value)} placeholder="실제 진행 결과 메모" style={{resize:"vertical"}}/>
+                    <DocInput multiline className="form-input" rows={2} value={pr.resultNotes||""} onCommit={v=>updateDoc("program","resultNotes",v)} placeholder="실제 진행 결과 메모" style={{resize:"vertical"}}/>
                   </DocFG>
                 )}
               </div>
@@ -12544,7 +12599,7 @@ ${secEnabled("timeline") ? (()=>{
                     <label className="form-label" style={{margin:0}}>큐시트 (Cue Sheet)</label>
                     <div style={{display:"flex",alignItems:"center",gap:4}}>
                       <span style={{fontSize:10,color:"var(--txt4)"}}>주최측 이름:</span>
-                      <input className="form-input" value={csClientName} onChange={e=>updateDoc("program","_cueSheetClientName",e.target.value)} style={{padding:"2px 8px",fontSize:11,width:80}} placeholder="주최주관사"/>
+                      <DocInput className="form-input" value={csClientName} onCommit={v=>updateDoc("program","_cueSheetClientName",v)} style={{padding:"2px 8px",fontSize:11,width:80}} placeholder="주최주관사"/>
                     </div>
                     <div style={{display:"flex",alignItems:"center",gap:4,marginLeft:8}}>
                       <span style={{fontSize:10,color:"var(--txt4)"}}>추가 컬럼:</span>
@@ -12583,20 +12638,20 @@ ${secEnabled("timeline") ? (()=>{
                                 {SESSION_PRESETS.map(s=><option key={s} value={s}>{s}</option>)}
                                 <option value="_custom">직접입력</option>
                               </select>
-                              {!SESSION_PRESETS.includes(item.session) && <input className="form-input" value={item.session||""} onChange={e=>updateListItem("program","cueSheet",idx,"session",e.target.value)} style={{padding:"2px 4px",fontSize:10,marginTop:2}} placeholder="세션명"/>}
+                              {!SESSION_PRESETS.includes(item.session) && <DocInput className="form-input" value={item.session||""} onCommit={v=>updateListItem("program","cueSheet",idx,"session",v)} style={{padding:"2px 4px",fontSize:10,marginTop:2}} placeholder="세션명"/>}
                             </td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.content||""} onChange={e=>updateListItem("program","cueSheet",idx,"content",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="내용"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.content||""} onCommit={v=>updateListItem("program","cueSheet",idx,"content",v)} style={{padding:"2px 4px",fontSize:10}} placeholder="내용"/></td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.startTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(v,item.endTime);updateListItemMulti("program","cueSheet",idx,{startTime:v,...(d?{duration:d}:{})});}} style={{padding:"4px 6px",fontSize:11,minWidth:65}}/></td>
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input type="time" className="form-input" value={item.endTime||""} onChange={e=>{const v=e.target.value;const d=calcDuration(item.startTime,v);const myUp={endTime:v,...(d?{duration:d}:{})};const nr=csList[idx+1];let nUp=null;if(v&&nr&&!nr.startTime){const nd=calcDuration(v,nr.endTime);nUp={startTime:v,...(nd?{duration:nd}:{})};}updateListItemCascade("program","cueSheet",idx,myUp,nUp);}} style={{padding:"4px 6px",fontSize:11,minWidth:65}}/></td>
                             <td style={{padding:"2px 4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",fontSize:10,color:autoDur?"#10b981":"var(--txt3)",fontWeight:autoDur?700:400}}>{durDisplay}</td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.details||""} onChange={e=>updateListItem("program","cueSheet",idx,"details",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="상세"/></td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.reference||""} onChange={e=>updateListItem("program","cueSheet",idx,"reference",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="참고"/></td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.screen||""} onChange={e=>updateListItem("program","cueSheet",idx,"screen",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="화면파일"/></td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.bgm||""} onChange={e=>updateListItem("program","cueSheet",idx,"bgm",e.target.value)} style={{padding:"2px 4px",fontSize:10,width:50}} placeholder="BGM"/></td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.mic||""} onChange={e=>updateListItem("program","cueSheet",idx,"mic",e.target.value)} style={{padding:"2px 4px",fontSize:10,width:50}} placeholder="MIC"/></td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.staffEpic||""} onChange={e=>updateListItem("program","cueSheet",idx,"staffEpic",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder="에픽 담당"/></td>
-                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.staffClient||""} onChange={e=>updateListItem("program","cueSheet",idx,"staffClient",e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder={csClientName+" 담당"}/></td>
-                            {csExtraCols.map((col,ci)=>(<td key={"ec"+ci} style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item["extra_"+ci]||""} onChange={e=>updateListItem("program","cueSheet",idx,"extra_"+ci,e.target.value)} style={{padding:"2px 4px",fontSize:10}} placeholder={col}/></td>))}
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.details||""} onCommit={v=>updateListItem("program","cueSheet",idx,"details",v)} style={{padding:"2px 4px",fontSize:10}} placeholder="상세"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.reference||""} onCommit={v=>updateListItem("program","cueSheet",idx,"reference",v)} style={{padding:"2px 4px",fontSize:10}} placeholder="참고"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.screen||""} onCommit={v=>updateListItem("program","cueSheet",idx,"screen",v)} style={{padding:"2px 4px",fontSize:10}} placeholder="화면파일"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.bgm||""} onCommit={v=>updateListItem("program","cueSheet",idx,"bgm",v)} style={{padding:"2px 4px",fontSize:10,width:50}} placeholder="BGM"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.mic||""} onCommit={v=>updateListItem("program","cueSheet",idx,"mic",v)} style={{padding:"2px 4px",fontSize:10,width:50}} placeholder="MIC"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.staffEpic||""} onCommit={v=>updateListItem("program","cueSheet",idx,"staffEpic",v)} style={{padding:"2px 4px",fontSize:10}} placeholder="에픽 담당"/></td>
+                            <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.staffClient||""} onCommit={v=>updateListItem("program","cueSheet",idx,"staffClient",v)} style={{padding:"2px 4px",fontSize:10}} placeholder={csClientName+" 담당"}/></td>
+                            {csExtraCols.map((col,ci)=>(<td key={"ec"+ci} style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item["extra_"+ci]||""} onCommit={v=>updateListItem("program","cueSheet",idx,"extra_"+ci,v)} style={{padding:"2px 4px",fontSize:10}} placeholder={col}/></td>))}
                             <td style={{padding:"2px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("program","cueSheet",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"2px 5px",cursor:"pointer",fontSize:10}}>✕</button></td>
                           </tr>
                         );
@@ -12650,9 +12705,9 @@ ${secEnabled("timeline") ? (()=>{
           </div>
           {op.showMC && (
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:4}}>
-              <DocFG label="MC 이름"><input className="form-input" value={op.mcName||""} onChange={e=>updateDoc("operation","mcName",e.target.value)} placeholder="MC 이름"/></DocFG>
+              <DocFG label="MC 이름"><DocInput className="form-input" value={op.mcName||""} onCommit={v=>updateDoc("operation","mcName",v)} placeholder="MC 이름"/></DocFG>
               <DocFG label="MC 프로필">
-                <textarea className="form-input" rows={2} value={op.mcProfile||""} onChange={e=>updateDoc("operation","mcProfile",e.target.value)} placeholder="방송 경력 등" style={{resize:"vertical"}}/>
+                <DocInput multiline className="form-input" rows={2} value={op.mcProfile||""} onCommit={v=>updateDoc("operation","mcProfile",v)} placeholder="방송 경력 등" style={{resize:"vertical"}}/>
               </DocFG>
             </div>
           )}
@@ -12669,7 +12724,7 @@ ${secEnabled("timeline") ? (()=>{
             <span style={{fontSize:11,color:"var(--txt4)"}}>{(op.showPrize!==false)?"경품 섹션 표시":"경품 섹션 숨김"}</span>
           </div>
           <DocFG label="운영 특이사항">
-            <textarea className="form-input" rows={2} value={op.notes||""} onChange={e=>updateDoc("operation","notes",e.target.value)} placeholder="운영 관련 특이사항" style={{resize:"vertical"}}/>
+            <DocInput multiline className="form-input" rows={2} value={op.notes||""} onCommit={v=>updateDoc("operation","notes",v)} placeholder="운영 관련 특이사항" style={{resize:"vertical"}}/>
           </DocFG>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
             <label className="form-label" style={{margin:0}}>스태프 배치</label>
@@ -12693,11 +12748,11 @@ ${secEnabled("timeline") ? (()=>{
                         <option value="외주">외주</option>
                       </select>
                     </td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.role||""} onChange={e=>updateListItem("operation","staffList",idx,"role",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="역할"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.name||""} onChange={e=>updateListItem("operation","staffList",idx,"name",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="이름"/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.contact||""} onChange={e=>updateListItem("operation","staffList",idx,"contact",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="연락처"/></td>
+                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.role||""} onCommit={v=>updateListItem("operation","staffList",idx,"role",v)} style={{padding:"4px 8px",fontSize:12}} placeholder="역할"/></td>
+                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.name||""} onCommit={v=>updateListItem("operation","staffList",idx,"name",v)} style={{padding:"4px 8px",fontSize:12}} placeholder="이름"/></td>
+                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.contact||""} onCommit={v=>updateListItem("operation","staffList",idx,"contact",v)} style={{padding:"4px 8px",fontSize:12}} placeholder="연락처"/></td>
                     <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" type="number" min={1} value={item.count||1} onChange={e=>updateListItem("operation","staffList",idx,"count",parseInt(e.target.value)||1)} style={{padding:"4px 8px",fontSize:12,textAlign:"center",width:50}}/></td>
-                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.note||""} onChange={e=>updateListItem("operation","staffList",idx,"note",e.target.value)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
+                    <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.note||""} onCommit={v=>updateListItem("operation","staffList",idx,"note",v)} style={{padding:"4px 8px",fontSize:12}} placeholder="비고"/></td>
                     <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("operation","staffList",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
                   </tr>
                 ))}
@@ -12723,7 +12778,7 @@ ${secEnabled("timeline") ? (()=>{
                   <tr key={idx}>
                     <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt3)",fontSize:11}}>{idx+1}</td>
                     {["grade","item","qty","note"].map(f=>(
-                      <td key={f} style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item[f]||""} onChange={e=>updateListItem("operation","prizeList",idx,f,e.target.value)} style={{padding:"4px 8px",fontSize:12,textAlign:f==="qty"?"center":undefined}} placeholder={{grade:"1등",item:"경품명",qty:"0",note:"비고"}[f]}/></td>
+                      <td key={f} style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item[f]||""} onCommit={v=>updateListItem("operation","prizeList",idx,f,v)} style={{padding:"4px 8px",fontSize:12,textAlign:f==="qty"?"center":undefined}} placeholder={{grade:"1등",item:"경품명",qty:"0",note:"비고"}[f]}/></td>
                     ))}
                     <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center"}}><button onClick={()=>removeListItem("operation","prizeList",idx)} style={{background:"rgba(239,68,68,.15)",border:"none",color:"#fca5a5",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:11}}>✕</button></td>
                   </tr>
@@ -12839,10 +12894,10 @@ ${secEnabled("timeline") ? (()=>{
                     return (
                       <tr key={idx} style={{background:rowBg}}>
                         <td style={{padding:"4px 8px",border:"1px solid rgba(255,255,255,.05)",textAlign:"center",color:"var(--txt4)",fontSize:10}}>{idx+1}</td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.division||""} onChange={e=>updateListItem("timeline","milestones",idx,"division",e.target.value)} style={{padding:"4px 8px",fontSize:11}} placeholder="구분"/></td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.task||""} onChange={e=>updateListItem("timeline","milestones",idx,"task",e.target.value)} style={{padding:"4px 8px",fontSize:12,paddingLeft:item.isSubtask?"20px":"8px"}} placeholder="업무명"/></td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.startDate||""} onChange={e=>updateListItem("timeline","milestones",idx,"startDate",e.target.value)} style={{padding:"4px 8px",fontSize:11}} placeholder="YYYY-MM-DD"/></td>
-                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><input className="form-input" value={item.endDate||""} onChange={e=>updateListItem("timeline","milestones",idx,"endDate",e.target.value)} style={{padding:"4px 8px",fontSize:11}} placeholder="YYYY-MM-DD"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.division||""} onCommit={v=>updateListItem("timeline","milestones",idx,"division",v)} style={{padding:"4px 8px",fontSize:11}} placeholder="구분"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.task||""} onCommit={v=>updateListItem("timeline","milestones",idx,"task",v)} style={{padding:"4px 8px",fontSize:12,paddingLeft:item.isSubtask?"20px":"8px"}} placeholder="업무명"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.startDate||""} onCommit={v=>updateListItem("timeline","milestones",idx,"startDate",v)} style={{padding:"4px 8px",fontSize:11}} placeholder="YYYY-MM-DD"/></td>
+                        <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}><DocInput className="form-input" value={item.endDate||""} onCommit={v=>updateListItem("timeline","milestones",idx,"endDate",v)} style={{padding:"4px 8px",fontSize:11}} placeholder="YYYY-MM-DD"/></td>
                         <td style={{padding:"4px",border:"1px solid rgba(255,255,255,.05)"}}>
                           <div style={{display:"flex",alignItems:"center",gap:4}}>
                             <div style={{flex:1,height:5,background:"rgba(255,255,255,.07)",borderRadius:99,overflow:"hidden"}}>
@@ -12864,7 +12919,7 @@ ${secEnabled("timeline") ? (()=>{
           )}
 
           <DocFG label="타임라인 메모">
-            <textarea className="form-input" rows={2} value={tl.ganttNotes||""} onChange={e=>updateDoc("timeline","ganttNotes",e.target.value)} placeholder="전체 일정 관련 메모" style={{resize:"vertical"}}/>
+            <DocInput multiline className="form-input" rows={2} value={tl.ganttNotes||""} onCommit={v=>updateDoc("timeline","ganttNotes",v)} placeholder="전체 일정 관련 메모" style={{resize:"vertical"}}/>
           </DocFG>
         </div>
       );
@@ -12938,28 +12993,28 @@ ${secEnabled("timeline") ? (()=>{
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
             <DocFG label="행사명 (표지)">
-              <input className="form-input" value={cv.eventName||""} onChange={e=>updateCover("eventName",e.target.value)} placeholder={proj?.name||"행사명 (비워두면 프로젝트명 사용)"}/>
+              <DocInput className="form-input" value={cv.eventName||""} onCommit={v=>updateCover("eventName",v)} placeholder={proj?.name||"행사명 (비워두면 프로젝트명 사용)"}/>
             </DocFG>
             <DocFG label="버전">
-              <input className="form-input" value={cv.version||""} onChange={e=>updateCover("version",e.target.value)} placeholder="Ver 1.0"/>
+              <DocInput className="form-input" value={cv.version||""} onCommit={v=>updateCover("version",v)} placeholder="Ver 1.0"/>
             </DocFG>
             <DocFG label="클라이언트">
-              <input className="form-input" value={cv.client||""} onChange={e=>updateCover("client",e.target.value)} placeholder={proj?.client||"클라이언트명 (비워두면 프로젝트 정보 사용)"}/>
+              <DocInput className="form-input" value={cv.client||""} onCommit={v=>updateCover("client",v)} placeholder={proj?.client||"클라이언트명 (비워두면 프로젝트 정보 사용)"}/>
             </DocFG>
             <DocFG label="행사 일시">
-              <input className="form-input" value={cv.eventDate||""} onChange={e=>updateCover("eventDate",e.target.value)} placeholder={proj?.eventDate||"행사 일시 (비워두면 프로젝트 정보 사용)"}/>
+              <DocInput className="form-input" value={cv.eventDate||""} onCommit={v=>updateCover("eventDate",v)} placeholder={proj?.eventDate||"행사 일시 (비워두면 프로젝트 정보 사용)"}/>
             </DocFG>
             <DocFG label="담당자명">
-              <input className="form-input" value={cv.contactName||""} onChange={e=>updateCover("contactName",e.target.value)} placeholder="담당자 이름"/>
+              <DocInput className="form-input" value={cv.contactName||""} onCommit={v=>updateCover("contactName",v)} placeholder="담당자 이름"/>
             </DocFG>
             <DocFG label="담당자 연락처">
-              <input className="form-input" value={cv.contactPhone||""} onChange={e=>updateCover("contactPhone",e.target.value)} placeholder="담당자 전화번호"/>
+              <DocInput className="form-input" value={cv.contactPhone||""} onCommit={v=>updateCover("contactPhone",v)} placeholder="담당자 전화번호"/>
             </DocFG>
             <DocFG label="Contact Point">
-              <input className="form-input" value={cv.contactPoint||""} onChange={e=>updateCover("contactPoint",e.target.value)} placeholder="Contact Point 이름"/>
+              <DocInput className="form-input" value={cv.contactPoint||""} onCommit={v=>updateCover("contactPoint",v)} placeholder="Contact Point 이름"/>
             </DocFG>
             <DocFG label="Contact Point 연락처">
-              <input className="form-input" value={cv.contactPointPhone||""} onChange={e=>updateCover("contactPointPhone",e.target.value)} placeholder="Contact Point 전화번호"/>
+              <DocInput className="form-input" value={cv.contactPointPhone||""} onCommit={v=>updateCover("contactPointPhone",v)} placeholder="Contact Point 전화번호"/>
             </DocFG>
           </div>
           {/* 커버 배경 스타일 */}
