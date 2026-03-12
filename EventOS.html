@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v27";
+  var CODE_VER = "20260312v27b";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10332,43 +10332,39 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     return () => { cancelled = true; };
   }, [storageKey]);
 
-  // ★ v27a: 기존 Base64 이미지 → R2 백그라운드 마이그레이션
-  // 안전장치: 클라우드 로드 실제 성공 시에만 실행 (타임아웃/실패 시 금지)
+  // ★ v27b: 기존 Base64 이미지 → R2 백그라운드 마이그레이션
+  // 안전장치: 데이터 무결성 기반 (섹션 ≥3 + Base64 이미지 ≥1)
   const imgMigrationRanRef = React.useRef(false);
   React.useEffect(() => {
     if (!CLOUD_CONFIG.ENABLED || !docKey) return;
     let cancelled = false;
     const tryMigrate = async () => {
       if (cancelled || imgMigrationRanRef.current) return;
-      // 클라우드 로드 완료 대기 (3초 간격 폴링, 최대 60초)
-      for (let wait = 0; wait < 20 && !cloudDocLoadedRef.current; wait++) {
+      // 클라우드 로드 시도 완료 대기 (3초 간격 폴링, 최대 90초)
+      for (let wait = 0; wait < 30 && !cloudDocLoadedRef.current; wait++) {
         await new Promise(r => setTimeout(r, 3000));
         if (cancelled) return;
       }
-      if (cancelled) return;
-      // ★ 핵심 안전장치: 클라우드 실제 성공 시에만 마이그레이션 허용
-      if (!cloudLoadSuccessRef.current) {
-        console.warn("[DocImage] ⛔ 마이그레이션 중단 — 클라우드 로드 실패/타임아웃 (데이터 불완전 가능)");
-        return;
-      }
+      if (cancelled || !cloudDocLoadedRef.current) return;
       console.log("[DocImage] 🔍 마이그레이션 검사 시작...");
       const data = docDataLatestRef.current;
       if (!data || typeof data !== "object") return;
-      // ★ 데이터 무결성 검증: 최소 3개 섹션 + 1개 아이템 있어야 마이그레이션 허용
+      // ★ 데이터 무결성 검증: 최소 3개 섹션 있어야 마이그레이션 허용
       const secCount = Object.keys(data).filter(k => !k.startsWith("_") && data[k] && typeof data[k] === "object").length;
       if (secCount < 3) {
         console.warn("[DocImage] ⛔ 마이그레이션 중단 — 문서 데이터 불완전 (섹션 " + secCount + "개)");
         return;
       }
-      // Base64 인라인 이미지 검색
-      const hasInline = (obj) => {
+      // Base64 인라인 이미지 검색 및 카운트
+      let inlineCount = 0;
+      const countInline = (obj) => {
         for (const k of Object.keys(obj)) {
           if (k.startsWith("_")) continue;
           const sec = obj[k];
           if (!sec || typeof sec !== "object") continue;
           if (Array.isArray(sec.images)) {
             for (const img of sec.images) {
-              if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) return true;
+              if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) inlineCount++;
             }
           }
           for (const sub of ["venueItems","designItems","programItems"]) {
@@ -10376,16 +10372,17 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
               for (const item of sec[sub]) {
                 if (Array.isArray(item.images)) {
                   for (const img of item.images) {
-                    if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) return true;
+                    if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) inlineCount++;
                   }
                 }
               }
             }
           }
         }
-        return false;
       };
-      if (!hasInline(data)) { console.log("[DocImage] ✅ 인라인 Base64 없음 — 마이그레이션 불필요"); return; }
+      countInline(data);
+      if (inlineCount === 0) { console.log("[DocImage] ✅ 인라인 Base64 없음 — 마이그레이션 불필요"); return; }
+      console.log("[DocImage] 📊 인라인 Base64 이미지 " + inlineCount + "개 발견 (섹션 " + secCount + "개)");
       imgMigrationRanRef.current = true;
       console.log("[DocImage] 🔄 Base64→R2 마이그레이션 시작...");
       toast("이미지 최적화 중...", "info");
