@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v27b4";
+  var CODE_VER = "20260312v27b5";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -413,6 +413,12 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
           var cloudSize = ck.size || 0;
 
           if(cloudSize > localSize){
+            // ★ v27b4: 마이그레이션된 문서 보호 (Base64→R2 전환 후 IDB가 작아짐)
+            if(localData && localData._imgMigrated){
+              console.log("[Sync] ⏭️ " + key + " 스킵 (마이그레이션됨, 로컬→클라우드 업로드 시도)");
+              try { await CloudSync.saveDoc(key, localData); uploaded++; console.log("[Sync] ⬆️ " + key + " 마이그레이션 데이터 클라우드 업로드 완료"); } catch(e){ console.warn("[Sync] ⬆️ 업로드 실패:", key, e.message); }
+              continue;
+            }
             var cloudData = await loadFromCloud(key);
             if(cloudData){
               var valid = Array.isArray(cloudData) ? cloudData.length > 0 : (typeof cloudData === "object" && Object.keys(cloudData).length > 0);
@@ -10437,15 +10443,23 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         }
       }
       if (migratedCount > 0 && !cancelled) {
+        // ★ v27b4: 마이그레이션 마커 설정 (전역 Sync 다운로드 차단용)
+        data._imgMigrated = Date.now();
         // ★ IDB에 최종 저장 + React state 업데이트 + 클라우드 동기화
         await saveToIDB(storageKey, data).catch(()=>{});
         setDocData({...data}); // React state 동기화 → 이후 auto-save는 R2 키만 포함
         // ★ v27b3: auto-save 재개 (setDocData 이후이므로 안전)
         cloudDocLoadedRef.current = true;
         console.log("[DocImage] 🔓 auto-save 재개됨");
-        // 클라우드에도 경량 데이터 저장
+        // 클라우드에도 경량 데이터 저장 (재시도 포함)
         const stripped = stripBase64ForCloud(data);
-        CloudDataStore.writeDoc(storageKey, stripped).catch(()=>{});
+        stripped._imgMigrated = data._imgMigrated;
+        try {
+          const cloudResult = await CloudDataStore.writeDoc(storageKey, stripped);
+          console.log("[DocImage] ☁️ 클라우드 저장:", cloudResult.success ? "성공" : "큐잉됨");
+        } catch(e) {
+          console.warn("[DocImage] ☁️ 클라우드 저장 실패 (Sync에서 재시도됨):", e.message);
+        }
         console.log("[DocImage] ✅ 마이그레이션 완료: " + migratedCount + "개 성공, " + failCount + "개 실패");
         toast("이미지 " + migratedCount + "개 최적화 완료", "success");
       } else {
