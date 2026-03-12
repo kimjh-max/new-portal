@@ -10389,34 +10389,38 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         return;
       }
       // Base64 인라인 이미지 카운트
-      let inlineCount = 0;
+      let inlineCount = 0, r2Count = 0;
       const allImages = []; // {ref: img object, secKey, subKey, itemIdx, imgIdx}
+      const scanImg = (img, idx, secKey, sub, itemIdx) => {
+        if (img.r2Key) r2Count++;
+        if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) {
+          inlineCount++;
+          allImages.push({img, secKey, sub, itemIdx, imgIdx: idx});
+        }
+      };
       for (const secKey of Object.keys(data)) {
         if (secKey.startsWith("_")) continue;
         const sec = data[secKey];
         if (!sec || typeof sec !== "object") continue;
-        if (Array.isArray(sec.images)) {
-          sec.images.forEach((img, idx) => {
-            if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) {
-              inlineCount++;
-              allImages.push({img, secKey, sub: null, itemIdx: -1, imgIdx: idx});
-            }
-          });
-        }
+        if (Array.isArray(sec.images)) sec.images.forEach((img, idx) => scanImg(img, idx, secKey, null, -1));
         for (const sub of ["venueItems","designItems","programItems"]) {
           if (!Array.isArray(sec[sub])) continue;
           sec[sub].forEach((item, itemIdx) => {
-            if (!Array.isArray(item.images)) return;
-            item.images.forEach((img, imgIdx) => {
-              if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) {
-                inlineCount++;
-                allImages.push({img, secKey, sub, itemIdx, imgIdx});
-              }
-            });
+            if (Array.isArray(item.images)) item.images.forEach((img, imgIdx) => scanImg(img, imgIdx, secKey, sub, itemIdx));
           });
         }
       }
-      if (inlineCount === 0) { console.log("[DocImage] ✅ 인라인 Base64 없음 — 마이그레이션 불필요"); return; }
+      if (inlineCount === 0) {
+        // ★ v27b5: 이미 마이그레이션된 문서에 _imgMigrated 마커 설정 (전역 Sync 보호)
+        if (r2Count > 0 && !data._imgMigrated) {
+          data._imgMigrated = Date.now();
+          saveToIDB(storageKey, data).catch(()=>{});
+          console.log("[DocImage] ✅ 인라인 Base64 없음, R2 " + r2Count + "개 — _imgMigrated 마커 설정");
+        } else {
+          console.log("[DocImage] ✅ 인라인 Base64 없음 — 마이그레이션 불필요");
+        }
+        return;
+      }
       imgMigrationRanRef.current = true;
       // ★ v27b3: auto-save 차단 (마이그레이션 중 React state가 IDB를 덮어쓰는 것 방지)
       cloudDocLoadedRef.current = false;
