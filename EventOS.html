@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v27b8";
+  var CODE_VER = "20260312v27c";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10129,6 +10129,42 @@ async function loadPlanDataForResult(projectId) {
   return null;
 }
 
+// ★ v27c: 운영계획안 버전 목록 로드 (결과보고서 불러오기용)
+async function loadPlanVersionsForResult(projectId) {
+  const versionsKey = `eventos_docVersions_${projectId}_plan`;
+  // ① R2 클라우드에서 버전 배열 로드
+  if (CLOUD_CONFIG.ENABLED) {
+    try {
+      const cv = await CloudSync.loadDoc(versionsKey);
+      if (Array.isArray(cv) && cv.length > 0) {
+        // 최신 plan도 추가 (버전과 별도)
+        const current = await loadPlanDataForResult(projectId);
+        if (current) {
+          const hasLatest = cv.some(v => v.id === 0);
+          if (!hasLatest) return [{ id: 0, name: "📌 현재 운영계획안", timestamp: new Date().toISOString(), data: current }, ...cv];
+        }
+        return cv;
+      }
+    } catch {}
+  }
+  // ② IDB에서 버전 로드
+  try {
+    const iv = await loadFromIDB(versionsKey);
+    if (Array.isArray(iv) && iv.length > 0) {
+      const current = await loadPlanDataForResult(projectId);
+      if (current) {
+        const hasLatest = iv.some(v => v.id === 0);
+        if (!hasLatest) return [{ id: 0, name: "📌 현재 운영계획안", timestamp: new Date().toISOString(), data: current }, ...iv];
+      }
+      return iv;
+    }
+  } catch {}
+  // ③ 버전이 없으면 현재 plan을 단일 항목으로 반환
+  const current = await loadPlanDataForResult(projectId);
+  if (current) return [{ id: 0, name: "📌 현재 운영계획안", timestamp: new Date().toISOString(), data: current }];
+  return [];
+}
+
 function mergePlanToResult(planData, existingResult) {
   const merged = JSON.parse(JSON.stringify(planData));
   merged._keyColor = "#10b981";
@@ -10539,6 +10575,9 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     return () => { cancelled = true; };
   }, [versionsKey]);
   const [showVersions, setShowVersions] = React.useState(false);
+  const [showPlanVersions, setShowPlanVersions] = React.useState(false);
+  const [planVersions, setPlanVersions] = React.useState([]);
+  const [planVersionsLoading, setPlanVersionsLoading] = React.useState(false);
   const [showSectionMgr, setShowSectionMgr] = React.useState(false);
   const [showCoverEdit, setShowCoverEdit] = React.useState(false);
   const [saveStatus, setSaveStatus] = React.useState("saved"); // "saved" | "saving" | "unsaved"
@@ -10579,7 +10618,9 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
 
   // ── Smart Save (IndexedDB 기본 + localStorage 보조 + 클라우드 동기화) ──
   // ★ v27: Cloud 전송 전 이미 R2에 업로드된 이미지의 Base64 데이터 제거
+  // ★ v27c: 마이그레이션 완료 문서는 strip 스킵 (O(1) 반환)
   const stripBase64ForCloud = (data) => {
+    if (data._imgMigrated) return data;
     const strip = (images) => {
       if (!Array.isArray(images)) return images;
       return images.map(img => {
@@ -10691,15 +10732,15 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
 
   // 디바운스 저장 (대용량 문서는 2초, 소용량은 0.5초)
   // ⚠️ cloudDocLoadedRef: 클라우드 로드 완료 전 auto-save 차단 (크래시 후 stale 데이터 덮어쓰기 방지)
+  // ★ v27c: 디바운스 최적화 — Object.keys 1회, 디바운스 시간 증가 (1s/3s)
   React.useEffect(() => {
-    if (!docKey || Object.keys(docData).length === 0) return;
-    if (!cloudDocLoadedRef.current) return; // 🛡️ 클라우드 로드 전 저장 차단
-    setSaveStatus("unsaved");
-    cloudDirtyRef.current = true; // ★ 데이터 변경 → dirty 플래그 설정
-    window.__docEditorUnsaved = true; // 탭 전환 감지용 플래그
+    if (!docKey) return;
+    const keyCount = Object.keys(docData).length;
+    if (keyCount === 0 || !cloudDocLoadedRef.current) return;
+    cloudDirtyRef.current = true;
+    window.__docEditorUnsaved = true;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    // ★ 대용량 문서(50키+)는 debounce 2초로 확대 — 메모리 부하 감소
-    const debounceMs = Object.keys(docData).length >= 50 ? 2000 : 500;
+    const debounceMs = keyCount >= 50 ? 3000 : 1000;
     saveTimerRef.current = setTimeout(() => {
       performSave(docData).catch(e => console.warn("[DocEditor] 디바운스 저장 실패:", e.message)).finally(() => { window.__docEditorUnsaved = false; });
     }, debounceMs);
@@ -10718,7 +10759,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       const latestData = docDataLatestRef.current;
       if (latestData && Object.keys(latestData).length > 0) {
         performSave(latestData).catch(e => console.warn("[DocEditor] 주기적 저장 실패:", e.message));
-        toast("자동 저장 완료", "success");
+        // ★ v27c: 자동 저장 토스트 제거 (불필요한 UI 리렌더 방지)
       }
     }, 5 * 60 * 1000);
     return () => { if (periodicSaveRef.current) clearInterval(periodicSaveRef.current); };
@@ -10762,7 +10803,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           saveToIDB(storageKey, memData).catch(()=>{});
         }
       }).catch(()=>{});
-    }, 3 * 60 * 1000); // ★ v26 롤백: 3분 (안정성 우선)
+    }, 10 * 60 * 1000); // ★ v27c: 10분 (IDB 로드 빈도 감소 — 성능 최적화)
     return () => clearInterval(integrityCheck);
   }, [storageKey, performSave]);
 
@@ -11504,7 +11545,19 @@ ${secEnabled("timeline") ? (()=>{
 </body></html>`;
     W.document.write(html);
     W.document.close();
-    setTimeout(()=>W.print(), 600);
+    // ★ v27c: R2 이미지 로딩 완료 대기 후 print (이미지 누락 방지)
+    setTimeout(async()=>{
+      try {
+        const imgs = W.document.querySelectorAll('img');
+        const r2Imgs = [...imgs].filter(i => !i.complete);
+        if (r2Imgs.length > 0) {
+          console.log("[PDF] ⏳ " + r2Imgs.length + "개 이미지 로딩 대기...");
+          await Promise.all(r2Imgs.map(i => new Promise(r => { i.onload = r; i.onerror = r; setTimeout(r, 8000); })));
+          console.log("[PDF] ✅ 이미지 로딩 완료");
+        }
+      } catch(e) { console.warn("[PDF] 이미지 대기 실패:", e.message); }
+      W.print();
+    }, 600);
     toast("PDF 출력 창이 열렸습니다.", "success");
   };
 
@@ -12856,15 +12909,15 @@ ${secEnabled("timeline") ? (()=>{
           </button>
           {!isPlan && (
             <button onClick={async()=>{
-              if(!confirm("운영계획안 데이터를 가져오시겠습니까?\n현재 입력된 결과 메모와 사진은 유지됩니다.")) return;
+              if (showPlanVersions) { setShowPlanVersions(false); return; }
+              setPlanVersionsLoading(true);
+              setShowPlanVersions(true);
               try {
-                const planData = await loadPlanDataForResult(proj?.id);
-                if(!planData || !Object.keys(planData).length){ toast("운영계획안 데이터가 없습니다","warn"); return; }
-                const merged = mergePlanToResult(planData, docData);
-                setDocData(merged);
-                toast("📋 운영계획안 데이터를 불러왔습니다","success");
-              } catch(e){ toast("불러오기 실패: "+e.message,"error"); }
-            }} className="btn" style={{background:"rgba(99,102,241,.08)",border:"1px solid rgba(99,102,241,.2)",color:"#818cf8",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
+                const pvs = await loadPlanVersionsForResult(proj?.id);
+                setPlanVersions(pvs);
+              } catch(e) { toast("버전 목록 로드 실패: "+e.message,"error"); }
+              setPlanVersionsLoading(false);
+            }} className="btn" style={{background:showPlanVersions?"rgba(99,102,241,.2)":"rgba(99,102,241,.08)",border:"1px solid rgba(99,102,241,.2)",color:"#818cf8",padding:"8px 14px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:12}}>
               📋 운영계획안 불러오기
             </button>
           )}
@@ -12985,6 +13038,46 @@ ${secEnabled("timeline") ? (()=>{
                   </button>
                   <button onClick={()=>deleteVersion(ver.id)} style={{background:"rgba(239,68,68,.08)",border:"1px solid rgba(239,68,68,.15)",color:"#f87171",borderRadius:6,padding:"6px 10px",fontSize:11,cursor:"pointer"}}>
                     삭제
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ★ v27c: 운영계획안 버전 선택 패널 (결과보고서 전용) */}
+      {showPlanVersions && !isPlan && (
+        <div className="card" style={{marginBottom:16,border:"1px solid rgba(99,102,241,.2)",background:"rgba(99,102,241,.03)"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+            <div style={{fontWeight:800,fontSize:14,color:"var(--txt)"}}>📋 운영계획안 버전 선택</div>
+            <button onClick={()=>setShowPlanVersions(false)} style={{background:"none",border:"none",color:"var(--txt4)",cursor:"pointer",fontSize:18}}>×</button>
+          </div>
+          <div style={{fontSize:12,color:"var(--txt4)",marginBottom:10}}>불러올 운영계획안 버전을 선택하세요. 현재 결과 메모와 사진은 유지됩니다.</div>
+          {planVersionsLoading ? (
+            <div style={{textAlign:"center",color:"var(--txt4)",fontSize:13,padding:"20px 0"}}>⏳ 버전 목록 로딩 중...</div>
+          ) : planVersions.length === 0 ? (
+            <div style={{textAlign:"center",color:"var(--txt4)",fontSize:13,padding:"20px 0",border:"1px dashed rgba(255,255,255,.08)",borderRadius:8}}>
+              저장된 운영계획안이 없습니다.
+            </div>
+          ) : (
+            <div style={{maxHeight:280,overflowY:"auto",display:"flex",flexDirection:"column",gap:6}}>
+              {planVersions.map(ver => (
+                <div key={ver.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"rgba(255,255,255,.04)",borderRadius:8,border:"1px solid var(--border)"}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:700,fontSize:13,color:ver.id===0?"#818cf8":"var(--txt)"}}>{ver.name}</div>
+                    <div style={{fontSize:11,color:"var(--txt4)",marginTop:2}}>{new Date(ver.timestamp).toLocaleString("ko-KR")}</div>
+                  </div>
+                  <button onClick={()=>{
+                    if(!confirm(`"${ver.name}" 버전을 불러오시겠습니까?\n현재 입력된 결과 메모와 사진은 유지됩니다.`)) return;
+                    try {
+                      const merged = mergePlanToResult(ver.data, docData);
+                      setDocData(merged);
+                      setShowPlanVersions(false);
+                      toast(`📋 "${ver.name}" 운영계획안을 불러왔습니다`,"success");
+                    } catch(e) { toast("불러오기 실패: "+e.message,"error"); }
+                  }} style={{background:"rgba(99,102,241,.1)",border:"1px solid rgba(99,102,241,.25)",color:"#a5b4fc",borderRadius:6,padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+                    선택
                   </button>
                 </div>
               ))}
