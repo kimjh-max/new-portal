@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v25c";
+  var CODE_VER = "20260312v26";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -314,6 +314,29 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
 
       var uploaded = 0, downloaded = 0;
 
+      // ★ v26: JSON.stringify 없이 문서 크기 추정 (55MB stringify → 메모리 크래시 방지)
+      function estimateDocSize(data) {
+        if (!data) return 0;
+        if (Array.isArray(data)) return data.length * 500;
+        var keys = Object.keys(data);
+        var total = 2;
+        for (var ei = 0; ei < keys.length; ei++) {
+          var v = data[keys[ei]];
+          if (typeof v === "string") total += v.length + keys[ei].length + 5;
+          else if (typeof v === "object" && v !== null) {
+            // 1단계만 탐색 (재귀 없음)
+            var sk = Object.keys(v);
+            for (var si = 0; si < sk.length; si++) {
+              var sv = v[sk[si]];
+              if (typeof sv === "string") total += sv.length;
+              else total += 50;
+            }
+          }
+          else total += 10;
+        }
+        return total;
+      }
+
       // ② 로컬 → 클라우드 (로컬이 더 크면 업로드, 대용량은 청크 분할)
       var CHUNK_THRESHOLD = 40 * 1024 * 1024; // 40MB 이상이면 청크 분할
       var MAX_VERSIONS = 2; // 버전 이력 최대 보관 수
@@ -334,7 +357,7 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
             continue;
           }
 
-          var localSize = JSON.stringify(data).length;
+          var localSize = estimateDocSize(data); // ★ v26: stringify 제거 → 메모리 보호
           var cloudDoc = cloudDocs.find(function(d){ return d.doc_key === key; });
           var cloudSize = cloudDoc ? cloudDoc.size : 0;
 
@@ -385,8 +408,7 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
           try { localData = await getData(db, key); } catch{}
           var localSize = 0;
           if(localData){
-            if(Array.isArray(localData)){ localSize = localData.length ? JSON.stringify(localData).length : 0; }
-            else if(typeof localData === "object" && Object.keys(localData).length){ localSize = JSON.stringify(localData).length; }
+            localSize = estimateDocSize(localData); // ★ v26: stringify 제거 → 메모리 보호
           }
           var cloudSize = ck.size || 0;
 
@@ -396,7 +418,7 @@ button{font-family:inherit;cursor:pointer}input,textarea,select{font-family:inhe
               var valid = Array.isArray(cloudData) ? cloudData.length > 0 : (typeof cloudData === "object" && Object.keys(cloudData).length > 0);
               if(valid){
                 await putData(db, key, cloudData);
-                try { localStorage.setItem(key, JSON.stringify(cloudData)); } catch{}
+                // ★ v26: localStorage 저장 제거 — 55MB stringify → QuotaExceeded + 메모리 크래시
                 window.__preloadedDocs = window.__preloadedDocs || {};
                 window.__preloadedDocs[key] = cloudData;
                 console.log("[Sync] ⬇️ " + key + " 다운로드 (" + cloudSize + " > " + localSize + ")");
@@ -969,18 +991,31 @@ const CloudDataStore = {
       if (Array.isArray(data) && key.indexOf("eventos_docVersions_") === 0 && data.length > 5) {
         data = data.slice(0, 5);
       }
-      const jsonStr = JSON.stringify(data);
-      const sizeBytes = jsonStr.length;
+      // ★ v26: 크기 추정으로 PUT/POST 결정 (stringify는 1회만)
+      const estimatedSize = (() => {
+        if (Array.isArray(data)) return data.length * 500;
+        let t = 0;
+        for (const k of Object.keys(data)) {
+          const v = data[k];
+          if (typeof v === "string") t += v.length;
+          else if (typeof v === "object" && v !== null) t += 5000;
+          else t += 10;
+        }
+        return t;
+      })();
       let result;
-      if (sizeBytes > 4 * 1024 * 1024) {
-        // 4MB 이상: PUT 스트리밍
+      const workerUrl = CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "");
+      if (estimatedSize > 4 * 1024 * 1024) {
+        // 4MB+ 추정: PUT 스트리밍 (stringify 1회 — body로 직접 전송)
+        const jsonStr = JSON.stringify(data);
         const res = await fetch(
-          `${CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "")}/api/doc?key=${encodeURIComponent(key)}`,
+          `${workerUrl}/api/doc?key=${encodeURIComponent(key)}`,
           { method: "PUT", headers: { "Content-Type": "application/json" }, body: jsonStr }
         );
         result = await res.json();
       } else {
-        const res = await fetch(`${CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "")}/api/doc`, {
+        // 소용량: POST (envelope 포함 stringify 1회)
+        const res = await fetch(`${workerUrl}/api/doc`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ key, data }),
         });
@@ -10258,11 +10293,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     if (silent) {
       // ── silent: IDB 저장 (structured clone — 메모리 효율적, JSON.stringify 불필요) ──
       try { await saveToIDB(storageKey, data); } catch {}
-      // localStorage: 소용량만 (대용량은 stringify 자체를 하지 않음 — 메모리 보호)
-      const keyCount = Object.keys(data).length;
-      if (keyCount < 50) { // 소용량 데이터만 localStorage 캐시 시도
-        safeLocalSet(storageKey, JSON.stringify(data));
-      }
+      // ★ v26: silent 모드에서 localStorage 저장 완전 제거 — IDB만 사용
+      // 55MB 데이터 JSON.stringify를 10초마다 하면 메모리 크래시 발생
       // ── ★ R2 클라우드 저장 (dirty 플래그 + 동시 업로드 방지) ──
       if (CLOUD_CONFIG.ENABLED && cloudDirtyRef.current && !cloudSavingRef.current) {
         cloudDirtyRef.current = false;
@@ -10290,10 +10322,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     setSaveStatus("saving");
     // ① IDB 먼저 (크래시 시 IDB에서 복구 가능하도록)
     try { await saveToIDB(storageKey, data); } catch {}
-    // ② localStorage: 소용량만 (대용량은 stringify 자체를 하지 않음 — 메모리 보호)
-    if (Object.keys(data).length < 50) {
-      safeLocalSet(storageKey, JSON.stringify(data));
-    }
+    // ★ v26: performSave에서 localStorage 저장 완전 제거 — IDB가 primary storage
+    // 55MB JSON.stringify는 매 저장마다 메모리 폭탄 (IDB는 structured clone이라 안전)
     // ③ 클라우드 저장 (동시 업로드 방지 — 55MB 업로드 중 또 다른 업로드 차단)
     if (cloudSavingRef.current) {
       // 이미 업로드 중 → IDB에만 저장 완료, 클라우드는 dirty로 남겨 다음 주기에
@@ -10334,8 +10364,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         const merged = mergePlanToResult(data, existingReport || {});
         CloudDataStore.writeDoc(reportKey, merged).catch(()=>{}); // 비동기 — 대기 안 함
         try { await saveToIDB(reportKey, merged); } catch {}
-        // localStorage: 소용량만 (대용량 stringify 방지 — 메모리 보호)
-        if (Object.keys(merged).length < 50) { safeLocalSet(reportKey, JSON.stringify(merged)); }
+        // ★ v26: localStorage 저장 제거 — IDB만 사용
       } catch (e) {
         console.warn("[DocEditor] plan→report 자동 동기화 실패:", e.message);
       }
@@ -13924,7 +13953,20 @@ function App() {
                 try { const ls = localStorage.getItem(key); if (ls && ls.length > 2) localData = JSON.parse(ls); } catch {}
               }
               if (!localData) continue;
-              const localSize = JSON.stringify(localData).length;
+              // ★ v26: JSON.stringify 제거 — 55MB stringify → 메모리 크래시 방지
+              const localSize = (() => {
+                if (!localData) return 0;
+                if (Array.isArray(localData)) return localData.length * 500;
+                let t = 0;
+                for (const k of Object.keys(localData)) {
+                  const v = localData[k];
+                  if (typeof v === "string") t += v.length;
+                  else if (typeof v === "object" && v !== null) {
+                    for (const sv of Object.values(v)) { if (typeof sv === "string") t += sv.length; else t += 50; }
+                  } else t += 10;
+                }
+                return t;
+              })();
               if (localSize <= 2) continue;
               // 클라우드에 없거나, 로컬이 더 크면 업로드 (Worker 덮어쓰기 보호가 안전장치 역할)
               if (cloudSize > 0 && localSize <= cloudSize) continue;
