@@ -10349,8 +10349,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     return () => { cancelled = true; };
   }, [storageKey]);
 
-  // ★ v27b: 기존 Base64 이미지 → R2 백그라운드 마이그레이션
-  // 안전장치: 데이터 무결성 기반 (섹션 ≥3 + Base64 이미지 ≥1)
+  // ★ v27b2: 기존 Base64 이미지 → R2 백그라운드 마이그레이션
+  // IDB에서 직접 읽기/쓰기 (React state 경쟁 방지)
   const imgMigrationRanRef = React.useRef(false);
   React.useEffect(() => {
     if (!CLOUD_CONFIG.ENABLED || !docKey) return;
@@ -10363,102 +10363,84 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         if (cancelled) return;
       }
       if (cancelled || !cloudDocLoadedRef.current) return;
-      console.log("[DocImage] 🔍 마이그레이션 검사 시작...");
-      const data = docDataLatestRef.current;
-      if (!data || typeof data !== "object") return;
-      // ★ 데이터 무결성 검증: 최소 3개 섹션 있어야 마이그레이션 허용
+      // ★ IDB에서 직접 데이터 로드 (React state가 아닌 persisted 데이터 사용)
+      let data;
+      try {
+        data = await loadFromIDB(storageKey);
+      } catch(e) { console.warn("[DocImage] IDB 로드 실패:", e.message); return; }
+      if (!data || typeof data !== "object") { console.log("[DocImage] ⛔ IDB 데이터 없음"); return; }
+      console.log("[DocImage] 🔍 마이그레이션 검사 (IDB 직접 로드, " + Math.round(JSON.stringify(data).length/1024) + "KB)...");
+      // 데이터 무결성 검증: 최소 3개 섹션
       const secCount = Object.keys(data).filter(k => !k.startsWith("_") && data[k] && typeof data[k] === "object").length;
       if (secCount < 3) {
         console.warn("[DocImage] ⛔ 마이그레이션 중단 — 문서 데이터 불완전 (섹션 " + secCount + "개)");
         return;
       }
-      // Base64 인라인 이미지 검색 및 카운트
+      // Base64 인라인 이미지 카운트
       let inlineCount = 0;
-      const countInline = (obj) => {
-        for (const k of Object.keys(obj)) {
-          if (k.startsWith("_")) continue;
-          const sec = obj[k];
-          if (!sec || typeof sec !== "object") continue;
-          if (Array.isArray(sec.images)) {
-            for (const img of sec.images) {
-              if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) inlineCount++;
-            }
-          }
-          for (const sub of ["venueItems","designItems","programItems"]) {
-            if (Array.isArray(sec[sub])) {
-              for (const item of sec[sub]) {
-                if (Array.isArray(item.images)) {
-                  for (const img of item.images) {
-                    if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) inlineCount++;
-                  }
-                }
-              }
-            }
-          }
-        }
-      };
-      countInline(data);
-      if (inlineCount === 0) { console.log("[DocImage] ✅ 인라인 Base64 없음 — 마이그레이션 불필요"); return; }
-      console.log("[DocImage] 📊 인라인 Base64 이미지 " + inlineCount + "개 발견 (섹션 " + secCount + "개)");
-      imgMigrationRanRef.current = true;
-      console.log("[DocImage] 🔄 Base64→R2 마이그레이션 시작...");
-      toast("이미지 최적화 중...", "info");
-      let migratedCount = 0;
+      const allImages = []; // {ref: img object, secKey, subKey, itemIdx, imgIdx}
       for (const secKey of Object.keys(data)) {
-        if (secKey.startsWith("_") || cancelled) continue;
+        if (secKey.startsWith("_")) continue;
         const sec = data[secKey];
         if (!sec || typeof sec !== "object") continue;
-        // 섹션 직접 이미지
         if (Array.isArray(sec.images)) {
-          for (let i = 0; i < sec.images.length; i++) {
-            const img = sec.images[i];
+          sec.images.forEach((img, idx) => {
             if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) {
-              try {
-                const blob = await (await fetch(img.data)).blob();
-                const file = new File([blob], img.name || "img.jpg", {type: blob.type || "image/jpeg"});
-                const result = await uploadDocImage(docKey, file);
-                if (result && result.r2Key) {
-                  img.r2Key = result.r2Key;
-                  delete img.data;
-                  migratedCount++;
-                  console.log("[DocImage] ✅ 이전 " + migratedCount + ": " + (img.name||"img") + " → " + result.r2Key.substring(0,50));
-                }
-              } catch(e) { console.warn("[DocImage] 마이그레이션 스킵:", img.name, e.message); }
+              inlineCount++;
+              allImages.push({img, secKey, sub: null, itemIdx: -1, imgIdx: idx});
             }
-          }
+          });
         }
-        // 서브아이템 이미지
         for (const sub of ["venueItems","designItems","programItems"]) {
           if (!Array.isArray(sec[sub])) continue;
-          for (const item of sec[sub]) {
-            if (!Array.isArray(item.images) || cancelled) continue;
-            for (let i = 0; i < item.images.length; i++) {
-              const img = item.images[i];
+          sec[sub].forEach((item, itemIdx) => {
+            if (!Array.isArray(item.images)) return;
+            item.images.forEach((img, imgIdx) => {
               if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) {
-                try {
-                  const blob = await (await fetch(img.data)).blob();
-                  const file = new File([blob], img.name || "img.jpg", {type: blob.type || "image/jpeg"});
-                  const result = await uploadDocImage(docKey, file);
-                  if (result && result.r2Key) {
-                    img.r2Key = result.r2Key;
-                    delete img.data;
-                    migratedCount++;
-                    console.log("[DocImage] ✅ 이전 " + migratedCount + ": " + (img.name||"img") + " → " + result.r2Key.substring(0,50));
-                  }
-                } catch(e) { console.warn("[DocImage] 마이그레이션 스킵:", img.name, e.message); }
+                inlineCount++;
+                allImages.push({img, secKey, sub, itemIdx, imgIdx});
               }
-            }
-          }
+            });
+          });
+        }
+      }
+      if (inlineCount === 0) { console.log("[DocImage] ✅ 인라인 Base64 없음 — 마이그레이션 불필요"); return; }
+      imgMigrationRanRef.current = true;
+      console.log("[DocImage] 🔄 Base64→R2 마이그레이션 시작 (" + inlineCount + "개)...");
+      toast("이미지 최적화 중... (" + inlineCount + "개)", "info");
+      let migratedCount = 0, failCount = 0;
+      for (const entry of allImages) {
+        if (cancelled) break;
+        const img = entry.img;
+        try {
+          const blob = await (await fetch(img.data)).blob();
+          const file = new File([blob], img.name || "img.jpg", {type: blob.type || "image/jpeg"});
+          const result = await uploadDocImage(docKey, file);
+          if (result && result.r2Key) {
+            img.r2Key = result.r2Key;
+            delete img.data;
+            migratedCount++;
+            console.log("[DocImage] ✅ " + migratedCount + "/" + inlineCount + " " + (img.name||"img"));
+          } else { failCount++; }
+        } catch(e) { failCount++; console.warn("[DocImage] 스킵:", img.name, e.message); }
+        // 매 3개마다 중간 저장 (크래시 안전)
+        if (migratedCount > 0 && migratedCount % 3 === 0 && !cancelled) {
+          saveToIDB(storageKey, data).catch(()=>{});
         }
       }
       if (migratedCount > 0 && !cancelled) {
-        setDocData({...data}); // 리렌더 트리거
-        console.log("[DocImage] ✅ 마이그레이션 완료: " + migratedCount + "개 이미지");
+        // ★ IDB에 최종 저장 + React state 업데이트 + 클라우드 동기화
+        await saveToIDB(storageKey, data).catch(()=>{});
+        setDocData({...data}); // React state 동기화
+        // 클라우드에도 경량 데이터 저장
+        const stripped = stripBase64ForCloud(data);
+        CloudDataStore.writeDoc(storageKey, stripped).catch(()=>{});
+        console.log("[DocImage] ✅ 마이그레이션 완료: " + migratedCount + "개 성공, " + failCount + "개 실패");
         toast("이미지 " + migratedCount + "개 최적화 완료", "success");
       }
     };
-    // 5초 후 마이그레이션 시도 (UI 안정 후)
-    const timer = setTimeout(tryMigrate, 5000);
+    // 8초 후 마이그레이션 시도 (데이터 로딩 + merge 완료 보장)
+    const timer = setTimeout(tryMigrate, 8000);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [docKey]);
 
