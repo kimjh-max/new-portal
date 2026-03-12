@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260313v27c2";
+  var CODE_VER = "20260313v27c3";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -13051,7 +13051,7 @@ ${secEnabled("timeline") ? (()=>{
             <div style={{fontWeight:800,fontSize:14,color:"var(--txt)"}}>📋 운영계획안 버전 선택</div>
             <button onClick={()=>setShowPlanVersions(false)} style={{background:"none",border:"none",color:"var(--txt4)",cursor:"pointer",fontSize:18}}>×</button>
           </div>
-          <div style={{fontSize:12,color:"var(--txt4)",marginBottom:10}}>불러올 운영계획안 버전을 선택하세요. 현재 결과 메모와 사진은 유지됩니다.</div>
+          <div style={{fontSize:12,color:"var(--txt4)",marginBottom:10}}>불러올 운영계획안 버전을 선택하세요. 선택한 버전의 데이터로 결과보고서가 초기화됩니다.</div>
           {planVersionsLoading ? (
             <div style={{textAlign:"center",color:"var(--txt4)",fontSize:13,padding:"20px 0"}}>⏳ 버전 목록 로딩 중...</div>
           ) : planVersions.length === 0 ? (
@@ -13067,9 +13067,9 @@ ${secEnabled("timeline") ? (()=>{
                     <div style={{fontSize:11,color:"var(--txt4)",marginTop:2}}>{new Date(ver.timestamp).toLocaleString("ko-KR")}</div>
                   </div>
                   <button onClick={()=>{
-                    if(!confirm(`"${ver.name}" 버전을 불러오시겠습니까?\n현재 입력된 결과 메모와 사진은 유지됩니다.`)) return;
+                    if(!confirm(`"${ver.name}" 버전을 불러오시겠습니까?\n⚠️ 기존 결과보고서 내용이 선택한 운영계획안으로 교체됩니다.`)) return;
                     try {
-                      const merged = mergePlanToResult(ver.data, docData);
+                      const merged = mergePlanToResult(ver.data, {});
                       setDocData(merged);
                       setShowPlanVersions(false);
                       toast(`📋 "${ver.name}" 운영계획안을 불러왔습니다`,"success");
