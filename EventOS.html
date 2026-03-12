@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v27b3";
+  var CODE_VER = "20260312v27b4";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10233,20 +10233,26 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
             if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length > 2) {
               // 클라우드 데이터가 유효함 → 마이그레이션 허용 플래그 설정
               cloudLoadSuccessRef.current = true;
-              try {
-                const cloudSize = JSON.stringify(cloudData).length;
-                const localSize = JSON.stringify(docDataLatestRef.current || {}).length;
-                if (cloudSize > localSize * 1.5) {
-                  // 클라우드가 훨씬 크면 → 로컬 데이터 덮어쓰기 (데이터 손실 복구)
-                  setDocData(cloudData);
-                  saveToIDB(storageKey, cloudData).catch(()=>{});
-                  console.log("[DocEditor] ⏰ 클라우드 데이터 적용 (타임아웃 후, 더 큰 데이터):", Math.round(cloudSize/1024) + "KB > " + Math.round(localSize/1024) + "KB");
-                } else {
-                  // 비슷한 크기 → setDocData 안 함 (사용자 편집 보호), 마이그레이션만 허용
-                  console.log("[DocEditor] ⏰ 클라우드 확인 완료 (타임아웃 후) — 마이그레이션 허용");
+              // ★ v27b3: 마이그레이션 완료/진행 중이면 클라우드 데이터 적용 차단
+              // (R2 키로 전환된 데이터를 Base64로 되돌리는 것 방지)
+              if (imgMigrationRanRef.current) {
+                console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 마이그레이션 완료 상태 → 무시");
+              } else {
+                try {
+                  const cloudSize = JSON.stringify(cloudData).length;
+                  const localSize = JSON.stringify(docDataLatestRef.current || {}).length;
+                  if (cloudSize > localSize * 1.5) {
+                    // 클라우드가 훨씬 크면 → 로컬 데이터 덮어쓰기 (데이터 손실 복구)
+                    setDocData(cloudData);
+                    saveToIDB(storageKey, cloudData).catch(()=>{});
+                    console.log("[DocEditor] ⏰ 클라우드 데이터 적용 (타임아웃 후, 더 큰 데이터):", Math.round(cloudSize/1024) + "KB > " + Math.round(localSize/1024) + "KB");
+                  } else {
+                    // 비슷한 크기 → setDocData 안 함 (사용자 편집 보호), 마이그레이션만 허용
+                    console.log("[DocEditor] ⏰ 클라우드 확인 완료 (타임아웃 후) — 마이그레이션 허용");
+                  }
+                } catch(e) {
+                  console.log("[DocEditor] ⏰ 클라우드 도착 (타임아웃 후) — 마이그레이션 허용 (비교 생략)");
                 }
-              } catch(e) {
-                console.log("[DocEditor] ⏰ 클라우드 도착 (타임아웃 후) — 마이그레이션 허용 (비교 생략)");
               }
             } else {
               console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 빈 데이터 무시");
