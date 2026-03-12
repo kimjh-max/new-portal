@@ -10312,10 +10312,10 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   // ★ v27: 기존 Base64 이미지 → R2 백그라운드 마이그레이션
   const imgMigrationRanRef = React.useRef(false);
   React.useEffect(() => {
-    console.log("[DocImage] useEffect 진입: cloudLoaded=" + cloudDocLoadedRef.current + " migrationRan=" + imgMigrationRanRef.current + " cloudEnabled=" + CLOUD_CONFIG.ENABLED + " docKey=" + docKey);
+    try { var _d = "[DocImage] useEffect: cloudLoaded=" + cloudDocLoadedRef.current + " migRan=" + imgMigrationRanRef.current + " cloud=" + CLOUD_CONFIG.ENABLED + " dk=" + docKey + " t=" + new Date().toLocaleTimeString(); var _arr = JSON.parse(localStorage.getItem("_migDbg")||"[]"); _arr.push(_d); localStorage.setItem("_migDbg", JSON.stringify(_arr.slice(-20))); } catch(e){}
     if (!cloudDocLoadedRef.current || imgMigrationRanRef.current) return;
     if (!CLOUD_CONFIG.ENABLED || !docKey) return;
-    console.log("[DocImage] ✅ 조건 통과 → 5초 후 마이그레이션 시작");
+    try { var _arr2 = JSON.parse(localStorage.getItem("_migDbg")||"[]"); _arr2.push("[DocImage] ✅ 조건통과 → 5초타이머 시작 t=" + new Date().toLocaleTimeString()); localStorage.setItem("_migDbg", JSON.stringify(_arr2.slice(-20))); } catch(e){}
     // 5초 후 마이그레이션 시작 (UI 안정 후)
     const timer = setTimeout(async () => {
       const hasInlineBase64 = (obj) => {
