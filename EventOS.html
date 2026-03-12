@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v27c";
+  var CODE_VER = "20260313v27c2";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10330,18 +10330,17 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         cloudLoadSuccessRef.current = true; // 클라우드 비활성 = 로컬 데이터가 source of truth
       }
 
-      // ③ 결과보고서 로드 시 → 항상 운영계획안 최신 데이터와 병합
-      // ★ 빈 결과보고서 = 계획 전체 가져오기 / 기존 결과보고서 = 계획 최신 병합 (결과 고유 데이터 유지)
+      // ③ 결과보고서 로드 시 → 빈 보고서만 자동 가져오기
+      // ★ v27c: 기존 보고서는 자동 병합 하지 않음 (사용자 편집 보호!)
+      // 사용자가 수동으로 "운영계획안 불러오기" 버튼 사용
       if (!isPlan && !cancelled) {
         // 현재까지 로드된 데이터 확인 (IDB/Cloud에서 이미 setDocData 호출됨)
         let hasExistingData = false;
-        let existingData = null;
         try {
           const idbCheck = await loadFromIDB(storageKey);
           if (idbCheck && typeof idbCheck === "object" && Object.keys(idbCheck).length > 0 &&
               !(Object.keys(idbCheck).length === 1 && idbCheck._keyColor)) {
             hasExistingData = true;
-            existingData = idbCheck;
           }
         } catch {}
         if (!hasExistingData) {
@@ -10352,48 +10351,26 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
               if (parsed && Object.keys(parsed).length > 0 &&
                   !(Object.keys(parsed).length === 1 && parsed._keyColor)) {
                 hasExistingData = true;
-                existingData = parsed;
               }
             }
           } catch {}
         }
-        // ★ 항상 운영계획안 최신 데이터와 병합 시도
-        try {
-          const planData = await loadPlanDataForResult(proj?.id);
-          if (planData && !cancelled) {
-            if (!hasExistingData) {
-              // 빈 결과보고서 → 운영계획안 전체 가져오기
+        // ★ v27c: 빈 결과보고서일 때만 자동 가져오기 (기존 데이터 보호)
+        if (!hasExistingData) {
+          try {
+            const planData = await loadPlanDataForResult(proj?.id);
+            if (planData && !cancelled) {
               const merged = mergePlanToResult(planData, {});
               setDocData(merged);
               saveToIDB(storageKey, merged).catch(()=>{});
               safeLocalSet(storageKey, JSON.stringify(merged));
               if (CLOUD_CONFIG.ENABLED) CloudDataStore.writeDoc(storageKey, merged).catch(()=>{});
-              console.log("[DocEditor] 📋→📊 운영계획안 → 결과보고서 자동 가져오기 완료");
+              console.log("[DocEditor] 📋→📊 운영계획안 → 결과보고서 자동 가져오기 완료 (빈 보고서)");
               toast("📋 운영계획안 데이터를 결과보고서에 불러왔습니다", "success");
-            } else {
-              // ★ 기존 결과보고서 + 운영계획안 최신 병합 (결과 고유 데이터 유지)
-              const merged = mergePlanToResult(planData, existingData);
-              // 경량 비교: 키 수 + 첫 10개 필드 비교 (대용량 JSON.stringify 방지 — 메모리 보호)
-              const mKeys = Object.keys(merged);
-              const eKeys = Object.keys(existingData);
-              let needsUpdate = mKeys.length !== eKeys.length;
-              if (!needsUpdate) {
-                for (let i = 0; i < Math.min(10, mKeys.length); i++) {
-                  if (mKeys[i] !== eKeys[i]) { needsUpdate = true; break; }
-                }
-              }
-              if (needsUpdate) {
-                setDocData(merged);
-                saveToIDB(storageKey, merged).catch(()=>{});
-                if (CLOUD_CONFIG.ENABLED) CloudDataStore.writeDoc(storageKey, merged).catch(()=>{});
-                console.log("[DocEditor] 📋→📊 운영계획안 최신 데이터 → 결과보고서 병합 완료");
-              } else {
-                console.log("[DocEditor] ℹ️ 결과보고서 ↔ 운영계획안 이미 동기화됨");
-              }
             }
-          }
-        } catch (err) {
-          console.warn("[DocEditor] 운영계획안 가져오기 실패:", err.message);
+          } catch(e) { console.warn("[DocEditor] 운영계획안 로드 실패:", e.message); }
+        } else {
+          console.log("[DocEditor] ✅ 기존 결과보고서 유지 (자동 병합 안 함 — 사용자 편집 보호)");
         }
       }
     })();
@@ -10495,9 +10472,30 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       if (migratedCount > 0 && !cancelled) {
         // ★ v27b4: 마이그레이션 마커 설정 (전역 Sync 다운로드 차단용)
         data._imgMigrated = Date.now();
-        // ★ IDB에 최종 저장 + React state 업데이트 + 클라우드 동기화
+        // ★ IDB에 최종 저장 + 클라우드 동기화
         await saveToIDB(storageKey, data).catch(()=>{});
-        setDocData({...data}); // React state 동기화 → 이후 auto-save는 R2 키만 포함
+        // ★ v27c: React state 업데이트 시 사용자 편집 보호
+        // IDB 데이터(이미지만 변경)와 React state(사용자 편집 포함) 병합
+        setDocData(prev => {
+          const merged = {...prev, _imgMigrated: data._imgMigrated};
+          // 각 섹션의 이미지만 IDB 데이터로 교체 (텍스트 필드는 사용자 편집 유지)
+          for (const secKey of Object.keys(data)) {
+            if (secKey.startsWith("_")) continue;
+            if (!merged[secKey]) merged[secKey] = data[secKey];
+            else {
+              if (data[secKey]?.images) merged[secKey] = {...merged[secKey], images: data[secKey].images};
+              for (const sub of ["venueItems","designItems","programItems"]) {
+                if (Array.isArray(data[secKey]?.[sub])) {
+                  merged[secKey] = {...merged[secKey], [sub]: data[secKey][sub].map((item, i) => {
+                    const existing = merged[secKey]?.[sub]?.[i];
+                    return existing ? {...existing, images: item.images} : item;
+                  })};
+                }
+              }
+            }
+          }
+          return merged;
+        });
         // ★ v27b3: auto-save 재개 (setDocData 이후이므로 안전)
         cloudDocLoadedRef.current = true;
         console.log("[DocImage] 🔓 auto-save 재개됨");
