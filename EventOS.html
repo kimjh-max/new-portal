@@ -10140,6 +10140,23 @@ function mergePlanToResult(planData, existingResult) {
         if (rs.resultStatus) merged[sectionId].resultStatus = rs.resultStatus;
         if (rs.images && rs.images.length) merged[sectionId].images = rs.images;
         if (rs.attachments && rs.attachments.length) merged[sectionId].attachments = rs.attachments;
+        // ★ v27b: 서브아이템(venue/design/program) 이미지 보존
+        for (const sub of ["venueItems","designItems","programItems"]) {
+          if (Array.isArray(rs[sub]) && Array.isArray(merged[sectionId][sub])) {
+            const mItems = merged[sectionId][sub];
+            const rItems = rs[sub];
+            // 인덱스 매칭으로 이미지 보존 (report 이미지가 있으면 plan 이미지 대신 사용)
+            for (let i = 0; i < Math.min(mItems.length, rItems.length); i++) {
+              if (rItems[i].images && rItems[i].images.length) {
+                mItems[i].images = rItems[i].images;
+              }
+            }
+            // report에 추가 아이템이 있으면 보존
+            for (let i = mItems.length; i < rItems.length; i++) {
+              mItems.push(JSON.parse(JSON.stringify(rItems[i])));
+            }
+          }
+        }
       }
     }
   }
@@ -10524,6 +10541,10 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
 
   // ── docKey 변경 시 데이터 리로드 ──
   React.useEffect(() => {
+    // ★ v27b: docKey 변경 시 cloudDocLoaded 리셋 → auto-save 차단 (레이스 컨디션 방지)
+    cloudDocLoadedRef.current = !CLOUD_CONFIG.ENABLED ? true : false;
+    cloudLoadSuccessRef.current = false;
+    imgMigrationRanRef.current = false; // 새 문서에 대해 마이그레이션 재실행 허용
     setDocData(loadDocFromStorage());
     try { const v = localStorage.getItem(versionsKey); setVersions(v ? JSON.parse(v) : []); } catch { setVersions([]); }
   }, [docKey]);
