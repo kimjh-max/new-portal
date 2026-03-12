@@ -10310,16 +10310,24 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   }, [storageKey]);
 
   // ★ v27: 기존 Base64 이미지 → R2 백그라운드 마이그레이션
+  // 마운트 1회만 실행, cloudDocLoaded를 폴링으로 대기
   const imgMigrationRanRef = React.useRef(false);
   React.useEffect(() => {
-    try { var _d = "[DocImage] useEffect: cloudLoaded=" + cloudDocLoadedRef.current + " migRan=" + imgMigrationRanRef.current + " cloud=" + CLOUD_CONFIG.ENABLED + " dk=" + docKey + " t=" + new Date().toLocaleTimeString(); var _arr = JSON.parse(localStorage.getItem("_migDbg")||"[]"); _arr.push(_d); localStorage.setItem("_migDbg", JSON.stringify(_arr.slice(-20))); } catch(e){}
-    if (!cloudDocLoadedRef.current || imgMigrationRanRef.current) return;
     if (!CLOUD_CONFIG.ENABLED || !docKey) return;
-    try { var _arr2 = JSON.parse(localStorage.getItem("_migDbg")||"[]"); _arr2.push("[DocImage] ✅ 조건통과 → 5초타이머 시작 t=" + new Date().toLocaleTimeString()); localStorage.setItem("_migDbg", JSON.stringify(_arr2.slice(-20))); } catch(e){}
-    // 5초 후 마이그레이션 시작 (UI 안정 후)
-    const timer = setTimeout(async () => {
-      const hasInlineBase64 = (obj) => {
-        if (!obj || typeof obj !== "object") return false;
+    let cancelled = false;
+    const tryMigrate = async () => {
+      if (cancelled || imgMigrationRanRef.current) return;
+      // 클라우드 로드 완료 대기 (3초 간격 폴링, 최대 30초)
+      for (let wait = 0; wait < 10 && !cloudDocLoadedRef.current; wait++) {
+        await new Promise(r => setTimeout(r, 3000));
+        if (cancelled) return;
+      }
+      if (!cloudDocLoadedRef.current || cancelled) return;
+      console.log("[DocImage] 🔍 마이그레이션 검사 시작...");
+      const data = docDataLatestRef.current;
+      if (!data || typeof data !== "object") return;
+      // Base64 인라인 이미지 검색
+      const hasInline = (obj) => {
         for (const k of Object.keys(obj)) {
           if (k.startsWith("_")) continue;
           const sec = obj[k];
@@ -10343,14 +10351,13 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         }
         return false;
       };
-      if (!hasInlineBase64(docDataLatestRef.current)) return;
+      if (!hasInline(data)) { console.log("[DocImage] ✅ 인라인 Base64 없음 — 마이그레이션 불필요"); return; }
       imgMigrationRanRef.current = true;
       console.log("[DocImage] 🔄 Base64→R2 마이그레이션 시작...");
       toast("이미지 최적화 중...", "info");
       let migratedCount = 0;
-      const data = docDataLatestRef.current;
       for (const secKey of Object.keys(data)) {
-        if (secKey.startsWith("_")) continue;
+        if (secKey.startsWith("_") || cancelled) continue;
         const sec = data[secKey];
         if (!sec || typeof sec !== "object") continue;
         // 섹션 직접 이미지
@@ -10366,6 +10373,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
                   img.r2Key = result.r2Key;
                   delete img.data;
                   migratedCount++;
+                  console.log("[DocImage] ✅ 이전 " + migratedCount + ": " + (img.name||"img") + " → " + result.r2Key.substring(0,50));
                 }
               } catch(e) { console.warn("[DocImage] 마이그레이션 스킵:", img.name, e.message); }
             }
@@ -10375,7 +10383,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         for (const sub of ["venueItems","designItems","programItems"]) {
           if (!Array.isArray(sec[sub])) continue;
           for (const item of sec[sub]) {
-            if (!Array.isArray(item.images)) continue;
+            if (!Array.isArray(item.images) || cancelled) continue;
             for (let i = 0; i < item.images.length; i++) {
               const img = item.images[i];
               if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) {
@@ -10387,6 +10395,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
                     img.r2Key = result.r2Key;
                     delete img.data;
                     migratedCount++;
+                    console.log("[DocImage] ✅ 이전 " + migratedCount + ": " + (img.name||"img") + " → " + result.r2Key.substring(0,50));
                   }
                 } catch(e) { console.warn("[DocImage] 마이그레이션 스킵:", img.name, e.message); }
               }
@@ -10394,14 +10403,16 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           }
         }
       }
-      if (migratedCount > 0) {
+      if (migratedCount > 0 && !cancelled) {
         setDocData({...data}); // 리렌더 트리거
-        console.log(`[DocImage] ✅ 마이그레이션 완료: ${migratedCount}개 이미지`);
-        toast(`이미지 ${migratedCount}개 최적화 완료`, "success");
+        console.log("[DocImage] ✅ 마이그레이션 완료: " + migratedCount + "개 이미지");
+        toast("이미지 " + migratedCount + "개 최적화 완료", "success");
       }
-    }, 5000);
-    return () => clearTimeout(timer);
-  }, [docData, docKey]);
+    };
+    // 5초 후 마이그레이션 시도 (UI 안정 후)
+    const timer = setTimeout(tryMigrate, 5000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [docKey]);
 
   const [versions, setVersions] = React.useState(() => {
     try { const v = localStorage.getItem(versionsKey); return v ? JSON.parse(v) : []; } catch { return []; }
