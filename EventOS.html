@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v27b5";
+  var CODE_VER = "20260312v27b6";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -11289,7 +11289,7 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
     ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
     ${vImgs.length ? `<div class="inline-imgs">
       <div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
-        ${vImgs.map(img=>`<img src="${img.data}" style="max-height:${vMaxH};${fitStyle}width:100%"/>`).join("")}
+        ${vImgs.map(img=>`<img src="${getImageSrc(img)}" style="max-height:${vMaxH};${fitStyle}width:100%"/>`).join("")}
       </div>
     </div>` : ""}
   </div>
