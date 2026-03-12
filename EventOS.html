@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v26";
+  var CODE_VER = "20260312v26b";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10352,23 +10352,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     if (DRIVE_CONFIG.ENABLED) {
       SyncManager.queueSync("saveDoc_" + storageKey, { key: storageKey, data });
     }
-    // 운영계획안 저장 시 → 결과보고서에도 로컬 반영
-    if (isPlan) {
-      const reportKey = storageKey.replace("_plan", "_report");
-      try {
-        let existingReport = null;
-        try { existingReport = await loadFromIDB(reportKey); } catch {}
-        if (!existingReport) {
-          try { const ls = localStorage.getItem(reportKey); if (ls) existingReport = JSON.parse(ls); } catch {}
-        }
-        const merged = mergePlanToResult(data, existingReport || {});
-        CloudDataStore.writeDoc(reportKey, merged).catch(()=>{}); // 비동기 — 대기 안 함
-        try { await saveToIDB(reportKey, merged); } catch {}
-        // ★ v26: localStorage 저장 제거 — IDB만 사용
-      } catch (e) {
-        console.warn("[DocEditor] plan→report 자동 동기화 실패:", e.message);
-      }
-    }
+    // ★ v26 롤백: plan→report 자동 동기화 제거
+    // 결과보고서는 사용자가 직접 "불러오기"를 눌러야만 운영계획안 데이터를 가져옴
   }, [storageKey, isPlan]);
 
   // 디바운스 저장 (대용량 문서는 2초, 소용량은 0.5초)
@@ -10392,14 +10377,17 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   const docDataLatestRef = React.useRef(docData);
   React.useEffect(() => { docDataLatestRef.current = docData; }, [docData]);
 
-  // 10초 주기 자동저장 (silent 모드 — UI 상태 변경 없이 백그라운드 저장, 입력 방해 없음)
+  // ★ v26 롤백: 5분 주기 자동저장 (안정성 우선 — 10초는 메모리 부하 과다)
   React.useEffect(() => {
     if (!docKey) return;
     periodicSaveRef.current = setInterval(() => {
-      if (!cloudDocLoadedRef.current) return; // 🛡️ 클라우드 로드 전 저장 차단
+      if (!cloudDocLoadedRef.current) return;
       const latestData = docDataLatestRef.current;
-      if (latestData && Object.keys(latestData).length > 0) { performSave(latestData, { silent: true }).catch(e => console.warn("[DocEditor] 주기적 저장 실패:", e.message)); }
-    }, 10 * 1000);
+      if (latestData && Object.keys(latestData).length > 0) {
+        performSave(latestData).catch(e => console.warn("[DocEditor] 주기적 저장 실패:", e.message));
+        toast("자동 저장 완료", "success");
+      }
+    }, 5 * 60 * 1000);
     return () => { if (periodicSaveRef.current) clearInterval(periodicSaveRef.current); };
   }, [docKey, performSave]);
 
@@ -10441,7 +10429,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           saveToIDB(storageKey, memData).catch(()=>{});
         }
       }).catch(()=>{});
-    }, 2 * 60 * 1000); // 2분 (너무 자주 체크하면 부담)
+    }, 3 * 60 * 1000); // ★ v26 롤백: 3분 (안정성 우선)
     return () => clearInterval(integrityCheck);
   }, [storageKey, performSave]);
 
@@ -12703,7 +12691,17 @@ ${secEnabled("timeline") ? (()=>{
         {/* 섹션 네비 */}
         <div style={{width:120,flexShrink:0,display:"flex",flexDirection:"column",gap:6}}>
           {SECTIONS.map(sec=>(
-            <button key={sec.id} onClick={()=>setActiveSection(sec.id)} style={{
+            <button key={sec.id} onClick={()=>{
+              // ★ v26: 섹션 전환 시 강제 저장 (베뉴→공간연출 등 이동 시 데이터 유실 방지)
+              if (activeSection !== sec.id) {
+                const data = docDataLatestRef.current;
+                if (data && Object.keys(data).length > 0 && cloudDocLoadedRef.current) {
+                  performSave(data).catch(e => console.warn("[DocEditor] 섹션 전환 저장 실패:", e.message));
+                  console.log("[DocEditor] 💾 섹션 전환 저장:", activeSection, "→", sec.id);
+                }
+              }
+              setActiveSection(sec.id);
+            }} style={{
               background: activeSection===sec.id ? (isPlan?"linear-gradient(135deg,#6366f1,#8b5cf6)":"linear-gradient(135deg,#10b981,#059669)") : "rgba(255,255,255,.04)",
               border: activeSection===sec.id ? "none" : "1px solid var(--border)",
               borderRadius:10,padding:"12px 10px",cursor:"pointer",textAlign:"left",
