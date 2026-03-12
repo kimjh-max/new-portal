@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v26c";
+  var CODE_VER = "20260312v27";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -892,6 +892,80 @@ const CloudSync = {
     }
   },
 };
+
+/* ── DocImage: 이미지 R2 분리 저장 유틸리티 (v27) ─────── */
+function getImageSrc(img) {
+  if (!img) return "";
+  if (img.r2Key) return CloudSync.getFileUrl(img.r2Key);
+  return img.data || "";
+}
+
+async function compressImage(file, maxWidth, quality) {
+  if (!maxWidth) maxWidth = 1920;
+  if (!quality) quality = 0.85;
+  return new Promise(function(resolve) {
+    var img = new Image();
+    img.onload = function() {
+      var w = img.width, h = img.height;
+      if (w > maxWidth) { h = Math.round(h * (maxWidth / w)); w = maxWidth; }
+      var canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      canvas.toBlob(function(blob) {
+        URL.revokeObjectURL(img.src);
+        if (blob) resolve(new File([blob], file.name, { type: "image/jpeg" }));
+        else resolve(file);
+      }, "image/jpeg", quality);
+    };
+    img.onerror = function() { URL.revokeObjectURL(img.src); resolve(file); };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+async function uploadDocImage(docKey, file) {
+  if (!CLOUD_CONFIG.ENABLED) return null;
+  try {
+    var compressed = await compressImage(file);
+    var ts = Date.now();
+    var safeName = (file.name || "img.jpg").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 60);
+    var r2Key = "docimg/" + docKey + "/" + ts + "_" + safeName;
+    var formData = new FormData();
+    formData.append("file", compressed, r2Key);
+    formData.append("fileName", r2Key);
+    formData.append("mimeType", compressed.type || "image/jpeg");
+    var res = await fetch(CloudSync._baseUrl() + "/api/files/upload", { method: "POST", body: formData });
+    var result = await res.json();
+    if (result && result.success) {
+      console.log("[DocImage] ✅ R2 업로드:", r2Key, Math.round(compressed.size/1024)+"KB");
+      return { r2Key: result.key || r2Key };
+    }
+  } catch (err) {
+    console.warn("[DocImage] R2 업로드 실패:", err.message);
+  }
+  return null;
+}
+
+async function fetchImageAsBase64(img) {
+  if (!img) return "";
+  if (img.data && typeof img.data === "string" && img.data.indexOf("data:") === 0) return img.data;
+  if (img.r2Key) {
+    try {
+      var url = CloudSync.getFileUrl(img.r2Key);
+      var res = await fetch(url);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      var blob = await res.blob();
+      return new Promise(function(resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function() { resolve(reader.result); };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch (err) {
+      console.warn("[DocImage] R2 fetch 실패:", img.r2Key, err.message);
+    }
+  }
+  return "";
+}
 
 /* ── CloudDataStore: 클라우드-퍼스트 데이터 저장소 (오프라인 큐 포함) ─────── */
 const CloudDataStore = {
@@ -5652,7 +5726,7 @@ function Topbar({page, setPage, user, onLogout, onExport, onImport, onShowBackup
       <div className="logo">
         <div className="logo-icon">E</div>
         <div className="logo-text">EventOS</div>
-        <span style={{fontSize:9,color:"rgba(255,255,255,.3)",marginLeft:-10,marginTop:2,fontFamily:"monospace"}}>v26c</span>
+        <span style={{fontSize:9,color:"rgba(255,255,255,.3)",marginLeft:-10,marginTop:2,fontFamily:"monospace"}}>v27</span>
       </div>
       <nav>
         {pages.map(p=>(
@@ -9389,25 +9463,49 @@ function makeDraggableRows(items, onReorder) {
 }
 
 /* ── Section Image Uploader ────────────────────────────────────────────────── */
-function SectionImages({sectionId, images, onUpdate, layoutMode, onLayoutChange}) {
+function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayoutChange}) {
   const fileRef = useRef(null);
   const [annotating, setAnnotating] = useState(null);
   const [annoText, setAnnoText] = useState("");
+  const [uploading, setUploading] = useState(false);
 
-  const handleUpload = (files) => {
-    Array.from(files).forEach(file => {
-      if (!file.type.startsWith("image/")) { toast("이미지 파일만 업로드 가능합니다","error"); return; }
-      if (file.size > 10*1024*1024) { toast("10MB 이하 이미지만 가능합니다","error"); return; }
-      const reader = new FileReader();
-      reader.onload = () => {
-        const newImg = { id: Date.now()+Math.random(), name: file.name, data: reader.result, annotations: [] };
-        onUpdate([...(images||[]), newImg]);
-      };
-      reader.readAsDataURL(file);
+  const handleUpload = async (files) => {
+    const fileArr = Array.from(files).filter(f => {
+      if (!f.type.startsWith("image/")) { toast("이미지 파일만 업로드 가능합니다","error"); return false; }
+      if (f.size > 10*1024*1024) { toast("10MB 이하 이미지만 가능합니다","error"); return false; }
+      return true;
     });
+    if (!fileArr.length) return;
+    setUploading(true);
+    for (const file of fileArr) {
+      const imgId = Date.now() + Math.random();
+      // ★ v27: R2 업로드 시도
+      if (CLOUD_CONFIG.ENABLED && docKey) {
+        const result = await uploadDocImage(docKey, file);
+        if (result && result.r2Key) {
+          const newImg = { id: imgId, name: file.name, r2Key: result.r2Key, annotations: [] };
+          onUpdate([...(images||[]), newImg]);
+          continue;
+        }
+      }
+      // Fallback: 압축 후 Base64
+      const compressed = await compressImage(file);
+      const base64 = await new Promise(resolve => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.readAsDataURL(compressed);
+      });
+      const newImg = { id: imgId, name: file.name, data: base64, annotations: [] };
+      onUpdate([...(images||[]), newImg]);
+    }
+    setUploading(false);
   };
 
   const removeImage = (idx) => {
+    const img = (images||[])[idx];
+    if (img && img.r2Key) {
+      CloudSync.deleteFile(img.r2Key).catch(err => console.warn("[SectionImages] R2 delete:", err));
+    }
     onUpdate((images||[]).filter((_,i)=>i!==idx));
   };
 
@@ -9449,7 +9547,7 @@ function SectionImages({sectionId, images, onUpdate, layoutMode, onLayoutChange}
           onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor="rgba(255,255,255,.08)";e.currentTarget.style.background="transparent";if(e.dataTransfer.files.length)handleUpload(e.dataTransfer.files);}}
           onClick={()=>fileRef.current?.click()}
           style={{textAlign:"center",color:"var(--txt4)",fontSize:12,padding:"24px 0",border:"2px dashed rgba(255,255,255,.08)",borderRadius:8,cursor:"pointer",transition:"all .2s"}}>
-          📷 이미지를 드래그하여 놓거나, 클릭하여 추가하세요
+          {uploading ? "⏳ 이미지 업로드 중..." : "📷 이미지를 드래그하여 놓거나, 클릭하여 추가하세요"}
         </div>
       )}
 
@@ -9473,7 +9571,7 @@ function SectionImages({sectionId, images, onUpdate, layoutMode, onLayoutChange}
               <div style={{display:"grid",gridTemplateColumns:`repeat(${layoutMode||Math.min((images||[]).length,3)},1fr)`,gap:8,background:"#fff",borderRadius:6,padding:12,minHeight:80}}>
                 {(images||[]).map((img,i)=>(
                   <div key={i} style={{aspectRatio:"16/10",background:"transparent",borderRadius:4,overflow:"hidden",border:"none",display:"flex",alignItems:"center",justifyContent:"center"}}>
-                    <img src={img.data} style={{width:"100%",height:"100%",objectFit:"contain"}} alt=""/>
+                    <img src={getImageSrc(img)} style={{width:"100%",height:"100%",objectFit:"contain"}} alt=""/>
                   </div>
                 ))}
               </div>
@@ -9491,7 +9589,7 @@ function SectionImages({sectionId, images, onUpdate, layoutMode, onLayoutChange}
         style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10,marginTop:8,borderRadius:8,transition:"all .2s"}}>
         {(images||[]).map((img,idx)=>(
           <div key={img.id||idx} style={{position:"relative",borderRadius:8,overflow:"hidden",border:"none",background:"transparent"}}>
-            <img src={img.data} alt={img.name} style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",display:"block"}}/>
+            <img src={getImageSrc(img)} alt={img.name} style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",display:"block"}}/>
             {(img.annotations||[]).length>0 && (
               <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,.7)",padding:"4px 6px"}}>
                 {(img.annotations||[]).map((a,ai)=>(
@@ -10211,6 +10309,98 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     return () => { cancelled = true; };
   }, [storageKey]);
 
+  // ★ v27: 기존 Base64 이미지 → R2 백그라운드 마이그레이션
+  const imgMigrationRanRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!cloudDocLoadedRef.current || imgMigrationRanRef.current) return;
+    if (!CLOUD_CONFIG.ENABLED || !docKey) return;
+    // 5초 후 마이그레이션 시작 (UI 안정 후)
+    const timer = setTimeout(async () => {
+      const hasInlineBase64 = (obj) => {
+        if (!obj || typeof obj !== "object") return false;
+        for (const k of Object.keys(obj)) {
+          if (k.startsWith("_")) continue;
+          const sec = obj[k];
+          if (!sec || typeof sec !== "object") continue;
+          if (Array.isArray(sec.images)) {
+            for (const img of sec.images) {
+              if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) return true;
+            }
+          }
+          for (const sub of ["venueItems","designItems","programItems"]) {
+            if (Array.isArray(sec[sub])) {
+              for (const item of sec[sub]) {
+                if (Array.isArray(item.images)) {
+                  for (const img of item.images) {
+                    if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) return true;
+                  }
+                }
+              }
+            }
+          }
+        }
+        return false;
+      };
+      if (!hasInlineBase64(docDataLatestRef.current)) return;
+      imgMigrationRanRef.current = true;
+      console.log("[DocImage] 🔄 Base64→R2 마이그레이션 시작...");
+      toast("이미지 최적화 중...", "info");
+      let migratedCount = 0;
+      const data = docDataLatestRef.current;
+      for (const secKey of Object.keys(data)) {
+        if (secKey.startsWith("_")) continue;
+        const sec = data[secKey];
+        if (!sec || typeof sec !== "object") continue;
+        // 섹션 직접 이미지
+        if (Array.isArray(sec.images)) {
+          for (let i = 0; i < sec.images.length; i++) {
+            const img = sec.images[i];
+            if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) {
+              try {
+                const blob = await (await fetch(img.data)).blob();
+                const file = new File([blob], img.name || "img.jpg", {type: blob.type || "image/jpeg"});
+                const result = await uploadDocImage(docKey, file);
+                if (result && result.r2Key) {
+                  img.r2Key = result.r2Key;
+                  delete img.data;
+                  migratedCount++;
+                }
+              } catch(e) { console.warn("[DocImage] 마이그레이션 스킵:", img.name, e.message); }
+            }
+          }
+        }
+        // 서브아이템 이미지
+        for (const sub of ["venueItems","designItems","programItems"]) {
+          if (!Array.isArray(sec[sub])) continue;
+          for (const item of sec[sub]) {
+            if (!Array.isArray(item.images)) continue;
+            for (let i = 0; i < item.images.length; i++) {
+              const img = item.images[i];
+              if (img.data && typeof img.data === "string" && img.data.length > 1000 && !img.r2Key) {
+                try {
+                  const blob = await (await fetch(img.data)).blob();
+                  const file = new File([blob], img.name || "img.jpg", {type: blob.type || "image/jpeg"});
+                  const result = await uploadDocImage(docKey, file);
+                  if (result && result.r2Key) {
+                    img.r2Key = result.r2Key;
+                    delete img.data;
+                    migratedCount++;
+                  }
+                } catch(e) { console.warn("[DocImage] 마이그레이션 스킵:", img.name, e.message); }
+              }
+            }
+          }
+        }
+      }
+      if (migratedCount > 0) {
+        setDocData({...data}); // 리렌더 트리거
+        console.log(`[DocImage] ✅ 마이그레이션 완료: ${migratedCount}개 이미지`);
+        toast(`이미지 ${migratedCount}개 최적화 완료`, "success");
+      }
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [docData, docKey]);
+
   const [versions, setVersions] = React.useState(() => {
     try { const v = localStorage.getItem(versionsKey); return v ? JSON.parse(v) : []; } catch { return []; }
   });
@@ -10294,6 +10484,36 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   }, [docKey]);
 
   // ── Smart Save (IndexedDB 기본 + localStorage 보조 + 클라우드 동기화) ──
+  // ★ v27: Cloud 전송 전 이미 R2에 업로드된 이미지의 Base64 데이터 제거
+  const stripBase64ForCloud = (data) => {
+    const strip = (images) => {
+      if (!Array.isArray(images)) return images;
+      return images.map(img => {
+        if (img.r2Key && img.data && typeof img.data === "string" && img.data.length > 1000) {
+          const {data: _, ...rest} = img;
+          return rest;
+        }
+        return img;
+      });
+    };
+    const result = {};
+    for (const [k, v] of Object.entries(data)) {
+      if (!v || typeof v !== "object" || Array.isArray(v)) { result[k] = v; continue; }
+      const sec = {...v};
+      if (sec.images) sec.images = strip(sec.images);
+      for (const sub of ["venueItems","designItems","programItems"]) {
+        if (Array.isArray(sec[sub])) {
+          sec[sub] = sec[sub].map(item => {
+            if (item.images) return {...item, images: strip(item.images)};
+            return item;
+          });
+        }
+      }
+      result[k] = sec;
+    }
+    return result;
+  };
+
   const performSave = React.useCallback(async (data, options = {}) => {
     // 🛡️ 저장 전 데이터 유효성 검증
     if (!data || typeof data !== "object" || Object.keys(data).length === 0) {
@@ -10318,7 +10538,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       if (CLOUD_CONFIG.ENABLED && cloudDirtyRef.current && !cloudSavingRef.current) {
         cloudDirtyRef.current = false;
         cloudSavingRef.current = true;
-        CloudDataStore.writeDoc(storageKey, data).then(r => {
+        CloudDataStore.writeDoc(storageKey, stripBase64ForCloud(data)).then(r => {
           cloudSavingRef.current = false;
           if (r.success) {
             setLastSavedAt(ts + " ☁️");
@@ -10353,7 +10573,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       cloudSavingRef.current = true;
       let cloudResult;
       try {
-        cloudResult = await CloudDataStore.writeDoc(storageKey, data);
+        cloudResult = await CloudDataStore.writeDoc(storageKey, stripBase64ForCloud(data));
       } finally {
         cloudSavingRef.current = false;
       }
@@ -10753,7 +10973,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         const actualCols = Math.min(pageImgs.length, cols);
         const rows = Math.ceil(pageImgs.length / actualCols);
         const mh = rows <= 1 ? '80vh' : rows <= 2 ? '38vh' : '24vh';
-        return `<div class="page img-page"><div class="img-grid" style="grid-template-columns:repeat(${actualCols},1fr)">${pageImgs.map(img => `<img src="${img.data}" style="max-height:${mh}"/>`).join("")}</div></div>`;
+        return `<div class="page img-page"><div class="img-grid" style="grid-template-columns:repeat(${actualCols},1fr)">${pageImgs.map(img => `<img src="${getImageSrc(img)}" style="max-height:${mh}"/>`).join("")}</div></div>`;
       }).join("");
     };
 
@@ -10955,7 +11175,7 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
     <div class="inline-imgs">
       <div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
-        ${vImgs.map(img=>`<img src="${img.data}" style="max-height:${vMaxH}"/>`).join("")}
+        ${vImgs.map(img=>`<img src="${getImageSrc(img)}" style="max-height:${vMaxH}"/>`).join("")}
       </div>
     </div>
   </div>
@@ -11039,7 +11259,7 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
     ${dItem.notes?`<div class="box"><div class="box-title">메모</div><div class="box-val">${dItem.notes}</div></div>`:""}
     ${dImgs.length ? `<div class="inline-imgs">
       <div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
-        ${dImgs.map(img=>`<img src="${img.data}" style="max-height:${dMaxH}"/>`).join("")}
+        ${dImgs.map(img=>`<img src="${getImageSrc(img)}" style="max-height:${dMaxH}"/>`).join("")}
       </div>
     </div>` : ""}
   </div>
@@ -11119,7 +11339,7 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
     ${pItem.notes?`<div class="box"><div class="box-title">운영 메모</div><div class="box-val">${pItem.notes}</div></div>`:""}
     ${pImgs.length ? `<div class="inline-imgs">
       <div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
-        ${pImgs.map(img=>`<img src="${img.data}" style="max-height:${pMaxH}"/>`).join("")}
+        ${pImgs.map(img=>`<img src="${getImageSrc(img)}" style="max-height:${pMaxH}"/>`).join("")}
       </div>
     </div>` : ""}
   </div>
@@ -11194,8 +11414,9 @@ ${secEnabled("timeline") ? (()=>{
     toast("PDF 출력 창이 열렸습니다.", "success");
   };
 
-  const exportPPTX = () => {
+  const exportPPTX = async () => {
     if (typeof PptxGenJS === "undefined") { toast("PPT 라이브러리 로딩 중... 잠시 후 다시 시도해주세요","warn"); return; }
+    toast("PPTX 생성 중... 이미지 로딩","info");
     const pptx = new PptxGenJS();
     pptx.defineLayout({name:"A4_LAND",width:13.33,height:7.5});
     pptx.layout = "A4_LAND";
@@ -11269,14 +11490,15 @@ ${secEnabled("timeline") ? (()=>{
     };
 
     /* 이미지 자동 분할 - 각 이미지를 1슬라이드에 가득 채움 */
-    const pmImages = (pm, secData) => {
+    const pmImages = async (pm, secData) => {
       const imgs = (secData?.images || []);
       if (!imgs.length) return;
-      imgs.forEach((img) => {
+      for (const img of imgs) {
         try {
-          // 새 슬라이드에 이미지를 가득 채움
+          const b64 = await fetchImageAsBase64(img);
+          if (!b64) continue;
           const imgSlide = pptx.addSlide();
-          imgSlide.addImage({data:img.data, x:0.3, y:0.3, w:12.73, h:6.4, sizing:{type:"contain",w:12.73,h:6.4}});
+          imgSlide.addImage({data:b64, x:0.3, y:0.3, w:12.73, h:6.4, sizing:{type:"contain",w:12.73,h:6.4}});
           if ((img.annotations||[]).length) {
             imgSlide.addText(img.annotations.map(a=>a.text).join(" · "), {x:0.5,y:7.0,w:12.33,h:0.35,fontSize:10,color:"64748B",align:"center"});
           }
@@ -11284,7 +11506,7 @@ ${secEnabled("timeline") ? (()=>{
             imgSlide.addText(img.name, {x:0.5,y:7.15,w:12.33,h:0.25,fontSize:8,color:"94A3B8",align:"center"});
           }
         } catch(e){ console.error("PPT image error:", e); }
-      });
+      }
     };
 
     /* 2열 필드 */
@@ -11328,7 +11550,7 @@ ${secEnabled("timeline") ? (()=>{
     if (_cv.contactPoint) cover.addText("Contact: "+_cv.contactPoint+" "+(_cv.contactPointPhone||""),{x:0,y:5.8,w:"100%",h:0.3,align:"center",fontSize:9,color:"64748B"});
 
     /* ── 01 Over View ── */
-    if (secEnabled("overview")) (() => {
+    if (secEnabled("overview")) await (async () => {
       const d = sd("overview");
       const pm = new PageMgr(secNum("overview"),"Over View","행사 개요 | EVENT OVERVIEW");
       pm2Col(pm,"행사명",d.eventName||p.name||"","주최사",d.organizer||p.client||"");
@@ -11337,11 +11559,11 @@ ${secEnabled("timeline") ? (()=>{
       pmField(pm,"행사 내용",d.content||p.taskOrder?.purpose,12.33,1.5);
       pm2ColBig(pm,"행사 성격",d.character,"지원 사항",d.support);
       pmField(pm,"기타사항",d.extraNotes,12.33,0.8);
-      pmImages(pm, d);
+      await pmImages(pm, d);
     })();
 
     /* ── 02 Venue ── */
-    if (secEnabled("venue")) (() => {
+    if (secEnabled("venue")) await (async () => {
       const d = sd("venue");
       const pm = new PageMgr(secNum("venue"),"Venue","장소 안내 | VENUE INFORMATION");
       pm2Col(pm,"장소명",d.venueName||p.taskOrder?.venue||"","수용 인원",d.capacity||p.taskOrder?.attendance||"");
@@ -11350,28 +11572,30 @@ ${secEnabled("timeline") ? (()=>{
       pmTable(pm,"장비/시설 목록",tblHdr(["#","장비명","규격","수량","비고"]),
         (d.equipList||[]).filter(e=>e.name).map((e,i)=>tblRow([i+1,e.name,e.spec,e.qty,e.note])),
         [0.5,4,3.5,1.33,3]);
-      pmImages(pm, d);
+      await pmImages(pm, d);
 
       // 베뉴 서브아이템 슬라이드
       const _viList = d.venueItems || [];
-      _viList.forEach((vItem, vIdx) => {
+      for (const vItem of _viList) {
+        const vIdx = _viList.indexOf(vItem);
         const itemLetter = String.fromCharCode(65 + vIdx);
         const itemPm = new PageMgr(secNum("venue")+"-"+itemLetter, vItem.itemName||"Venue Detail", "장소 상세 | VENUE DETAIL");
         if (vItem.description) pmField(itemPm, "설명", vItem.description, 12.33, 1.5);
-        const vImgs = vItem.images||[];
-        vImgs.forEach(img => {
+        for (const img of (vItem.images||[])) {
           itemPm.need(4.0);
           try {
-            itemPm.sl.addImage({data:img.data, x:1.5, y:itemPm.y, w:10, h:5.2, sizing:{type:"contain",w:10,h:5.2}});
+            const b64 = await fetchImageAsBase64(img);
+            if (!b64) continue;
+            itemPm.sl.addImage({data:b64, x:1.5, y:itemPm.y, w:10, h:5.2, sizing:{type:"contain",w:10,h:5.2}});
             if ((img.annotations||[]).length) itemPm.sl.addText(img.annotations.map(a=>a.text).join(" · "), {x:1.5,y:itemPm.y+5.2,w:10,h:0.3,fontSize:9,color:"64748B",align:"center"});
             itemPm.y += 5.6;
           } catch(e){}
-        });
-      });
+        }
+      }
     })();
 
     /* ── 03 Design ── */
-    if (secEnabled("design")) (() => {
+    if (secEnabled("design")) await (async () => {
       const d = sd("design");
       const _dsn = secNum("design");
       const pm = new PageMgr(_dsn,"Design","디자인 계획 | DESIGN PLAN");
@@ -11381,32 +11605,34 @@ ${secEnabled("timeline") ? (()=>{
       pm2ColBig(pm,"디지털/영상 계획",d.videoNotes,"인쇄물",d.printNotes);
       pmField(pm,"LED/스크린 계획",d.ledNotes,12.33,1.0);
       if (!isPlan) pmField(pm,"결과 메모",d.resultNotes,12.33,0.8);
-      pmImages(pm, d);
+      await pmImages(pm, d);
 
       /* ── 03-X 디자인 아이템 개별 슬라이드 ── */
       const _diList = d.designItems || [];
-      _diList.forEach((dItem, dIdx) => {
+      for (let dIdx = 0; dIdx < _diList.length; dIdx++) {
+        const dItem = _diList[dIdx];
         const itemLetter = String.fromCharCode(65 + dIdx);
         const itemPm = new PageMgr(`${_dsn}-${itemLetter}`, dItem.itemName||"Design Item", `${dItem.category||"디자인"} | DESIGN ITEM`);
         pm2Col(itemPm,"카테고리",dItem.category||"-","구분",dItem.division||"-");
         pm2Col(itemPm,"규격 / 사이즈",dItem.specs||"-","수량",String(dItem.qty||1));
         if (dItem.notes) pmField(itemPm,"메모",dItem.notes,12.33,0.8);
         // 포트폴리오 스타일 이미지 (크게)
-        const dImgs = dItem.images||[];
-        dImgs.forEach(img=>{
+        for (const img of (dItem.images||[])) {
           itemPm.need(4.0);
           try {
-            itemPm.sl.addImage({data:img.data,x:1.5,y:itemPm.y,w:10,h:5.2,rounding:true});
+            const b64 = await fetchImageAsBase64(img);
+            if (!b64) continue;
+            itemPm.sl.addImage({data:b64,x:1.5,y:itemPm.y,w:10,h:5.2,rounding:true});
             if ((img.annotations||[]).length)
               itemPm.sl.addText(img.annotations.map(a=>a.text).join(" · "),{x:1.5,y:itemPm.y+5.2,w:10,h:0.3,fontSize:9,color:"64748B",align:"center"});
             itemPm.y+=5.6;
           } catch(e){}
-        });
-      });
+        }
+      }
     })();
 
     /* ── 04 Program ── */
-    if (secEnabled("program")) (() => {
+    if (secEnabled("program")) await (async () => {
       const d = sd("program");
       const pm = new PageMgr(secNum("program"),"Program","진행 순서 | EVENT PROGRAM");
       pmTable(pm,"타임테이블 / 진행순서",tblHdr(["#","시간","소요","내용","비고"]),
@@ -11414,7 +11640,7 @@ ${secEnabled("timeline") ? (()=>{
         [0.5,2,1.2,5.63,3]);
       pmField(pm,"MC / 진행 메모",d.mcInfo,12.33,0.8);
       if (!isPlan) pmField(pm,"프로그램 결과 메모",d.resultNotes,12.33,0.8);
-      pmImages(pm, d);
+      await pmImages(pm, d);
 
       // ── 큐시트 슬라이드 ──
       const _csList = (d.cueSheet||[]).filter(c=>c.content||c.session);
@@ -11430,23 +11656,26 @@ ${secEnabled("timeline") ? (()=>{
       }
 
       // ── 프로그램 아이템 슬라이드 ──
-      (d.programItems||[]).forEach((pItem, pIdx) => {
+      for (const pItem of (d.programItems||[])) {
+        const pIdx = (d.programItems||[]).indexOf(pItem);
         const itemLetter = String.fromCharCode(65 + pIdx);
         const itemPm = new PageMgr(secNum("program")+"-"+itemLetter, pItem.itemName||"Program", (pItem.timeSlot||"")+" | PROGRAM DETAIL");
         if (pItem.notes) pmField(itemPm,"운영 메모",pItem.notes,12.33,1.0);
-        (pItem.images||[]).forEach(img=>{
+        for (const img of (pItem.images||[])) {
           itemPm.need(4.0);
           try {
-            itemPm.sl.addImage({data:img.data,x:1.5,y:itemPm.y,w:10,h:5.2,sizing:{type:"contain",w:10,h:5.2}});
+            const b64 = await fetchImageAsBase64(img);
+            if (!b64) continue;
+            itemPm.sl.addImage({data:b64,x:1.5,y:itemPm.y,w:10,h:5.2,sizing:{type:"contain",w:10,h:5.2}});
             if ((img.annotations||[]).length) itemPm.sl.addText(img.annotations.map(a=>a.text).join(" · "),{x:1.5,y:itemPm.y+5.2,w:10,h:0.3,fontSize:9,color:"64748B",align:"center"});
             itemPm.y+=5.6;
           } catch(e){}
-        });
-      });
+        }
+      }
     })();
 
     /* ── 05 Operation ── */
-    if (secEnabled("operation")) (() => {
+    if (secEnabled("operation")) await (async () => {
       const d = sd("operation");
       const pm = new PageMgr(secNum("operation"),"Operation","운영 계획 | OPERATION PLAN");
       if (d.showMC) pm2Col(pm,"MC 이름",d.mcName||"","MC 프로필",d.mcProfile||"");
@@ -11461,11 +11690,11 @@ ${secEnabled("timeline") ? (()=>{
         (d.prizeList||[]).filter(pr=>pr.grade||pr.item).map((pr,i)=>tblRow([i+1,pr.grade,pr.item,pr.qty,pr.note])),
         [0.5,2,4,1.5,4.33]);
       }
-      pmImages(pm, d);
+      await pmImages(pm, d);
     })();
 
     /* ── 06 Time Line ── */
-    if (secEnabled("timeline")) (() => {
+    if (secEnabled("timeline")) await (async () => {
       const d = sd("timeline");
       const pm = new PageMgr(secNum("timeline"),"Time Line","일정 계획 | PROJECT TIMELINE");
       const mlList = (d.milestones||[]).filter(m=>m.task);
@@ -11492,12 +11721,15 @@ ${secEnabled("timeline") ? (()=>{
         }
       }
       pmField(pm,"특이사항 메모",d.notes,12.33,0.8);
-      pmImages(pm, d);
+      await pmImages(pm, d);
     })();
 
-    pptx.writeFile({fileName:`${p.name||"EventOS"}_${docTitle}_${today}.pptx`})
-      .then(()=>toast("PPT 파일이 다운로드됩니다","success"))
-      .catch(()=>toast("PPT 생성 중 오류가 발생했습니다","error"));
+    try {
+      await pptx.writeFile({fileName:`${p.name||"EventOS"}_${docTitle}_${today}.pptx`});
+      toast("PPT 파일이 다운로드됩니다","success");
+    } catch(e) {
+      toast("PPT 생성 중 오류가 발생했습니다","error");
+    }
   };
 
   // ── 섹션별 편집 UI ──
@@ -11768,7 +12000,7 @@ ${secEnabled("timeline") ? (()=>{
                   </tbody>
                 </table>
               </div>
-              <SectionImages sectionId="venue" images={ve.images||[]} onUpdate={imgs=>updateDoc("venue","images",imgs)} layoutMode={sd("venue").imageLayout||0} onLayoutChange={v=>updateDoc("venue","imageLayout",v)}/>
+              <SectionImages sectionId="venue" docKey={docKey} images={ve.images||[]} onUpdate={imgs=>updateDoc("venue","images",imgs)} layoutMode={sd("venue").imageLayout||0} onLayoutChange={v=>updateDoc("venue","imageLayout",v)}/>
             </div>
           )}
 
@@ -11809,7 +12041,7 @@ ${secEnabled("timeline") ? (()=>{
               )}
               <div style={{marginTop:12}}>
                 <label className="form-label">이미지</label>
-                <SectionImages sectionId={`venueItem_${activeVenueItemObj._id}`} images={activeVenueItemObj.images||[]} onUpdate={imgs=>updateVenueItem(activeVenueItemObj._id,"images",imgs)} layoutMode={activeVenueItemObj.imageLayout||0} onLayoutChange={v=>updateVenueItem(activeVenueItemObj._id,"imageLayout",v)}/>
+                <SectionImages sectionId={`venueItem_${activeVenueItemObj._id}`} docKey={docKey} images={activeVenueItemObj.images||[]} onUpdate={imgs=>updateVenueItem(activeVenueItemObj._id,"images",imgs)} layoutMode={activeVenueItemObj.imageLayout||0} onLayoutChange={v=>updateVenueItem(activeVenueItemObj._id,"imageLayout",v)}/>
               </div>
             </div>
           )}
@@ -11986,7 +12218,7 @@ ${secEnabled("timeline") ? (()=>{
               </DocFG>
               <div style={{marginTop:12}}>
                 <label className="form-label">제작 이미지</label>
-                <SectionImages sectionId={`designItem_${activeItemObj._id}`} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)} layoutMode={activeItemObj.imageLayout||0} onLayoutChange={v=>updateDesignItem(activeItemObj._id,"imageLayout",v)}/>
+                <SectionImages sectionId={`designItem_${activeItemObj._id}`} docKey={docKey} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)} layoutMode={activeItemObj.imageLayout||0} onLayoutChange={v=>updateDesignItem(activeItemObj._id,"imageLayout",v)}/>
               </div>
             </div>
           )}
@@ -12244,7 +12476,7 @@ ${secEnabled("timeline") ? (()=>{
                 </DocFG>
                 <div style={{marginTop:12}}>
                   <label className="form-label">이미지</label>
-                  <SectionImages sectionId={`programItem_${activeProgramItemObj._id}`} images={activeProgramItemObj.images||[]} onUpdate={imgs=>updateProgramItem(activeProgramItemObj._id,"images",imgs)} layoutMode={activeProgramItemObj.imageLayout||0} onLayoutChange={v=>updateProgramItem(activeProgramItemObj._id,"imageLayout",v)}/>
+                  <SectionImages sectionId={`programItem_${activeProgramItemObj._id}`} docKey={docKey} images={activeProgramItemObj.images||[]} onUpdate={imgs=>updateProgramItem(activeProgramItemObj._id,"images",imgs)} layoutMode={activeProgramItemObj.imageLayout||0} onLayoutChange={v=>updateProgramItem(activeProgramItemObj._id,"imageLayout",v)}/>
                 </div>
               </div>
             )}
@@ -12766,7 +12998,7 @@ ${secEnabled("timeline") ? (()=>{
             </div>
             {renderSection()}
             {(activeSection !== "design" || !activeDesignItem) && (
-              <SectionImages sectionId={activeSection} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)} layoutMode={sd(activeSection).imageLayout||0} onLayoutChange={v=>updateDoc(activeSection,"imageLayout",v)}/>
+              <SectionImages sectionId={activeSection} docKey={docKey} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)} layoutMode={sd(activeSection).imageLayout||0} onLayoutChange={v=>updateDoc(activeSection,"imageLayout",v)}/>
             )}
           </div>
         </div>
