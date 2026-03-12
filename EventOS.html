@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260312v27b6";
+  var CODE_VER = "20260312v27b7";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -11517,6 +11517,8 @@ ${secEnabled("timeline") ? (()=>{
     const _bg = getCoverBg(_cv);
     const _kcHex = _kc.replace("#","").toUpperCase();
     const docTitle = isPlan ? "운영계획안" : "결과보고서";
+    const secEnabled = (id) => enabledIds.includes(id);
+    const secNum = (id) => { const idx = SECTIONS.findIndex(s=>s.id===id); return idx >= 0 ? SECTIONS[idx].num : "00"; };
     const footerTxt = `${p.name||""} ${docTitle} · (주)에픽스테이지`;
     const HDR_H = 1.0;
     const BODY_TOP = 1.2;
