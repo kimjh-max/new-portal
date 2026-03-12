@@ -10212,22 +10212,24 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           clearTimeout(cloudTimeout);
           if (cancelled) return;
           if (cloudTimedOut) {
-            // ★ v27a: 타임아웃 후에도 클라우드 데이터가 더 크면 적용 (데이터 손실 방지)
-            if (cloudData && typeof cloudData === "object") {
+            // ★ v27a: 타임아웃 후 클라우드 데이터 도착
+            if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length > 2) {
+              // 클라우드 데이터가 유효함 → 마이그레이션 허용 플래그 설정
+              cloudLoadSuccessRef.current = true;
               try {
                 const cloudSize = JSON.stringify(cloudData).length;
                 const localSize = JSON.stringify(docDataLatestRef.current || {}).length;
                 if (cloudSize > localSize * 1.5) {
-                  // 클라우드가 50% 이상 크면 → 클라우드 데이터 적용 (로컬이 불완전할 가능성)
+                  // 클라우드가 훨씬 크면 → 로컬 데이터 덮어쓰기 (데이터 손실 복구)
                   setDocData(cloudData);
                   saveToIDB(storageKey, cloudData).catch(()=>{});
-                  cloudLoadSuccessRef.current = true;
-                  console.log("[DocEditor] ⏰ 클라우드 데이터 (타임아웃 후) 적용 — 더 완전한 데이터:", Math.round(cloudSize/1024) + "KB > " + Math.round(localSize/1024) + "KB");
+                  console.log("[DocEditor] ⏰ 클라우드 데이터 적용 (타임아웃 후, 더 큰 데이터):", Math.round(cloudSize/1024) + "KB > " + Math.round(localSize/1024) + "KB");
                 } else {
-                  console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 무시 (로컬 데이터 유효)");
+                  // 비슷한 크기 → setDocData 안 함 (사용자 편집 보호), 마이그레이션만 허용
+                  console.log("[DocEditor] ⏰ 클라우드 확인 완료 (타임아웃 후) — 마이그레이션 허용");
                 }
               } catch(e) {
-                console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 무시 (비교 실패)");
+                console.log("[DocEditor] ⏰ 클라우드 도착 (타임아웃 후) — 마이그레이션 허용 (비교 생략)");
               }
             } else {
               console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 빈 데이터 무시");
