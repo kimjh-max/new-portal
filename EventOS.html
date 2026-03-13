@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260313v27d3";
+  var CODE_VER = "20260313v27d4";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -11304,11 +11304,11 @@ tr:nth-child(even) td{background:#f8fafc}
 /* 인라인 이미지 (텍스트와 같은 페이지) */
 .inline-imgs{margin-top:16px}
 .inline-imgs .img-grid{display:grid;gap:12px;align-items:center}
-.inline-imgs img{width:100%;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block}
+.inline-imgs img{width:100%;height:auto;object-fit:contain;display:block}
 /* 독립 이미지 페이지 (섹션 레벨) */
 .img-page{padding:30px 40px;box-sizing:border-box;overflow:hidden}
 .img-page .img-grid{display:grid;gap:12px;align-items:center;align-content:center}
-.img-page img{width:100%;height:auto;object-fit:contain;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);display:block}
+.img-page img{width:100%;height:auto;object-fit:contain;display:block}
 @media print{
   @page{margin:0;size:297mm 210mm landscape}
   .page{width:297mm;height:210mm;margin:0;page-break-after:always;overflow:hidden;box-sizing:border-box}
