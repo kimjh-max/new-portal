@@ -10669,10 +10669,15 @@ function mergePlanToResult(planData, existingResult) {
 
 // ★ v27f: 스마트 병합 — 기존 결과보고서 데이터 유지 + 운영계획안 새 내용만 추가
 function smartMergePlanToResult(planData, existingResult) {
+  // ★ v27f: 방어적 null 체크
+  if (!planData || typeof planData !== "object") {
+    console.error("[SmartMerge] planData가 유효하지 않음:", typeof planData);
+    throw new Error("운영계획안 데이터가 비어있거나 유효하지 않습니다");
+  }
   // 계획안을 구조적 기반으로 사용 (새 아이템/필드 포함)
   const merged = JSON.parse(JSON.stringify(planData));
   merged._keyColor = "#10b981";
-  if (!existingResult || typeof existingResult !== "object" || Object.keys(existingResult).length === 0) return merged;
+  if (!existingResult || typeof existingResult !== "object" || Object.keys(existingResult).filter(k=>!k.startsWith("_")).length === 0) return merged;
 
   // 메타 필드 보존
   for (const key of Object.keys(existingResult)) {
@@ -13956,24 +13961,26 @@ ${secEnabled("timeline") ? (()=>{
                   </div>
                   <div style={{display:"flex",gap:6}}>
                     <button onClick={()=>{
+                      if(!ver.data || typeof ver.data !== "object" || !Object.keys(ver.data).length) { toast("⚠️ 이 버전의 데이터가 비어있습니다","error"); return; }
                       if(!confirm(`"${ver.name}" 운영계획안을 불러옵니다.\n\n✅ 기존 결과보고서에 작성한 내용(메모, 이미지 등)은 유지하고,\n운영계획안에서 새로 추가/변경된 내용만 병합합니다.`)) return;
                       try {
                         const merged = smartMergePlanToResult(ver.data, docData);
                         setDocData(merged);
                         setShowPlanVersions(false);
                         toast(`📋 "${ver.name}" — 기존 데이터 유지 + 새 내용 병합 완료`,"success");
-                      } catch(e) { toast("불러오기 실패: "+e.message,"error"); }
+                      } catch(e) { console.error("[SmartMerge] error:", e); toast("불러오기 실패: "+e.message,"error"); }
                     }} style={{background:"rgba(16,185,129,.1)",border:"1px solid rgba(16,185,129,.3)",color:"#6ee7b7",borderRadius:6,padding:"6px 10px",fontSize:10,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
                       ✅ 기존유지
                     </button>
                     <button onClick={()=>{
+                      if(!ver.data || typeof ver.data !== "object" || !Object.keys(ver.data).length) { toast("⚠️ 이 버전의 데이터가 비어있습니다","error"); return; }
                       if(!confirm(`"${ver.name}" 운영계획안을 불러옵니다.\n\n⚠️ 기존 결과보고서 내용이 모두 교체됩니다.\n처음부터 다시 작성하려는 경우 선택하세요.`)) return;
                       try {
                         const merged = mergePlanToResult(ver.data, {});
                         setDocData(merged);
                         setShowPlanVersions(false);
                         toast(`📋 "${ver.name}" 운영계획안을 새로 불러왔습니다`,"success");
-                      } catch(e) { toast("불러오기 실패: "+e.message,"error"); }
+                      } catch(e) { console.error("[MergePlan] error:", e); toast("불러오기 실패: "+e.message,"error"); }
                     }} style={{background:"rgba(245,158,11,.08)",border:"1px solid rgba(245,158,11,.25)",color:"#fbbf24",borderRadius:6,padding:"6px 10px",fontSize:10,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
                       🔄 전체교체
                     </button>
