@@ -11830,68 +11830,64 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     };
 
     // ★ v27g: contentBlock 높이 추정 (PDF 페이지 오버플로우 방지)
-    const estimateBlockHeight = (b) => {
-      if (!b) return 0;
-      if (b.type === "table") {
-        const headerH = (b.headers||[]).length ? 30 : 0;
-        const rowsH = (b.rows||[]).length * 25;
-        const titleH = b.title ? 20 : 0;
-        return titleH + headerH + rowsH + 16;
-      }
-      if (b.type === "chart") {
-        return (b.title ? 20 : 0) + 300 + 16;
-      }
-      if (b.type === "aiSummary") {
-        let h = 0;
-        if (b.summary) {
-          const lines = b.summary.split(/\n/).length;
-          const charLines = Math.ceil(b.summary.length / 80);
-          h += Math.max(lines, charLines) * 20 + 16;
-        }
-        (b.tables||[]).forEach(t => {
-          h += (t.title ? 20 : 0) + ((t.headers||[]).length ? 30 : 0) + (t.rows||[]).length * 25 + 16;
-        });
-        (b.charts||[]).forEach(() => { h += 320; });
-        return h;
-      }
-      return 0;
+    const estTableH = (t) => {
+      const headerH = (t.headers||[]).length ? 36 : 0;
+      const rowsH = (t.rows||[]).length * 32;
+      const titleH = t.title ? 24 : 0;
+      return titleH + headerH + rowsH + 20;
+    };
+    const estChartH = (c) => (c && c.title ? 24 : 0) + 340 + 20;
+    const estTextH = (text) => {
+      if (!text) return 0;
+      const lines = text.split(/\n/).length;
+      const charLines = Math.ceil(text.length / 70);
+      return Math.max(lines, charLines) * 22 + 20;
     };
 
-    // ★ v27g: contentBlocks를 여러 페이지로 분할 (PAGE_BODY_MAX_H 기준)
-    const PAGE_BODY_MAX_H = 540;
-    const contentBlocksPagesHtml = (blocks, makeHeaderHtml, footerHtml) => {
-      if (!(blocks||[]).length) return "";
-      const pages = [];
-      let curBlocks = [];
-      let curH = 0;
+    // ★ v27g: aiSummary를 서브 요소로 분해 → 개별 페이지네이션 가능
+    const flattenBlocks = (blocks) => {
+      const items = [];
       (blocks||[]).forEach(b => {
-        const bh = estimateBlockHeight(b);
-        if (curBlocks.length > 0 && curH + bh > PAGE_BODY_MAX_H) {
-          pages.push(curBlocks);
-          curBlocks = [b];
-          curH = bh;
-        } else {
-          curBlocks.push(b);
-          curH += bh;
+        if (b.type === "table") {
+          items.push({ h: estTableH(b), html: tableBlockHtml(b) });
+        } else if (b.type === "chart") {
+          items.push({ h: estChartH(b), html: chartBlockHtml(b) });
+        } else if (b.type === "aiSummary") {
+          // aiSummary → 텍스트/표/차트를 개별 요소로 분해
+          if (b.summary) {
+            items.push({ h: estTextH(b.summary), html: `<div style="margin:8px 0;font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div>` });
+          }
+          (b.tables||[]).forEach(t => { items.push({ h: estTableH(t), html: tableBlockHtml(t) }); });
+          (b.charts||[]).forEach(c => { items.push({ h: estChartH(c), html: chartBlockHtml(c) }); });
         }
       });
-      if (curBlocks.length > 0) pages.push(curBlocks);
-      return pages.map((pageBlocks, pi) => {
-        const blocksStr = pageBlocks.map(b => {
-          if (b.type === "table") return tableBlockHtml(b);
-          if (b.type === "chart") return chartBlockHtml(b);
-          if (b.type === "aiSummary") {
-            let h = "";
-            if (b.summary) h += `<div style="margin:8px 0;font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div>`;
-            (b.tables||[]).forEach(t => { h += tableBlockHtml(t); });
-            (b.charts||[]).forEach(c => { h += chartBlockHtml(c); });
-            return h;
-          }
-          return "";
-        }).join("");
+      return items;
+    };
+
+    // ★ v27g: 분해된 요소를 여러 페이지로 분할
+    const PAGE_BODY_MAX_H = 520;
+    const contentBlocksPagesHtml = (blocks, makeHeaderHtml, footerHtml) => {
+      const items = flattenBlocks(blocks);
+      if (!items.length) return "";
+      const pages = [];
+      let curItems = [];
+      let curH = 0;
+      items.forEach(item => {
+        if (curItems.length > 0 && curH + item.h > PAGE_BODY_MAX_H) {
+          pages.push(curItems);
+          curItems = [item];
+          curH = item.h;
+        } else {
+          curItems.push(item);
+          curH += item.h;
+        }
+      });
+      if (curItems.length > 0) pages.push(curItems);
+      return pages.map((pageItems, pi) => {
+        const html = pageItems.map(it => it.html).join("");
         return `<div class="page sec-page">
   ${makeHeaderHtml(pi > 0)}
-  <div class="sec-body">${blocksStr}</div>
+  <div class="sec-body">${html}</div>
   ${footerHtml}
 </div>`;
       }).join("");
