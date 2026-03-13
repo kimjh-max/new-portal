@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260313v27d2";
+  var CODE_VER = "20260313v27d3";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -9477,6 +9477,9 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
   const [annotating, setAnnotating] = useState(null);
   const [annoText, setAnnoText] = useState("");
   const [uploading, setUploading] = useState(false);
+  // ★ v27d3: 드래그 순서 변경
+  const [dragIdx, setDragIdx] = useState(null);
+  const [dragOverIdx, setDragOverIdx] = useState(null);
 
   const handleUpload = async (files) => {
     const fileArr = Array.from(files).filter(f => {
@@ -9485,28 +9488,31 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
       return true;
     });
     if (!fileArr.length) return;
+    // ★ v27d3: 최대 10개 제한 + 다중 업로드 수정
+    const maxNew = 10 - (images||[]).length;
+    if (maxNew <= 0) { toast("이미지는 최대 10개까지 등록 가능합니다","warn"); return; }
+    const limited = fileArr.slice(0, maxNew);
+    if (limited.length < fileArr.length) toast("최대 10개 제한으로 " + limited.length + "개만 업로드합니다","warn");
     setUploading(true);
-    for (const file of fileArr) {
+    const newImages = [];
+    for (const file of limited) {
       const imgId = Date.now() + Math.random();
-      // ★ v27: R2 업로드 시도
       if (CLOUD_CONFIG.ENABLED && docKey) {
         const result = await uploadDocImage(docKey, file);
         if (result && result.r2Key) {
-          const newImg = { id: imgId, name: file.name, r2Key: result.r2Key, annotations: [] };
-          onUpdate([...(images||[]), newImg]);
+          newImages.push({ id: imgId, name: file.name, r2Key: result.r2Key, annotations: [] });
           continue;
         }
       }
-      // Fallback: 압축 후 Base64
       const compressed = await compressImage(file);
       const base64 = await new Promise(resolve => {
         const reader = new FileReader();
         reader.onload = () => resolve(reader.result);
         reader.readAsDataURL(compressed);
       });
-      const newImg = { id: imgId, name: file.name, data: base64, annotations: [] };
-      onUpdate([...(images||[]), newImg]);
+      newImages.push({ id: imgId, name: file.name, data: base64, annotations: [] });
     }
+    if (newImages.length > 0) onUpdate([...(images||[]), ...newImages]);
     setUploading(false);
   };
 
@@ -9556,7 +9562,7 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
           onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor="rgba(255,255,255,.08)";e.currentTarget.style.background="transparent";if(e.dataTransfer.files.length)handleUpload(e.dataTransfer.files);}}
           onClick={()=>fileRef.current?.click()}
           style={{textAlign:"center",color:"var(--txt4)",fontSize:12,padding:"24px 0",border:"2px dashed rgba(255,255,255,.08)",borderRadius:8,cursor:"pointer",transition:"all .2s"}}>
-          {uploading ? "⏳ 이미지 업로드 중..." : "📷 이미지를 드래그하여 놓거나, 클릭하여 추가하세요"}
+          {uploading ? "⏳ 이미지 업로드 중..." : "📷 이미지를 드래그하여 놓거나, 클릭하여 추가하세요 (최대 10개)"}
         </div>
       )}
 
@@ -9590,15 +9596,23 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
             </div>
           )}
 
-      {/* 이미지 있을 때도 드래그앤드롭 가능 */}
+      {/* ★ v27d3: 이미지 그리드 — 외부 파일 드롭 + 내부 드래그 순서 변경 */}
       <div
-        onDragOver={e=>{e.preventDefault();e.currentTarget.style.outline="2px dashed #818cf8";}}
+        onDragOver={e=>{e.preventDefault();if(dragIdx===null)e.currentTarget.style.outline="2px dashed #818cf8";}}
         onDragLeave={e=>{e.currentTarget.style.outline="none";}}
-        onDrop={e=>{e.preventDefault();e.currentTarget.style.outline="none";if(e.dataTransfer.files.length)handleUpload(e.dataTransfer.files);}}
+        onDrop={e=>{e.preventDefault();e.currentTarget.style.outline="none";if(e.dataTransfer.files.length&&dragIdx===null)handleUpload(e.dataTransfer.files);}}
         style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10,marginTop:8,borderRadius:8,transition:"all .2s"}}>
         {(images||[]).map((img,idx)=>(
-          <div key={img.id||idx} style={{position:"relative",borderRadius:8,overflow:"hidden",border:"none",background:"transparent"}}>
-            <img src={getImageSrc(img)} alt={img.name} style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",display:"block"}}/>
+          <div key={img.id||idx}
+            draggable onDragStart={e=>{setDragIdx(idx);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",String(idx));}}
+            onDragOver={e=>{e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect="move";setDragOverIdx(idx);}}
+            onDragLeave={()=>setDragOverIdx(null)}
+            onDrop={e=>{e.preventDefault();e.stopPropagation();if(dragIdx!==null&&dragIdx!==idx){const arr=[...(images||[])];const[moved]=arr.splice(dragIdx,1);arr.splice(idx,0,moved);onUpdate(arr);}setDragIdx(null);setDragOverIdx(null);}}
+            onDragEnd={()=>{setDragIdx(null);setDragOverIdx(null);}}
+            style={{position:"relative",borderRadius:8,overflow:"hidden",border:"none",background:"transparent",
+              opacity:dragIdx===idx?0.4:1,outline:dragOverIdx===idx?"2px solid #818cf8":"none",cursor:"grab",transition:"opacity .2s, outline .15s"}}>
+            <div style={{position:"absolute",top:4,left:4,background:"rgba(0,0,0,.5)",color:"#fff",borderRadius:4,padding:"1px 6px",fontSize:9,fontWeight:700,zIndex:1,pointerEvents:"none"}}>{idx+1}</div>
+            <img src={getImageSrc(img)} alt={img.name} style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",display:"block",pointerEvents:"none"}}/>
             {(img.annotations||[]).length>0 && (
               <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,.7)",padding:"4px 6px"}}>
                 {(img.annotations||[]).map((a,ai)=>(
