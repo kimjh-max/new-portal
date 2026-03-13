@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260313v27d";
+  var CODE_VER = "20260313v27d2";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -11137,8 +11137,10 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   };
 
   // PDF 출력
-  const printPDF = () => {
-    const W = window.open("","_blank","width=1200,height=900");
+  const printPDF = async () => {
+    // ★ v27d: R2 이미지를 base64로 사전 로딩하여 PDF 이미지 누락 완전 방지
+    toast("PDF 준비 중... 이미지를 로딩하고 있습니다.", "info");
+
     const p = proj || {};
     const _cv = docData._cover || {};
     const _kc = docData._keyColor || "#6366f1";
@@ -11149,6 +11151,39 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     const pr = sd("program");
     const op = sd("operation");
     const tl = sd("timeline");
+
+    // ── 모든 섹션의 이미지 수집 ──
+    const allImages = [];
+    const collectImgs = (sec) => { if (sec && sec.images) allImages.push(...sec.images); };
+    [ov, ve, de, pr, op, tl].forEach(collectImgs);
+    (ve.venueItems||[]).forEach(item => { if (item.images) allImages.push(...item.images); });
+    (de.designItems||[]).forEach(item => { if (item.images) allImages.push(...item.images); });
+    (pr.programItems||[]).forEach(item => { if (item.images) allImages.push(...item.images); });
+
+    // ── R2 이미지 → base64 사전 변환 (5개씩 병렬) ──
+    const imgMap = {};
+    const r2Images = allImages.filter(img => img && img.r2Key);
+    if (r2Images.length > 0) {
+      console.log("[PDF] 🖼️ " + r2Images.length + "개 R2 이미지 사전 로딩 시작...");
+      const BATCH = 5;
+      for (let i = 0; i < r2Images.length; i += BATCH) {
+        const batch = r2Images.slice(i, i + BATCH);
+        const results = await Promise.allSettled(batch.map(img => fetchImageAsBase64(img)));
+        batch.forEach((img, idx) => {
+          const r = results[idx];
+          if (r.status === "fulfilled" && r.value) imgMap[img.r2Key] = r.value;
+        });
+        console.log("[PDF] 🖼️ 이미지 로딩 " + Math.min(i + BATCH, r2Images.length) + "/" + r2Images.length);
+      }
+      console.log("[PDF] ✅ 이미지 사전 로딩 완료:", Object.keys(imgMap).length + "/" + r2Images.length);
+    }
+
+    // ── base64 매핑된 이미지 소스 (PDF 전용) ──
+    const pdfImgSrc = (img) => {
+      if (!img) return "";
+      if (img.r2Key && imgMap[img.r2Key]) return imgMap[img.r2Key];
+      return getImageSrc(img);
+    };
 
     const secEnabled = (id) => enabledIds.includes(id);
     const secNum = (id) => {
@@ -11169,7 +11204,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         const actualCols = Math.min(pageImgs.length, cols);
         const rows = Math.ceil(pageImgs.length / actualCols);
         const mh = rows <= 1 ? '80vh' : rows <= 2 ? '38vh' : '24vh';
-        return `<div class="page img-page"><div class="img-grid" style="grid-template-columns:repeat(${actualCols},1fr)">${pageImgs.map(img => `<img src="${getImageSrc(img)}" style="max-height:${mh}"/>`).join("")}</div></div>`;
+        return `<div class="page img-page"><div class="img-grid" style="grid-template-columns:repeat(${actualCols},1fr)">${pageImgs.map(img => `<img src="${pdfImgSrc(img)}" style="max-height:${mh}"/>`).join("")}</div></div>`;
       }).join("");
     };
 
@@ -11371,7 +11406,7 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
     <div class="inline-imgs">
       <div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
-        ${vImgs.map(img=>`<img src="${getImageSrc(img)}" style="max-height:${vMaxH}"/>`).join("")}
+        ${vImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${vMaxH}"/>`).join("")}
       </div>
     </div>
   </div>
@@ -11394,7 +11429,7 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
     ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
     ${vImgs.length ? `<div class="inline-imgs">
       <div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
-        ${vImgs.map(img=>`<img src="${getImageSrc(img)}" style="max-height:${vMaxH};${fitStyle}width:100%"/>`).join("")}
+        ${vImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${vMaxH};${fitStyle}width:100%"/>`).join("")}
       </div>
     </div>` : ""}
   </div>
@@ -11455,7 +11490,7 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
     ${dItem.notes?`<div class="box"><div class="box-title">메모</div><div class="box-val">${dItem.notes}</div></div>`:""}
     ${dImgs.length ? `<div class="inline-imgs">
       <div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
-        ${dImgs.map(img=>`<img src="${getImageSrc(img)}" style="max-height:${dMaxH}"/>`).join("")}
+        ${dImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${dMaxH}"/>`).join("")}
       </div>
     </div>` : ""}
   </div>
@@ -11535,7 +11570,7 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
     ${pItem.notes?`<div class="box"><div class="box-title">운영 메모</div><div class="box-val">${pItem.notes}</div></div>`:""}
     ${pImgs.length ? `<div class="inline-imgs">
       <div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
-        ${pImgs.map(img=>`<img src="${getImageSrc(img)}" style="max-height:${pMaxH}"/>`).join("")}
+        ${pImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pMaxH}"/>`).join("")}
       </div>
     </div>` : ""}
   </div>
@@ -11606,19 +11641,31 @@ ${secEnabled("timeline") ? (()=>{
 </body></html>`;
     W.document.write(html);
     W.document.close();
-    // ★ v27c: R2 이미지 로딩 완료 대기 후 print (이미지 누락 방지)
+    // ★ v27d: base64 사전 로딩 완료 — 간단한 렌더링 대기 후 print
     setTimeout(async()=>{
       try {
-        const imgs = W.document.querySelectorAll('img');
-        const r2Imgs = [...imgs].filter(i => !i.complete);
-        if (r2Imgs.length > 0) {
-          console.log("[PDF] ⏳ " + r2Imgs.length + "개 이미지 로딩 대기...");
-          await Promise.all(r2Imgs.map(i => new Promise(r => { i.onload = r; i.onerror = r; setTimeout(r, 8000); })));
-          console.log("[PDF] ✅ 이미지 로딩 완료");
+        const imgs = [...W.document.querySelectorAll('img')];
+        // base64 이미지도 브라우저 디코딩 시간 필요 — 완료 대기
+        if (imgs.length > 0) {
+          console.log("[PDF] ⏳ " + imgs.length + "개 이미지 렌더링 대기...");
+          const maxWait = 30000; // 30초 안전 타임아웃
+          const start = Date.now();
+          while (Date.now() - start < maxWait) {
+            const unloaded = imgs.filter(i => !i.complete || i.naturalWidth === 0);
+            if (unloaded.length === 0) break;
+            console.log("[PDF] ⏳ 렌더링 중... " + (imgs.length - unloaded.length) + "/" + imgs.length);
+            await new Promise(r => setTimeout(r, 500));
+          }
+          const finalUnloaded = imgs.filter(i => !i.complete || i.naturalWidth === 0);
+          if (finalUnloaded.length > 0) {
+            console.warn("[PDF] ⚠️ " + finalUnloaded.length + "개 이미지 렌더링 타임아웃");
+          } else {
+            console.log("[PDF] ✅ 모든 이미지 렌더링 완료");
+          }
         }
       } catch(e) { console.warn("[PDF] 이미지 대기 실패:", e.message); }
       W.print();
-    }, 600);
+    }, 1000);
     toast("PDF 출력 창이 열렸습니다.", "success");
   };
 
