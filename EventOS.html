@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260313v27d4";
+  var CODE_VER = "20260313v27e";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -37,6 +37,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.3/babel.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -824,6 +827,28 @@ const CloudSync = {
       return await res.json();
     } catch (err) {
       console.error("[CloudSync] generateOverview:", err);
+      return { success: false, error: err.message || "네트워크 오류" };
+    }
+  },
+
+  // ── v27e: AI 파일 요약 → 콘텐츠 블록 생성 ──
+  async summarizeFile(mode, options = {}) {
+    if (!CLOUD_CONFIG.ENABLED) return { success: false, error: "클라우드 미연결" };
+    try {
+      const res = await fetch(`${this._baseUrl()}/api/ai/summarize-file`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode,
+          fileKey: options.fileKey || undefined,
+          textContent: options.textContent || undefined,
+          fileName: options.fileName || undefined,
+          context: options.context || undefined,
+        }),
+      });
+      return await res.json();
+    } catch (err) {
+      console.error("[CloudSync] summarizeFile:", err);
       return { success: false, error: err.message || "네트워크 오류" };
     }
   },
@@ -9649,6 +9674,422 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
   );
 }
 
+/* ══ v27e: 콘텐츠 블록 시스템 (표, 그래프, AI 파일 요약) ════════════════════════ */
+const CHART_COLORS = ['#6366f1','#ec4899','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316'];
+
+function buildChartConfig(block) {
+  return {
+    type: block.chartType || 'bar',
+    data: {
+      labels: block.labels || [],
+      datasets: (block.datasets || []).map((ds, i) => ({
+        label: ds.label || '',
+        data: (ds.data || []).map(Number),
+        backgroundColor: block.chartType === 'pie'
+          ? CHART_COLORS.slice(0, (block.labels||[]).length)
+          : (ds.color || CHART_COLORS[i % CHART_COLORS.length]),
+        borderColor: block.chartType === 'line'
+          ? (ds.color || CHART_COLORS[i % CHART_COLORS.length]) : undefined,
+        borderWidth: block.chartType === 'line' ? 2 : 1,
+        tension: 0.3,
+      })),
+    },
+    options: {
+      responsive: false,
+      animation: false,
+      plugins: { legend: { display: true, labels: { color: '#94a3b8', font: { size: 11 } } } },
+      scales: block.chartType === 'pie' ? {} : {
+        x: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,.06)' } },
+        y: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,.06)' } },
+      },
+    },
+  };
+}
+
+/* ── 편집 가능한 표 ── */
+function EditableTable({ block, onChange, onDelete }) {
+  const headers = block.headers || ["항목", "내용"];
+  const rows = block.rows || [["", ""]];
+  const upH = (idx, val) => { const h = [...headers]; h[idx] = val; onChange({ headers: h }); };
+  const upC = (ri, ci, val) => { const r = rows.map(r=>[...r]); r[ri][ci] = val; onChange({ rows: r }); };
+  const addRow = () => onChange({ rows: [...rows, headers.map(()=>"")] });
+  const delRow = (ri) => { if (rows.length <= 1) return; onChange({ rows: rows.filter((_,i)=>i!==ri) }); };
+  const addCol = () => onChange({ headers: [...headers, "새 열"], rows: rows.map(r=>[...r, ""]) });
+  const delCol = (ci) => { if (headers.length <= 1) return; onChange({ headers: headers.filter((_,i)=>i!==ci), rows: rows.map(r=>r.filter((_,i)=>i!==ci)) }); };
+
+  const cellSt = {padding:"6px 8px",fontSize:12,background:"transparent",color:"#e2e8f0",border:"1px solid rgba(255,255,255,.08)",outline:"none",width:"100%",boxSizing:"border-box"};
+  const hdrSt = {...cellSt, fontWeight:600, background:"rgba(99,102,241,.08)", color:"#a5b4fc"};
+
+  return (
+    <div style={{marginBottom:12}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+        <input value={block.title||""} onChange={e=>onChange({title:e.target.value})} placeholder="표 제목"
+          style={{flex:1,background:"transparent",border:"none",color:"#e2e8f0",fontSize:13,fontWeight:600,outline:"none"}}/>
+        <button onClick={addCol} style={{background:"rgba(99,102,241,.1)",border:"1px solid rgba(99,102,241,.2)",color:"#a5b4fc",borderRadius:4,padding:"2px 8px",fontSize:10,cursor:"pointer"}}>+ 열</button>
+        <button onClick={addRow} style={{background:"rgba(16,185,129,.1)",border:"1px solid rgba(16,185,129,.2)",color:"#6ee7b7",borderRadius:4,padding:"2px 8px",fontSize:10,cursor:"pointer"}}>+ 행</button>
+      </div>
+      <div style={{overflowX:"auto",borderRadius:6,border:"1px solid rgba(255,255,255,.08)"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",tableLayout:"fixed"}}>
+          <thead>
+            <tr>
+              {headers.map((h,ci)=>(
+                <th key={ci} style={{position:"relative"}}>
+                  <input value={h} onChange={e=>upH(ci,e.target.value)} style={hdrSt}/>
+                  {headers.length > 1 && <button onClick={()=>delCol(ci)} style={{position:"absolute",top:0,right:2,background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer",padding:"2px"}}>x</button>}
+                </th>
+              ))}
+              <th style={{width:28}}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row,ri)=>(
+              <tr key={ri}>
+                {row.map((cell,ci)=>(
+                  <td key={ci}><input value={cell||""} onChange={e=>upC(ri,ci,e.target.value)} style={cellSt}/></td>
+                ))}
+                <td style={{width:28,textAlign:"center"}}>
+                  {rows.length > 1 && <button onClick={()=>delRow(ri)} style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>x</button>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ── 그래프 블록 ── */
+function ChartBlock({ block, onChange, onDelete }) {
+  const canvasRef = React.useRef(null);
+  const chartInstance = React.useRef(null);
+  const labels = block.labels || ["항목1","항목2"];
+  const datasets = block.datasets || [{label:"데이터",data:[0,0],color:"#6366f1"}];
+  const chartType = block.chartType || "bar";
+
+  React.useEffect(()=>{
+    if (!canvasRef.current) return;
+    if (chartInstance.current) { chartInstance.current.destroy(); chartInstance.current = null; }
+    try {
+      const ctx = canvasRef.current.getContext("2d");
+      chartInstance.current = new Chart(ctx, buildChartConfig({...block, labels, datasets, chartType}));
+    } catch(e) { console.warn("[ChartBlock] render error:", e); }
+    return () => { if (chartInstance.current) { chartInstance.current.destroy(); chartInstance.current = null; } };
+  }, [chartType, JSON.stringify(labels), JSON.stringify(datasets)]);
+
+  const upLabel = (i, v) => { const l = [...labels]; l[i] = v; onChange({ labels: l }); };
+  const upData = (di, li, v) => { const ds = datasets.map(d=>({...d,data:[...d.data]})); ds[di].data[li] = Number(v)||0; onChange({ datasets: ds }); };
+  const addLabel = () => { onChange({ labels: [...labels, "새항목"], datasets: datasets.map(d=>({...d,data:[...d.data,0]})) }); };
+  const delLabel = (i) => { if (labels.length <= 1) return; onChange({ labels: labels.filter((_,j)=>j!==i), datasets: datasets.map(d=>({...d,data:d.data.filter((_,j)=>j!==i)})) }); };
+  const addDataset = () => { onChange({ datasets: [...datasets, {label:"데이터"+(datasets.length+1), data: labels.map(()=>0), color: CHART_COLORS[datasets.length % CHART_COLORS.length]}] }); };
+  const delDataset = (di) => { if (datasets.length <= 1) return; onChange({ datasets: datasets.filter((_,i)=>i!==di) }); };
+  const upDsLabel = (di, v) => { const ds = datasets.map(d=>({...d})); ds[di].label = v; onChange({ datasets: ds }); };
+
+  const typeBtns = ["bar","line","pie"];
+  const typeLabels = {"bar":"막대","line":"선형","pie":"원형"};
+  const cellSt = {padding:"4px 6px",fontSize:11,background:"transparent",color:"#e2e8f0",border:"1px solid rgba(255,255,255,.08)",outline:"none",width:"100%",boxSizing:"border-box",textAlign:"center"};
+
+  return (
+    <div style={{marginBottom:12}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+        <input value={block.title||""} onChange={e=>onChange({title:e.target.value})} placeholder="그래프 제목"
+          style={{flex:1,background:"transparent",border:"none",color:"#e2e8f0",fontSize:13,fontWeight:600,outline:"none"}}/>
+        <div style={{display:"flex",gap:2}}>
+          {typeBtns.map(t=>(
+            <button key={t} onClick={()=>onChange({chartType:t})}
+              style={{padding:"2px 8px",fontSize:10,borderRadius:4,cursor:"pointer",
+                background:chartType===t?"rgba(99,102,241,.2)":"transparent",
+                border:chartType===t?"1px solid rgba(99,102,241,.4)":"1px solid rgba(255,255,255,.1)",
+                color:chartType===t?"#a5b4fc":"#94a3b8"}}>{typeLabels[t]}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        <div style={{overflowX:"auto",borderRadius:6,border:"1px solid rgba(255,255,255,.08)"}}>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead>
+              <tr>
+                <th style={{...cellSt,fontWeight:600,background:"rgba(99,102,241,.08)",color:"#a5b4fc"}}>라벨</th>
+                {datasets.map((ds,di)=>(
+                  <th key={di} style={{position:"relative",...cellSt,fontWeight:600,background:"rgba(99,102,241,.08)"}}>
+                    <input value={ds.label} onChange={e=>upDsLabel(di,e.target.value)} style={{...cellSt,fontWeight:600,color:"#a5b4fc",textAlign:"center",border:"none",padding:0}}/>
+                    {datasets.length > 1 && <button onClick={()=>delDataset(di)} style={{position:"absolute",top:0,right:1,background:"none",border:"none",color:"#f87171",fontSize:9,cursor:"pointer"}}>x</button>}
+                  </th>
+                ))}
+                <th style={{width:24}}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {labels.map((lb,li)=>(
+                <tr key={li}>
+                  <td><input value={lb} onChange={e=>upLabel(li,e.target.value)} style={cellSt}/></td>
+                  {datasets.map((ds,di)=>(
+                    <td key={di}><input type="number" value={ds.data[li]||0} onChange={e=>upData(di,li,e.target.value)} style={cellSt}/></td>
+                  ))}
+                  <td>{labels.length > 1 && <button onClick={()=>delLabel(li)} style={{background:"none",border:"none",color:"#f87171",fontSize:9,cursor:"pointer"}}>x</button>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{display:"flex",gap:4,padding:4}}>
+            <button onClick={addLabel} style={{background:"rgba(16,185,129,.1)",border:"1px solid rgba(16,185,129,.2)",color:"#6ee7b7",borderRadius:4,padding:"2px 8px",fontSize:10,cursor:"pointer"}}>+ 라벨</button>
+            <button onClick={addDataset} style={{background:"rgba(99,102,241,.1)",border:"1px solid rgba(99,102,241,.2)",color:"#a5b4fc",borderRadius:4,padding:"2px 8px",fontSize:10,cursor:"pointer"}}>+ 데이터셋</button>
+          </div>
+        </div>
+        <div style={{background:"rgba(255,255,255,.03)",borderRadius:8,padding:12,display:"flex",alignItems:"center",justifyContent:"center",minHeight:200}}>
+          <canvas ref={canvasRef} width={360} height={220}/>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── AI 파일 요약 블록 ── */
+function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle }) {
+  const [analyzing, setAnalyzing] = React.useState(false);
+  const [progress, setProgress] = React.useState("");
+  const fileRef = React.useRef(null);
+
+  const extractDocxText = async (file) => {
+    const arrayBuf = await file.arrayBuffer();
+    const result = await mammoth.extractRawText({ arrayBuffer: arrayBuf });
+    return result.value || "";
+  };
+
+  const extractXlsxText = async (file) => {
+    const arrayBuf = await file.arrayBuffer();
+    const wb = XLSX.read(arrayBuf, { type: "array" });
+    let text = "";
+    wb.SheetNames.forEach(name => {
+      const sheet = wb.Sheets[name];
+      const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      text += `\n[시트: ${name}]\n`;
+      jsonData.forEach(row => { text += row.join("\t") + "\n"; });
+    });
+    return text;
+  };
+
+  const extractPptxText = async (file) => {
+    try {
+      const arrayBuf = await file.arrayBuffer();
+      const zip = await JSZip.loadAsync(arrayBuf);
+      let text = "";
+      const slideFiles = Object.keys(zip.files).filter(f => f.match(/ppt\/slides\/slide\d+\.xml$/)).sort();
+      for (const sf of slideFiles) {
+        const xml = await zip.files[sf].async("string");
+        const matches = xml.match(/<a:t>([^<]*)<\/a:t>/g) || [];
+        const slideText = matches.map(m => m.replace(/<\/?a:t>/g, "")).join(" ");
+        if (slideText.trim()) text += slideText + "\n";
+      }
+      return text || "[PPTX 텍스트 추출 실패]";
+    } catch (e) {
+      console.warn("[PPTX] extraction error:", e);
+      return "[PPTX 텍스트 추출 실패: " + e.message + "]";
+    }
+  };
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const ext = file.name.split(".").pop().toLowerCase();
+    const validExts = ["pdf","docx","xlsx","xls","pptx","ppt","png","jpg","jpeg"];
+    if (!validExts.includes(ext)) { toast("지원하지 않는 파일 형식입니다. (PDF, DOCX, XLSX, PPTX, 이미지)", "error"); return; }
+    if (file.size > 50*1024*1024) { toast("50MB 이하 파일만 가능합니다", "error"); return; }
+
+    setAnalyzing(true);
+    setProgress("파일 처리 중...");
+    onChange({ fileName: file.name });
+
+    try {
+      let res;
+      const context = { projectName: projectName || "", sectionTitle: sectionTitle || "" };
+
+      if (ext === "pdf" || ext === "png" || ext === "jpg" || ext === "jpeg") {
+        // PDF/이미지: R2 업로드 → 백엔드 file 모드
+        setProgress("파일 업로드 중...");
+        const uploadResult = await CloudSync.uploadFileBinary(null, file, null, null);
+        if (!uploadResult || !uploadResult.success) { toast("파일 업로드 실패", "error"); setAnalyzing(false); setProgress(""); return; }
+        setProgress("AI 분석 중...");
+        res = await CloudSync.summarizeFile("file", { fileKey: uploadResult.key, fileName: file.name, context });
+      } else if (ext === "docx") {
+        setProgress("워드 텍스트 추출 중...");
+        const text = await extractDocxText(file);
+        setProgress("AI 분석 중...");
+        res = await CloudSync.summarizeFile("text", { textContent: text, fileName: file.name, context });
+      } else if (ext === "xlsx" || ext === "xls") {
+        setProgress("엑셀 데이터 추출 중...");
+        const text = await extractXlsxText(file);
+        setProgress("AI 분석 중...");
+        res = await CloudSync.summarizeFile("text", { textContent: text, fileName: file.name, context });
+      } else if (ext === "pptx" || ext === "ppt") {
+        setProgress("프레젠테이션 텍스트 추출 중...");
+        const text = await extractPptxText(file);
+        setProgress("AI 분석 중...");
+        res = await CloudSync.summarizeFile("text", { textContent: text, fileName: file.name, context });
+      }
+
+      if (res && res.success) {
+        const tables = (res.tables || []).map(t => ({ ...t, id: Date.now() + Math.random(), type: "table" }));
+        const charts = (res.charts || []).map(c => ({ ...c, id: Date.now() + Math.random(), type: "chart" }));
+        onChange({ summary: res.summary || "", tables, charts });
+        toast("AI 분석 완료", "success");
+      } else {
+        toast("AI 분석 실패: " + (res?.error || "알 수 없는 오류"), "error");
+      }
+    } catch (err) {
+      console.error("[AIFileSummary]", err);
+      toast("파일 처리 오류: " + err.message, "error");
+    }
+    setAnalyzing(false);
+    setProgress("");
+  };
+
+  const hasSummary = block.summary || (block.tables||[]).length || (block.charts||[]).length;
+
+  return (
+    <div style={{marginBottom:12}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+        <span style={{fontSize:12,color:"#94a3b8"}}>📎 {block.fileName || "파일을 선택하세요"}</span>
+        <input ref={fileRef} type="file" accept=".pdf,.docx,.xlsx,.xls,.pptx,.ppt,.png,.jpg,.jpeg" style={{display:"none"}} onChange={handleFile}/>
+        <button onClick={()=>fileRef.current?.click()} disabled={analyzing}
+          style={{background:"rgba(99,102,241,.1)",border:"1px solid rgba(99,102,241,.2)",color:"#a5b4fc",borderRadius:4,padding:"3px 10px",fontSize:11,cursor:analyzing?"not-allowed":"pointer",opacity:analyzing?.6:1}}>
+          {analyzing ? progress : (hasSummary ? "다른 파일 분석" : "파일 선택")}
+        </button>
+      </div>
+      {hasSummary && (
+        <div>
+          {block.summary && (
+            <div style={{marginBottom:8}}>
+              <div style={{fontSize:11,color:"#94a3b8",marginBottom:4}}>요약</div>
+              <textarea value={block.summary} onChange={e=>onChange({summary:e.target.value})} rows={3}
+                className="form-input" style={{fontSize:12,lineHeight:1.6}}/>
+            </div>
+          )}
+          {(block.tables||[]).map((tbl,ti)=>(
+            <div key={tbl.id||ti} style={{marginBottom:8}}>
+              <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+                <span style={{fontSize:11,color:"#94a3b8"}}>추출된 표 {ti+1}</span>
+                <button onClick={()=>{const t=[...(block.tables||[])];t.splice(ti,1);onChange({tables:t});}}
+                  style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
+              </div>
+              <EditableTable block={tbl} onChange={updates=>{const t=[...(block.tables||[])];t[ti]={...t[ti],...updates};onChange({tables:t});}} />
+            </div>
+          ))}
+          {(block.charts||[]).map((ch,ci)=>(
+            <div key={ch.id||ci} style={{marginBottom:8}}>
+              <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+                <span style={{fontSize:11,color:"#94a3b8"}}>제안된 그래프 {ci+1}</span>
+                <button onClick={()=>{const c=[...(block.charts||[])];c.splice(ci,1);onChange({charts:c});}}
+                  style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
+              </div>
+              <ChartBlock block={ch} onChange={updates=>{const c=[...(block.charts||[])];c[ci]={...c[ci],...updates};onChange({charts:c});}} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── 콘텐츠 블록 매니저 ── */
+function ContentBlockManager({ sectionId, blocks, onUpdate, projectName, sectionTitle }) {
+  const [showMenu, setShowMenu] = React.useState(false);
+  const [collapsed, setCollapsed] = React.useState({});
+  const menuRef = React.useRef(null);
+
+  React.useEffect(()=>{
+    if (!showMenu) return;
+    const close = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setShowMenu(false); };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [showMenu]);
+
+  const addBlock = (type) => {
+    const id = Date.now() + Math.random();
+    let newBlock;
+    if (type === "table") {
+      newBlock = { id, type: "table", title: "", headers: ["항목", "내용"], rows: [["", ""]] };
+    } else if (type === "chart") {
+      newBlock = { id, type: "chart", title: "", chartType: "bar", labels: ["항목1", "항목2"], datasets: [{ label: "데이터", data: [0, 0], color: "#6366f1" }] };
+    } else if (type === "aiSummary") {
+      newBlock = { id, type: "aiSummary", fileName: "", summary: "", tables: [], charts: [] };
+    }
+    onUpdate([...(blocks || []), newBlock]);
+    setShowMenu(false);
+  };
+  const removeBlock = (id) => { if (!confirm("이 콘텐츠 블록을 삭제하시겠습니까?")) return; onUpdate((blocks||[]).filter(b=>b.id!==id)); };
+  const updateBlock = (id, updates) => { onUpdate((blocks||[]).map(b=>b.id===id?{...b,...updates}:b)); };
+  const toggleCollapse = (id) => setCollapsed(p => ({...p, [id]: !p[id]}));
+
+  const typeLabel = { table: "📊 표", chart: "📈 그래프", aiSummary: "📎 AI 요약" };
+  const typeBorder = { table: "rgba(99,102,241,.3)", chart: "rgba(16,185,129,.3)", aiSummary: "rgba(245,158,11,.3)" };
+
+  if (!(blocks||[]).length && !showMenu) {
+    return (
+      <div style={{position:"relative",marginTop:12,marginBottom:4}} ref={menuRef}>
+        <button onClick={()=>setShowMenu(true)}
+          style={{background:"transparent",border:"1px dashed rgba(255,255,255,.12)",color:"#64748b",borderRadius:6,padding:"6px 14px",fontSize:11,cursor:"pointer",width:"100%",textAlign:"center",transition:"all .2s"}}
+          onMouseEnter={e=>{e.target.style.borderColor="rgba(99,102,241,.3)";e.target.style.color="#94a3b8";}}
+          onMouseLeave={e=>{e.target.style.borderColor="rgba(255,255,255,.12)";e.target.style.color="#64748b";}}>
+          + 콘텐츠 추가 (표, 그래프, AI 파일 요약)
+        </button>
+        {showMenu && (
+          <div style={{position:"absolute",bottom:"100%",left:0,marginBottom:4,background:"#1e293b",border:"1px solid rgba(255,255,255,.1)",borderRadius:8,padding:4,zIndex:50,minWidth:200,boxShadow:"0 8px 32px rgba(0,0,0,.5)"}}>
+            <button onClick={()=>addBlock("aiSummary")} style={{display:"block",width:"100%",textAlign:"left",background:"transparent",border:"none",color:"#e2e8f0",padding:"8px 12px",fontSize:12,cursor:"pointer",borderRadius:4}}
+              onMouseEnter={e=>e.target.style.background="rgba(99,102,241,.1)"} onMouseLeave={e=>e.target.style.background="transparent"}>📎 AI 파일 요약</button>
+            <button onClick={()=>addBlock("table")} style={{display:"block",width:"100%",textAlign:"left",background:"transparent",border:"none",color:"#e2e8f0",padding:"8px 12px",fontSize:12,cursor:"pointer",borderRadius:4}}
+              onMouseEnter={e=>e.target.style.background="rgba(99,102,241,.1)"} onMouseLeave={e=>e.target.style.background="transparent"}>📊 표 추가</button>
+            <button onClick={()=>addBlock("chart")} style={{display:"block",width:"100%",textAlign:"left",background:"transparent",border:"none",color:"#e2e8f0",padding:"8px 12px",fontSize:12,cursor:"pointer",borderRadius:4}}
+              onMouseEnter={e=>e.target.style.background="rgba(99,102,241,.1)"} onMouseLeave={e=>e.target.style.background="transparent"}>📈 그래프 추가</button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{marginTop:12,marginBottom:4}}>
+      {(blocks||[]).map(block => (
+        <div key={block.id} style={{marginBottom:10,border:`1px solid ${typeBorder[block.type]||"rgba(255,255,255,.1)"}`,borderRadius:8,overflow:"hidden"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",background:"rgba(255,255,255,.02)",cursor:"pointer"}}
+            onClick={()=>toggleCollapse(block.id)}>
+            <span style={{fontSize:11,color:"#94a3b8"}}>{typeLabel[block.type] || block.type}</span>
+            <span style={{fontSize:11,color:"#64748b",flex:1}}>{block.title || block.fileName || ""}</span>
+            <span style={{fontSize:10,color:"#64748b"}}>{collapsed[block.id] ? "▶" : "▼"}</span>
+            <button onClick={e=>{e.stopPropagation();removeBlock(block.id);}}
+              style={{background:"none",border:"none",color:"#f87171",fontSize:11,cursor:"pointer",padding:"2px 4px"}}>삭제</button>
+          </div>
+          {!collapsed[block.id] && (
+            <div style={{padding:"8px 10px"}}>
+              {block.type === "table" && <EditableTable block={block} onChange={u=>updateBlock(block.id,u)} />}
+              {block.type === "chart" && <ChartBlock block={block} onChange={u=>updateBlock(block.id,u)} />}
+              {block.type === "aiSummary" && <AIFileSummary block={block} onChange={u=>updateBlock(block.id,u)} projectName={projectName} sectionTitle={sectionTitle} />}
+            </div>
+          )}
+        </div>
+      ))}
+      <div style={{position:"relative"}} ref={menuRef}>
+        <button onClick={()=>setShowMenu(!showMenu)}
+          style={{background:"transparent",border:"1px dashed rgba(255,255,255,.12)",color:"#64748b",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",transition:"all .2s"}}
+          onMouseEnter={e=>{e.target.style.borderColor="rgba(99,102,241,.3)";e.target.style.color="#94a3b8";}}
+          onMouseLeave={e=>{e.target.style.borderColor="rgba(255,255,255,.12)";e.target.style.color="#64748b";}}>
+          + 콘텐츠 추가
+        </button>
+        {showMenu && (
+          <div style={{position:"absolute",bottom:"100%",left:0,marginBottom:4,background:"#1e293b",border:"1px solid rgba(255,255,255,.1)",borderRadius:8,padding:4,zIndex:50,minWidth:200,boxShadow:"0 8px 32px rgba(0,0,0,.5)"}}>
+            <button onClick={()=>addBlock("aiSummary")} style={{display:"block",width:"100%",textAlign:"left",background:"transparent",border:"none",color:"#e2e8f0",padding:"8px 12px",fontSize:12,cursor:"pointer",borderRadius:4}}
+              onMouseEnter={e=>e.target.style.background="rgba(99,102,241,.1)"} onMouseLeave={e=>e.target.style.background="transparent"}>📎 AI 파일 요약</button>
+            <button onClick={()=>addBlock("table")} style={{display:"block",width:"100%",textAlign:"left",background:"transparent",border:"none",color:"#e2e8f0",padding:"8px 12px",fontSize:12,cursor:"pointer",borderRadius:4}}
+              onMouseEnter={e=>e.target.style.background="rgba(99,102,241,.1)"} onMouseLeave={e=>e.target.style.background="transparent"}>📊 표 추가</button>
+            <button onClick={()=>addBlock("chart")} style={{display:"block",width:"100%",textAlign:"left",background:"transparent",border:"none",color:"#e2e8f0",padding:"8px 12px",fontSize:12,cursor:"pointer",borderRadius:4}}
+              onMouseEnter={e=>e.target.style.background="rgba(99,102,241,.1)"} onMouseLeave={e=>e.target.style.background="transparent"}>📈 그래프 추가</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ══ 운영계획안 / 결과보고서 ════════════════════════════════════════════════════ */
 const DocFG = ({label, children}) => (
   <div className="form-group">
@@ -11234,6 +11675,60 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       }).join("");
     };
 
+    // ── v27e: 콘텐츠 블록 PDF 출력 ──
+    const chartDataUrls = {};
+    const preRenderAllCharts = () => {
+      const renderChart = (chart) => {
+        if (!chart || chartDataUrls[chart.id]) return;
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = 600; canvas.height = 300;
+          const ctx = canvas.getContext("2d");
+          new Chart(ctx, buildChartConfig(chart));
+          chartDataUrls[chart.id] = canvas.toDataURL("image/png");
+        } catch(e) { console.warn("[PDF] chart render error:", e); }
+      };
+      const processBlocks = (blocks) => {
+        (blocks||[]).forEach(b => {
+          if (b.type === "chart") renderChart(b);
+          if (b.type === "aiSummary") (b.charts||[]).forEach(renderChart);
+        });
+      };
+      enabledIds.forEach(secId => processBlocks(sd(secId).contentBlocks));
+      (ve.venueItems||[]).forEach(item => processBlocks(item.contentBlocks));
+      (de.designItems||[]).forEach(item => processBlocks(item.contentBlocks));
+      (pr.programItems||[]).forEach(item => processBlocks(item.contentBlocks));
+    };
+    preRenderAllCharts();
+
+    const tableBlockHtml = (tbl) => {
+      const hdrs = (tbl.headers||[]).map(h => `<th style="padding:6px 10px;background:#f0f4ff;border:1px solid #d4d8e8;font-size:11px;font-weight:600;text-align:center">${h||""}</th>`).join("");
+      const rows = (tbl.rows||[]).map(row =>
+        `<tr>${(row||[]).map(cell => `<td style="padding:5px 10px;border:1px solid #d4d8e8;font-size:11px">${cell||""}</td>`).join("")}</tr>`
+      ).join("");
+      return `<div style="margin:8px 0">${tbl.title?`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#374151">${tbl.title}</div>`:""}<table style="width:100%;border-collapse:collapse">${hdrs?`<thead><tr>${hdrs}</tr></thead>`:""}${rows?`<tbody>${rows}</tbody>`:""}</table></div>`;
+    };
+    const chartBlockHtml = (ch) => {
+      const src = chartDataUrls[ch.id];
+      if (!src) return "";
+      return `<div style="margin:8px 0">${ch.title?`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#374151">${ch.title}</div>`:""}<img src="${src}" style="max-width:100%;height:auto"/></div>`;
+    };
+    const contentBlocksHtml = (blocks) => {
+      if (!(blocks||[]).length) return "";
+      return (blocks||[]).map(b => {
+        if (b.type === "table") return tableBlockHtml(b);
+        if (b.type === "chart") return chartBlockHtml(b);
+        if (b.type === "aiSummary") {
+          let h = "";
+          if (b.summary) h += `<div style="margin:8px 0;font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div>`;
+          (b.tables||[]).forEach(t => { h += tableBlockHtml(t); });
+          (b.charts||[]).forEach(c => { h += chartBlockHtml(c); });
+          return h;
+        }
+        return "";
+      }).join("");
+    };
+
     const bannerRows = (de.bannerList||[]).map((b,i)=>`
       <tr><td>${i+1}</td><td>${b.name||""}</td><td>${b.category||""}</td><td>${b.size||""}</td><td style="text-align:center">${b.qty||""}</td></tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#888">데이터 없음</td></tr>`;
 
@@ -11357,6 +11852,7 @@ ${secEnabled("overview") ? `<!-- 01 OVER VIEW -->
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>
+${contentBlocksHtml(sd("overview").contentBlocks) ? `<div class="page sec-page"><div class="sec-header"><div class="sec-num">${secNum("overview")}</div><div class="sec-title">Over View</div><div class="sec-desc">첨부 콘텐츠</div></div><div class="sec-body">${contentBlocksHtml(sd("overview").contentBlocks)}</div><div class="footer">${p.name||""} ${docTitle}</div></div>` : ""}
 ${imgHtml("overview")}` : ""}
 
 ${secEnabled("venue") ? `<!-- 02 VENUE -->
@@ -11385,6 +11881,7 @@ ${secEnabled("venue") ? `<!-- 02 VENUE -->
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>
+${contentBlocksHtml(sd("venue").contentBlocks) ? `<div class="page sec-page"><div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title">Venue</div><div class="sec-desc">첨부 콘텐츠</div></div><div class="sec-body">${contentBlocksHtml(sd("venue").contentBlocks)}</div><div class="footer">${p.name||""} ${docTitle}</div></div>` : ""}
 ${imgHtml("venue")}` : ""}
 
 ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
@@ -11418,6 +11915,7 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   </div>
   <div class="sec-body">
     ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
+    ${contentBlocksHtml(vItem.contentBlocks)}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
 </div>
@@ -11487,6 +11985,7 @@ ${secEnabled("design") ? `<!-- 03 DESIGN -->
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>
+${contentBlocksHtml(sd("design").contentBlocks) ? `<div class="page sec-page"><div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title">Design</div><div class="sec-desc">첨부 콘텐츠</div></div><div class="sec-body">${contentBlocksHtml(sd("design").contentBlocks)}</div><div class="footer">${p.name||""} ${docTitle}</div></div>` : ""}
 ${imgHtml("design")}` : ""}
 
 ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
@@ -11543,6 +12042,7 @@ ${secEnabled("program") ? `<!-- 04 PROGRAM -->
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>
+${contentBlocksHtml(sd("program").contentBlocks) ? `<div class="page sec-page"><div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title">Program</div><div class="sec-desc">첨부 콘텐츠</div></div><div class="sec-body">${contentBlocksHtml(sd("program").contentBlocks)}</div><div class="footer">${p.name||""} ${docTitle}</div></div>` : ""}
 ${imgHtml("program")}` : ""}
 
 ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).length ? (()=>{
@@ -11594,6 +12094,7 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   </div>
   <div class="sec-body">
     ${pItem.notes?`<div class="box"><div class="box-title">운영 메모</div><div class="box-val">${pItem.notes}</div></div>`:""}
+    ${contentBlocksHtml(pItem.contentBlocks)}
     ${pImgs.length ? `<div class="inline-imgs">
       <div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
         ${pImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pMaxH}"/>`).join("")}
@@ -11632,6 +12133,7 @@ ${secEnabled("operation") ? `<!-- 05 OPERATION -->
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>
+${contentBlocksHtml(sd("operation").contentBlocks) ? `<div class="page sec-page"><div class="sec-header"><div class="sec-num">${secNum("operation")}</div><div class="sec-title">Operation</div><div class="sec-desc">첨부 콘텐츠</div></div><div class="sec-body">${contentBlocksHtml(sd("operation").contentBlocks)}</div><div class="footer">${p.name||""} ${docTitle}</div></div>` : ""}
 ${imgHtml("operation")}` : ""}
 
 ${secEnabled("timeline") ? (()=>{
@@ -11711,6 +12213,22 @@ ${secEnabled("timeline") ? (()=>{
     const secEnabled = (id) => enabledIds.includes(id);
     const secNum = (id) => { const idx = SECTIONS.findIndex(s=>s.id===id); return idx >= 0 ? SECTIONS[idx].num : "00"; };
     const footerTxt = `${p.name||""} ${docTitle} · (주)에픽스테이지`;
+
+    // v27e: PPT용 차트 사전 렌더링
+    const chartDataUrls = {};
+    const renderChartForPPT = (chart) => {
+      if (!chart || chartDataUrls[chart.id]) return;
+      try {
+        const canvas = document.createElement("canvas"); canvas.width = 600; canvas.height = 300;
+        new Chart(canvas.getContext("2d"), buildChartConfig(chart));
+        chartDataUrls[chart.id] = canvas.toDataURL("image/png");
+      } catch(e) { console.warn("[PPT] chart render:", e); }
+    };
+    const pptPreRenderCharts = (blocks) => { (blocks||[]).forEach(b => { if (b.type==="chart") renderChartForPPT(b); if (b.type==="aiSummary") (b.charts||[]).forEach(renderChartForPPT); }); };
+    enabledIds.forEach(secId => pptPreRenderCharts(sd(secId).contentBlocks));
+    (sd("venue").venueItems||[]).forEach(i=>pptPreRenderCharts(i.contentBlocks));
+    (sd("design").designItems||[]).forEach(i=>pptPreRenderCharts(i.contentBlocks));
+    (sd("program").programItems||[]).forEach(i=>pptPreRenderCharts(i.contentBlocks));
     const HDR_H = 1.0;
     const BODY_TOP = 1.2;
     const MAX_Y = 6.7;
@@ -11793,6 +12311,45 @@ ${secEnabled("timeline") ? (()=>{
       }
     };
 
+    // ── v27e: PPT 콘텐츠 블록 출력 ──
+    const pmContentBlocks = (pm, secData) => {
+      const blocks = secData?.contentBlocks || [];
+      if (!blocks.length) return;
+      blocks.forEach(b => {
+        if (b.type === "table" && (b.headers||[]).length) {
+          const w = (b.headers||[]).map(() => 12.33 / (b.headers||[]).length);
+          pmTable(pm, b.title || "표", tblHdr(b.headers||[]), (b.rows||[]).map(row => tblRow(row)), w);
+        }
+        if (b.type === "chart") {
+          const src = chartDataUrls[b.id];
+          if (src) {
+            pm.need(3.5);
+            if (b.title) { pm.sl.addText(b.title, {x:0.5,y:pm.y,w:12.33,h:0.25,fontSize:9,color:_kcHex,bold:true}); pm.y += 0.3; }
+            pm.sl.addImage({data:src, x:1.5, y:pm.y, w:10, h:3.0, sizing:{type:"contain",w:10,h:3.0}});
+            pm.y += 3.2;
+          }
+        }
+        if (b.type === "aiSummary") {
+          if (b.summary) pmField(pm, "AI 분석: " + (b.fileName||""), b.summary, 12.33, 1.5);
+          (b.tables||[]).forEach(t => {
+            if ((t.headers||[]).length) {
+              const w = (t.headers||[]).map(() => 12.33 / (t.headers||[]).length);
+              pmTable(pm, t.title || "추출 표", tblHdr(t.headers||[]), (t.rows||[]).map(row => tblRow(row)), w);
+            }
+          });
+          (b.charts||[]).forEach(c => {
+            const src = chartDataUrls[c.id];
+            if (src) {
+              pm.need(3.5);
+              if (c.title) { pm.sl.addText(c.title, {x:0.5,y:pm.y,w:12.33,h:0.25,fontSize:9,color:_kcHex,bold:true}); pm.y += 0.3; }
+              pm.sl.addImage({data:src, x:1.5, y:pm.y, w:10, h:3.0, sizing:{type:"contain",w:10,h:3.0}});
+              pm.y += 3.2;
+            }
+          });
+        }
+      });
+    };
+
     /* 2열 필드 */
     const pm2Col = (pm, l1, v1, l2, v2, w) => {
       const halfW = w || 6.0, gap = 0.33;
@@ -11843,6 +12400,7 @@ ${secEnabled("timeline") ? (()=>{
       pmField(pm,"행사 내용",d.content||p.taskOrder?.purpose,12.33,1.5);
       pm2ColBig(pm,"행사 성격",d.character,"지원 사항",d.support);
       pmField(pm,"기타사항",d.extraNotes,12.33,0.8);
+      pmContentBlocks(pm, d);
       await pmImages(pm, d);
     })();
 
@@ -11856,6 +12414,7 @@ ${secEnabled("timeline") ? (()=>{
       pmTable(pm,"장비/시설 목록",tblHdr(["#","장비명","규격","수량","비고"]),
         (d.equipList||[]).filter(e=>e.name).map((e,i)=>tblRow([i+1,e.name,e.spec,e.qty,e.note])),
         [0.5,4,3.5,1.33,3]);
+      pmContentBlocks(pm, d);
       await pmImages(pm, d);
 
       // 베뉴 서브아이템 슬라이드
@@ -11865,6 +12424,7 @@ ${secEnabled("timeline") ? (()=>{
         const itemLetter = String.fromCharCode(65 + vIdx);
         const itemPm = new PageMgr(secNum("venue")+"-"+itemLetter, vItem.itemName||"Venue Detail", "장소 상세 | VENUE DETAIL");
         if (vItem.description) pmField(itemPm, "설명", vItem.description, 12.33, 1.5);
+        pmContentBlocks(itemPm, vItem);
         for (const img of (vItem.images||[])) {
           itemPm.need(4.0);
           try {
@@ -11889,6 +12449,7 @@ ${secEnabled("timeline") ? (()=>{
       pm2ColBig(pm,"디지털/영상 계획",d.videoNotes,"인쇄물",d.printNotes);
       pmField(pm,"LED/스크린 계획",d.ledNotes,12.33,1.0);
       if (!isPlan) pmField(pm,"결과 메모",d.resultNotes,12.33,0.8);
+      pmContentBlocks(pm, d);
       await pmImages(pm, d);
 
       /* ── 03-X 디자인 아이템 개별 슬라이드 ── */
@@ -11900,6 +12461,7 @@ ${secEnabled("timeline") ? (()=>{
         pm2Col(itemPm,"카테고리",dItem.category||"-","구분",dItem.division||"-");
         pm2Col(itemPm,"규격 / 사이즈",dItem.specs||"-","수량",String(dItem.qty||1));
         if (dItem.notes) pmField(itemPm,"메모",dItem.notes,12.33,0.8);
+        pmContentBlocks(itemPm, dItem);
         // 포트폴리오 스타일 이미지 (크게)
         for (const img of (dItem.images||[])) {
           itemPm.need(4.0);
@@ -11924,6 +12486,7 @@ ${secEnabled("timeline") ? (()=>{
         [0.5,2,1.2,5.63,3]);
       pmField(pm,"MC / 진행 메모",d.mcInfo,12.33,0.8);
       if (!isPlan) pmField(pm,"프로그램 결과 메모",d.resultNotes,12.33,0.8);
+      pmContentBlocks(pm, d);
       await pmImages(pm, d);
 
       // ── 큐시트 슬라이드 ──
@@ -11945,6 +12508,7 @@ ${secEnabled("timeline") ? (()=>{
         const itemLetter = String.fromCharCode(65 + pIdx);
         const itemPm = new PageMgr(secNum("program")+"-"+itemLetter, pItem.itemName||"Program", (pItem.timeSlot||"")+" | PROGRAM DETAIL");
         if (pItem.notes) pmField(itemPm,"운영 메모",pItem.notes,12.33,1.0);
+        pmContentBlocks(itemPm, pItem);
         for (const img of (pItem.images||[])) {
           itemPm.need(4.0);
           try {
@@ -11974,6 +12538,7 @@ ${secEnabled("timeline") ? (()=>{
         (d.prizeList||[]).filter(pr=>pr.grade||pr.item).map((pr,i)=>tblRow([i+1,pr.grade,pr.item,pr.qty,pr.note])),
         [0.5,2,4,1.5,4.33]);
       }
+      pmContentBlocks(pm, d);
       await pmImages(pm, d);
     })();
 
@@ -12005,6 +12570,7 @@ ${secEnabled("timeline") ? (()=>{
         }
       }
       pmField(pm,"특이사항 메모",d.notes,12.33,0.8);
+      pmContentBlocks(pm, d);
       await pmImages(pm, d);
     })();
 
@@ -12323,6 +12889,7 @@ ${secEnabled("timeline") ? (()=>{
                   </div>
                 </div>
               )}
+              <ContentBlockManager sectionId={`venueItem_${activeVenueItemObj._id}`} blocks={activeVenueItemObj.contentBlocks||[]} onUpdate={blocks=>updateVenueItem(activeVenueItemObj._id,"contentBlocks",blocks)} projectName={proj?.name} sectionTitle="Venue"/>
               <div style={{marginTop:12}}>
                 <label className="form-label">이미지</label>
                 <SectionImages sectionId={`venueItem_${activeVenueItemObj._id}`} docKey={docKey} images={activeVenueItemObj.images||[]} onUpdate={imgs=>updateVenueItem(activeVenueItemObj._id,"images",imgs)} layoutMode={activeVenueItemObj.imageLayout||0} onLayoutChange={v=>updateVenueItem(activeVenueItemObj._id,"imageLayout",v)}/>
@@ -12500,6 +13067,7 @@ ${secEnabled("timeline") ? (()=>{
               <DocFG label="메모">
                 <textarea className="form-input" rows={3} value={activeItemObj.notes||""} onChange={e=>updateDesignItem(activeItemObj._id,"notes",e.target.value)} placeholder="제작 시방, 소재, 특이사항 등" style={{resize:"vertical"}}/>
               </DocFG>
+              <ContentBlockManager sectionId={`designItem_${activeItemObj._id}`} blocks={activeItemObj.contentBlocks||[]} onUpdate={blocks=>updateDesignItem(activeItemObj._id,"contentBlocks",blocks)} projectName={proj?.name} sectionTitle="Design"/>
               <div style={{marginTop:12}}>
                 <label className="form-label">제작 이미지</label>
                 <SectionImages sectionId={`designItem_${activeItemObj._id}`} docKey={docKey} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)} layoutMode={activeItemObj.imageLayout||0} onLayoutChange={v=>updateDesignItem(activeItemObj._id,"imageLayout",v)}/>
@@ -12758,6 +13326,7 @@ ${secEnabled("timeline") ? (()=>{
                 <DocFG label="메모">
                   <textarea className="form-input" rows={3} value={activeProgramItemObj.notes||""} onChange={e=>updateProgramItem(activeProgramItemObj._id,"notes",e.target.value)} placeholder="운영 사항, 비고 등" style={{resize:"vertical"}}/>
                 </DocFG>
+                <ContentBlockManager sectionId={`programItem_${activeProgramItemObj._id}`} blocks={activeProgramItemObj.contentBlocks||[]} onUpdate={blocks=>updateProgramItem(activeProgramItemObj._id,"contentBlocks",blocks)} projectName={proj?.name} sectionTitle="Program"/>
                 <div style={{marginTop:12}}>
                   <label className="form-label">이미지</label>
                   <SectionImages sectionId={`programItem_${activeProgramItemObj._id}`} docKey={docKey} images={activeProgramItemObj.images||[]} onUpdate={imgs=>updateProgramItem(activeProgramItemObj._id,"images",imgs)} layoutMode={activeProgramItemObj.imageLayout||0} onLayoutChange={v=>updateProgramItem(activeProgramItemObj._id,"imageLayout",v)}/>
@@ -13321,9 +13890,10 @@ ${secEnabled("timeline") ? (()=>{
               <div style={{marginLeft:"auto",fontSize:11,color:saveStatus==="saved"?"#10b981":"var(--txt4)"}}>{saveStatus==="saved"?`✓ 마지막 저장: ${lastSavedAt||"방금"}`:"수정 내용 저장 중..."}</div>
             </div>
             {renderSection()}
-            {(activeSection !== "design" || !activeDesignItem) && (
+            {(activeSection !== "design" || !activeDesignItem) && (<>
+              <ContentBlockManager sectionId={activeSection} blocks={sd(activeSection).contentBlocks||[]} onUpdate={blocks=>updateDoc(activeSection,"contentBlocks",blocks)} projectName={proj?.name} sectionTitle={ALL_DOC_SECTIONS.find(s=>s.id===activeSection)?.title||""}/>
               <SectionImages sectionId={activeSection} docKey={docKey} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)} layoutMode={sd(activeSection).imageLayout||0} onLayoutChange={v=>updateDoc(activeSection,"imageLayout",v)}/>
-            )}
+            </>)}
           </div>
         </div>
       </div>
