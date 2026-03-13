@@ -11138,8 +11138,17 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
 
   // PDF 출력
   const printPDF = async () => {
-    // ★ v27d: R2 이미지를 base64로 사전 로딩하여 PDF 이미지 누락 완전 방지
-    toast("PDF 준비 중... 이미지를 로딩하고 있습니다.", "info");
+    // ★ v27d2: window.open을 동기적으로 먼저 호출 (팝업 차단 방지)
+    const W = window.open("","_blank","width=1200,height=900");
+    if (!W) { toast("팝업이 차단되었습니다. 팝업 허용 후 다시 시도해주세요.", "warn"); return; }
+
+    // 로딩 화면 표시
+    W.document.write(`<html><head><style>body{margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#0f1623;color:#fff;font-family:'Noto Sans KR',sans-serif;flex-direction:column}
+    .spinner{width:40px;height:40px;border:4px solid #333;border-top:4px solid #6366f1;border-radius:50%;animation:spin 1s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    #progress{margin-top:16px;font-size:14px;color:#94a3b8}</style></head><body>
+    <div class="spinner"></div><div id="progress">이미지 로딩 준비 중...</div></body></html>`);
+    W.document.close();
 
     const p = proj || {};
     const _cv = docData._cover || {};
@@ -11166,6 +11175,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     if (r2Images.length > 0) {
       console.log("[PDF] 🖼️ " + r2Images.length + "개 R2 이미지 사전 로딩 시작...");
       const BATCH = 5;
+      const progressEl = W.document.getElementById("progress");
       for (let i = 0; i < r2Images.length; i += BATCH) {
         const batch = r2Images.slice(i, i + BATCH);
         const results = await Promise.allSettled(batch.map(img => fetchImageAsBase64(img)));
@@ -11173,7 +11183,9 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           const r = results[idx];
           if (r.status === "fulfilled" && r.value) imgMap[img.r2Key] = r.value;
         });
-        console.log("[PDF] 🖼️ 이미지 로딩 " + Math.min(i + BATCH, r2Images.length) + "/" + r2Images.length);
+        const loaded = Math.min(i + BATCH, r2Images.length);
+        console.log("[PDF] 🖼️ 이미지 로딩 " + loaded + "/" + r2Images.length);
+        if (progressEl) progressEl.textContent = "이미지 로딩 중... " + loaded + "/" + r2Images.length;
       }
       console.log("[PDF] ✅ 이미지 사전 로딩 완료:", Object.keys(imgMap).length + "/" + r2Images.length);
     }
@@ -11639,6 +11651,7 @@ ${secEnabled("timeline") ? (()=>{
 })() : ""}
 
 </body></html>`;
+    W.document.open();
     W.document.write(html);
     W.document.close();
     // ★ v27d: base64 사전 로딩 완료 — 간단한 렌더링 대기 후 print
