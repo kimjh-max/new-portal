@@ -10942,18 +10942,26 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     }
     const suffix = cloudOk ? " ☁️" : " 💾";
     toast(`"${displayName}" 버전 저장 완료${suffix}`, "success");
-    // ── 로컬 파일 자동 백업 다운로드 ──
-    try {
-      const backupData = { version: displayName, timestamp: ts, project: proj?.name || "unknown", docType, data: newVersion.data };
-      const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      const safeName = (proj?.name || "report").replace(/[^a-zA-Z0-9가-힣_-]/g, "_");
-      const dateStr = now.toISOString().slice(0,10);
-      a.href = url; a.download = `${safeName}_${dateStr}_${displayName}.json`; a.click();
-      URL.revokeObjectURL(url);
-      console.log("[DocEditor] 📥 로컬 파일 백업 다운로드 완료:", a.download);
-    } catch(e) { console.warn("[DocEditor] 파일 백업 다운로드 실패:", e); }
+    // ── ★ v27d: Google Drive에 버전 백업 저장 (로컬 다운로드 제거) ──
+    if (DRIVE_CONFIG.ENABLED) {
+      try {
+        const backupData = { version: displayName, timestamp: ts, project: proj?.name || "unknown", docType, data: newVersion.data };
+        const safeName = (proj?.name || "report").replace(/[^a-zA-Z0-9가-힣_-]/g, "_");
+        const dateStr = now.toISOString().slice(0,10);
+        const fileName = `${safeName}_${dateStr}_${displayName}.json`;
+        const jsonStr = JSON.stringify(backupData, null, 2);
+        const base64 = btoa(unescape(encodeURIComponent(jsonStr)));
+        // 비동기로 Drive에 업로드 (UI 차단 없음)
+        fetch(DRIVE_CONFIG.GAS_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: JSON.stringify({ action: "uploadFile", projectName: proj?.name || "unknown", fileName, base64Data: base64, mimeType: "application/json" }),
+          redirect: "follow",
+        }).then(r => r.text()).then(t => {
+          console.log("[DocEditor] ☁️ Drive 버전 백업 완료:", fileName);
+        }).catch(e => console.warn("[DocEditor] Drive 백업 실패:", e.message));
+      } catch(e) { console.warn("[DocEditor] Drive 백업 준비 실패:", e); }
+    }
   };
 
   // ── 파일에서 보고서 복원 ──
