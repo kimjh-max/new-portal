@@ -10565,6 +10565,11 @@ function AITimelinePanel({ project, onApplyTimeline, onApplyCueSheet }) {
 }
 
 // ── 운영계획안 → 결과보고서 데이터 로드/병합 헬퍼 ──
+// ★ v27f: IDB 타임아웃 헬퍼 (IDB 연결 불량 시 폴백)
+function idbWithTimeout(promise, ms=3000) {
+  return Promise.race([promise, new Promise((_,rej) => setTimeout(() => rej(new Error('IDB_TIMEOUT')), ms))]);
+}
+
 async function loadPlanDataForResult(projectId) {
   const planKey = `eventos_doc_${projectId}_plan`;
   if (CLOUD_CONFIG.ENABLED) {
@@ -10574,7 +10579,7 @@ async function loadPlanDataForResult(projectId) {
     } catch {}
   }
   try {
-    const idb = await loadFromIDB(planKey);
+    const idb = await idbWithTimeout(loadFromIDB(planKey));
     if (idb && typeof idb === "object" && Object.keys(idb).length) return idb;
   } catch {}
   try {
@@ -10602,9 +10607,9 @@ async function loadPlanVersionsForResult(projectId) {
       }
     } catch {}
   }
-  // ② IDB에서 버전 로드
+  // ② IDB에서 버전 로드 (타임아웃 적용)
   try {
-    const iv = await loadFromIDB(versionsKey);
+    const iv = await idbWithTimeout(loadFromIDB(versionsKey));
     if (Array.isArray(iv) && iv.length > 0) {
       const current = await loadPlanDataForResult(projectId);
       if (current) {
