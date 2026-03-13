@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260313v27e";
+  var CODE_VER = "20260314v27f";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -10663,6 +10663,84 @@ function mergePlanToResult(planData, existingResult) {
   return merged;
 }
 
+// ★ v27f: 스마트 병합 — 기존 결과보고서 데이터 유지 + 운영계획안 새 내용만 추가
+function smartMergePlanToResult(planData, existingResult) {
+  // 계획안을 구조적 기반으로 사용 (새 아이템/필드 포함)
+  const merged = JSON.parse(JSON.stringify(planData));
+  merged._keyColor = "#10b981";
+  if (!existingResult || typeof existingResult !== "object" || Object.keys(existingResult).length === 0) return merged;
+
+  // 메타 필드 보존
+  for (const key of Object.keys(existingResult)) {
+    if (key.startsWith("_") && key !== "_keyColor") merged[key] = existingResult[key];
+  }
+
+  const isEmpty = (v) => v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
+
+  // 각 섹션 스마트 병합
+  for (const sectionId of Object.keys(merged)) {
+    if (sectionId.startsWith("_")) continue;
+    const planSec = merged[sectionId];
+    const resSec = existingResult[sectionId];
+    if (!planSec || typeof planSec !== "object" || !resSec || typeof resSec !== "object") continue;
+
+    // 일반 필드: 결과보고서에 값이 있으면 보존, 비어있으면 계획안 값 사용
+    for (const field of Object.keys(resSec)) {
+      if (["venueItems","designItems","programItems"].includes(field)) continue;
+      const rVal = resSec[field];
+      if (!isEmpty(rVal)) {
+        if (Array.isArray(rVal)) {
+          merged[sectionId][field] = JSON.parse(JSON.stringify(rVal));
+        } else {
+          merged[sectionId][field] = rVal;
+        }
+      }
+    }
+
+    // 서브아이템 스마트 병합 (itemName 기준 매칭)
+    for (const sub of ["venueItems","designItems","programItems"]) {
+      const planItems = merged[sectionId][sub];
+      const resItems = resSec[sub];
+      if (!Array.isArray(planItems)) continue;
+      if (!Array.isArray(resItems) || resItems.length === 0) continue;
+
+      // 계획안 아이템에 결과보고서 필드 오버레이
+      for (let pi = 0; pi < planItems.length; pi++) {
+        // itemName 매칭 우선, 없으면 인덱스 매칭
+        const match = resItems.find(ri => ri.itemName && ri.itemName === planItems[pi].itemName) || resItems[pi];
+        if (!match) continue;
+        for (const f of Object.keys(match)) {
+          if (f === "_id") continue; // ID는 계획안 기준 유지
+          const rv = match[f];
+          if (!isEmpty(rv)) {
+            if (Array.isArray(rv)) {
+              planItems[pi][f] = JSON.parse(JSON.stringify(rv));
+            } else {
+              planItems[pi][f] = rv;
+            }
+          }
+        }
+      }
+
+      // 결과보고서에만 있는 추가 아이템 보존
+      for (const ri of resItems) {
+        const exists = planItems.some(pi =>
+          (pi.itemName && pi.itemName === ri.itemName) || (pi._id && pi._id === ri._id)
+        );
+        if (!exists) planItems.push(JSON.parse(JSON.stringify(ri)));
+      }
+    }
+  }
+
+  // 결과보고서에만 있는 섹션 데이터 보존
+  for (const sectionId of Object.keys(existingResult)) {
+    if (sectionId.startsWith("_")) continue;
+    if (!merged[sectionId]) merged[sectionId] = JSON.parse(JSON.stringify(existingResult[sectionId]));
+  }
+
+  return merged;
+}
+
 // ★ v27d: 성능 최적화 — 디바운스 입력 컴포넌트 (키 입력마다 전체 리렌더 방지)
 const DocInput = React.memo(function DocInput({ value, onCommit, multiline, type, ...props }) {
   const [local, setLocal] = React.useState(value ?? "");
@@ -11658,6 +11736,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       return idx >= 0 ? SECTIONS[idx].num : "00";
     };
 
+    // ★ v27f: 이미지 페이지 — overflow 방지 + 센터링 개선
     const imgHtml = (sectionId) => {
       const sec = sd(sectionId);
       const imgs = sec.images || [];
@@ -11670,7 +11749,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       return pages.map(pageImgs => {
         const actualCols = Math.min(pageImgs.length, cols);
         const rows = Math.ceil(pageImgs.length / actualCols);
-        const mh = rows <= 1 ? '80vh' : rows <= 2 ? '38vh' : '24vh';
+        const mh = rows <= 1 ? '75vh' : rows <= 2 ? '35vh' : '22vh';
         return `<div class="page img-page"><div class="img-grid" style="grid-template-columns:repeat(${actualCols},1fr)">${pageImgs.map(img => `<img src="${pdfImgSrc(img)}" style="max-height:${mh}"/>`).join("")}</div></div>`;
       }).join("");
     };
@@ -11796,14 +11875,14 @@ tr:nth-child(even) td{background:#f8fafc}
 /* Photo placeholder */
 .photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
 .photo-box{background:transparent;border:none;border-radius:8px;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:11px}
-/* 인라인 이미지 (텍스트와 같은 페이지) */
+/* ★ v27f: 인라인 이미지 (텍스트와 같은 페이지) — 상단 정렬 */
 .inline-imgs{margin-top:16px}
-.inline-imgs .img-grid{display:grid;gap:12px;align-items:center}
-.inline-imgs img{width:100%;height:auto;object-fit:contain;display:block}
-/* 독립 이미지 페이지 (섹션 레벨) */
-.img-page{padding:30px 40px;box-sizing:border-box;overflow:hidden}
-.img-page .img-grid{display:grid;gap:12px;align-items:center;align-content:center}
-.img-page img{width:100%;height:auto;object-fit:contain;display:block}
+.inline-imgs .img-grid{display:grid;gap:10px;align-items:start}
+.inline-imgs img{width:100%;height:auto;max-width:100%;object-fit:contain;display:block}
+/* ★ v27f: 독립 이미지 페이지 — 센터링 + overflow 방지 */
+.img-page{padding:30px 40px;box-sizing:border-box;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.img-page .img-grid{display:grid;gap:10px;align-items:center;align-content:center;width:100%}
+.img-page img{width:100%;height:auto;max-width:100%;object-fit:contain;display:block;margin:0 auto}
 @media print{
   @page{margin:0;size:297mm 210mm landscape}
   .page{width:297mm;height:210mm;margin:0;page-break-after:always;overflow:hidden;box-sizing:border-box}
@@ -11811,7 +11890,7 @@ tr:nth-child(even) td{background:#f8fafc}
   .page.sec-page{display:grid;grid-template-rows:auto 1fr;height:210mm}
   .page.cover{height:210mm;display:flex;flex-direction:column}
   .sec-body{overflow:hidden;min-height:0}
-  .img-page{height:210mm;overflow:hidden;box-sizing:border-box}
+  .img-page{height:210mm;overflow:hidden;box-sizing:border-box;display:flex;align-items:center;justify-content:center}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style></head><body>
@@ -11994,30 +12073,57 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   const dCols = dLayout || (dImgs.length === 1 ? 1 : dImgs.length <= 3 ? dImgs.length : dImgs.length <= 6 ? 3 : Math.min(dImgs.length, 6));
   const dActualCols = Math.min(dImgs.length, dCols);
   const dRows = dImgs.length ? Math.ceil(dImgs.length / dActualCols) : 0;
-  const hasInfo = true;
-  const dMaxH = dRows <= 1 ? (hasInfo ? '45vh' : '70vh') : dRows <= 2 ? (hasInfo ? '22vh' : '33vh') : '15vh';
-  return `
-<div class="page sec-page">
-  <div class="sec-header">
-    <div class="sec-num">${secNum("design")}</div>
-    <div class="sec-title-block">
-      <div class="sec-title">${dItem.itemName||"Design Item"}</div>
-      <div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div>
-    </div>
-  </div>
-  <div class="sec-body">
-    <div class="info-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:12px">
+  const dHasNotes = !!(dItem.notes);
+  // ★ v27f: imgLayout 지원 (auto/fit/split)
+  const userLayout = dItem.imgLayout || "auto";
+  const descLines = (dItem.notes||"").split(/\\n|\n/).length;
+  const descLen = (dItem.notes||"").length;
+  const autoNeedsSplit = dHasNotes && dImgs.length > 0 && (descLines > 5 || descLen > 150);
+  const needsSplit = userLayout === "split" ? (dHasNotes && dImgs.length > 0) : userLayout === "fit" ? false : autoNeedsSplit;
+  const dMaxH = needsSplit ? '65vh' : userLayout === "fit"
+    ? (dRows <= 1 ? '35vh' : dRows <= 2 ? '16vh' : '11vh')
+    : (dRows <= 1 ? '42vh' : dRows <= 2 ? '20vh' : '13vh');
+
+  const dInfoGrid = `<div class="info-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:12px">
       <div class="info-box"><div class="info-label">카테고리</div><div class="info-value">${dItem.category||"-"}</div></div>
       <div class="info-box"><div class="info-label">구분</div><div class="info-value">${dItem.division||"-"}</div></div>
       <div class="info-box"><div class="info-label">규격 / 사이즈</div><div class="info-value">${dItem.specs||"-"}</div></div>
       <div class="info-box"><div class="info-label">수량</div><div class="info-value">${dItem.qty||1}</div></div>
-    </div>
+    </div>`;
+
+  if (needsSplit) {
+    return `
+<div class="page sec-page">
+  <div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>
+  <div class="sec-body">
+    ${dInfoGrid}
     ${dItem.notes?`<div class="box"><div class="box-title">메모</div><div class="box-val">${dItem.notes}</div></div>`:""}
-    ${dImgs.length ? `<div class="inline-imgs">
-      <div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
-        ${dImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${dMaxH}"/>`).join("")}
-      </div>
-    </div>` : ""}
+    ${contentBlocksHtml(dItem.contentBlocks)}
+  </div>
+  <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
+</div>
+<div class="page sec-page">
+  <div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>
+  <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
+    <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
+      ${dImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${dMaxH}"/>`).join("")}
+    </div></div>
+  </div>
+  <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
+</div>`;
+  }
+
+  const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
+  return `
+<div class="page sec-page">
+  <div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>
+  <div class="sec-body">
+    ${dInfoGrid}
+    ${dItem.notes?`<div class="box"><div class="box-title">메모</div><div class="box-val">${dItem.notes}</div></div>`:""}
+    ${contentBlocksHtml(dItem.contentBlocks)}
+    ${dImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
+      ${dImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${dMaxH};${fitStyle}width:100%"/>`).join("")}
+    </div></div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
 </div>`;
@@ -12078,28 +12184,52 @@ ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).len
 
 ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   const pImgs = (pItem.images||[]);
-  const pCols = pImgs.length === 1 ? 1 : pImgs.length <= 3 ? pImgs.length : 3;
+  const pLayout = pItem.imageLayout || 0;
+  const pCols = pLayout || (pImgs.length === 1 ? 1 : pImgs.length <= 3 ? pImgs.length : 3);
   const pActualCols = Math.min(pImgs.length, pCols);
   const pRows = pImgs.length ? Math.ceil(pImgs.length / pActualCols) : 0;
   const pHasNotes = !!pItem.notes;
-  const pMaxH = pRows <= 1 ? (pHasNotes ? '50vh' : '65vh') : pRows <= 2 ? '28vh' : '18vh';
-  return `
+  // ★ v27f: imgLayout 지원 (auto/fit/split)
+  const userLayout = pItem.imgLayout || "auto";
+  const descLines = (pItem.notes||"").split(/\\n|\n/).length;
+  const descLen = (pItem.notes||"").length;
+  const autoNeedsSplit = pHasNotes && pImgs.length > 0 && (descLines > 5 || descLen > 150);
+  const needsSplit = userLayout === "split" ? (pHasNotes && pImgs.length > 0) : userLayout === "fit" ? false : autoNeedsSplit;
+  const pMaxH = needsSplit ? '65vh' : userLayout === "fit"
+    ? (pRows <= 1 ? '35vh' : pRows <= 2 ? '16vh' : '11vh')
+    : (pRows <= 1 ? (pHasNotes ? '48vh' : '62vh') : pRows <= 2 ? '26vh' : '16vh');
+
+  if (needsSplit) {
+    return `
 <div class="page sec-page">
-  <div class="sec-header">
-    <div class="sec-num">${secNum("program")}</div>
-    <div class="sec-title-block">
-      <div class="sec-title">${pItem.itemName||"Program"}</div>
-      <div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div>
-    </div>
-  </div>
+  <div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>
   <div class="sec-body">
     ${pItem.notes?`<div class="box"><div class="box-title">운영 메모</div><div class="box-val">${pItem.notes}</div></div>`:""}
     ${contentBlocksHtml(pItem.contentBlocks)}
-    ${pImgs.length ? `<div class="inline-imgs">
-      <div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
-        ${pImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pMaxH}"/>`).join("")}
-      </div>
-    </div>` : ""}
+  </div>
+  <div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>
+</div>
+<div class="page sec-page">
+  <div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>
+  <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
+    <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
+      ${pImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pMaxH}"/>`).join("")}
+    </div></div>
+  </div>
+  <div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>
+</div>`;
+  }
+
+  const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
+  return `
+<div class="page sec-page">
+  <div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>
+  <div class="sec-body">
+    ${pItem.notes?`<div class="box"><div class="box-title">운영 메모</div><div class="box-val">${pItem.notes}</div></div>`:""}
+    ${contentBlocksHtml(pItem.contentBlocks)}
+    ${pImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
+      ${pImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pMaxH};${fitStyle}width:100%"/>`).join("")}
+    </div></div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>
 </div>`;
@@ -13067,6 +13197,30 @@ ${secEnabled("timeline") ? (()=>{
               <DocFG label="메모">
                 <textarea className="form-input" rows={3} value={activeItemObj.notes||""} onChange={e=>updateDesignItem(activeItemObj._id,"notes",e.target.value)} placeholder="제작 시방, 소재, 특이사항 등" style={{resize:"vertical"}}/>
               </DocFG>
+              {/* ★ v27f: Design Item PDF 이미지 배치 옵션 */}
+              {(activeItemObj.images||[]).length > 0 && (activeItemObj.notes||"").length > 0 && (
+                <div style={{marginTop:8,marginBottom:4}}>
+                  <label className="form-label" style={{marginBottom:6}}>PDF 이미지 배치</label>
+                  <div style={{display:"flex",gap:8}}>
+                    {[
+                      {val:"auto",   label:"\uD83E\uDD16 자동",       desc:"텍스트 길이에 따라 자동 판단"},
+                      {val:"fit",    label:"\uD83D\uDCD0 이미지 맞춤", desc:"한 페이지에 이미지 축소 배치"},
+                      {val:"split",  label:"\uD83D\uDCC4 다음 페이지", desc:"이미지를 별도 페이지로 분리"},
+                    ].map(opt => (
+                      <button key={opt.val} onClick={()=>updateDesignItem(activeItemObj._id,"imgLayout",opt.val)}
+                        title={opt.desc}
+                        style={{
+                          flex:1, padding:"8px 6px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer",
+                          background: (activeItemObj.imgLayout||"auto")===opt.val ? "rgba(99,102,241,.15)" : "rgba(255,255,255,.03)",
+                          border: (activeItemObj.imgLayout||"auto")===opt.val ? "1px solid rgba(99,102,241,.4)" : "1px solid rgba(255,255,255,.08)",
+                          color: (activeItemObj.imgLayout||"auto")===opt.val ? "#a5b4fc" : "var(--txt4)",
+                        }}>
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <ContentBlockManager sectionId={`designItem_${activeItemObj._id}`} blocks={activeItemObj.contentBlocks||[]} onUpdate={blocks=>updateDesignItem(activeItemObj._id,"contentBlocks",blocks)} projectName={proj?.name} sectionTitle="Design"/>
               <div style={{marginTop:12}}>
                 <label className="form-label">제작 이미지</label>
@@ -13326,6 +13480,30 @@ ${secEnabled("timeline") ? (()=>{
                 <DocFG label="메모">
                   <textarea className="form-input" rows={3} value={activeProgramItemObj.notes||""} onChange={e=>updateProgramItem(activeProgramItemObj._id,"notes",e.target.value)} placeholder="운영 사항, 비고 등" style={{resize:"vertical"}}/>
                 </DocFG>
+                {/* ★ v27f: Program Item PDF 이미지 배치 옵션 */}
+                {(activeProgramItemObj.images||[]).length > 0 && (activeProgramItemObj.notes||"").length > 0 && (
+                  <div style={{marginTop:8,marginBottom:4}}>
+                    <label className="form-label" style={{marginBottom:6}}>PDF 이미지 배치</label>
+                    <div style={{display:"flex",gap:8}}>
+                      {[
+                        {val:"auto",   label:"\uD83E\uDD16 자동",       desc:"텍스트 길이에 따라 자동 판단"},
+                        {val:"fit",    label:"\uD83D\uDCD0 이미지 맞춤", desc:"한 페이지에 이미지 축소 배치"},
+                        {val:"split",  label:"\uD83D\uDCC4 다음 페이지", desc:"이미지를 별도 페이지로 분리"},
+                      ].map(opt => (
+                        <button key={opt.val} onClick={()=>updateProgramItem(activeProgramItemObj._id,"imgLayout",opt.val)}
+                          title={opt.desc}
+                          style={{
+                            flex:1, padding:"8px 6px", borderRadius:8, fontSize:11, fontWeight:700, cursor:"pointer",
+                            background: (activeProgramItemObj.imgLayout||"auto")===opt.val ? "rgba(99,102,241,.15)" : "rgba(255,255,255,.03)",
+                            border: (activeProgramItemObj.imgLayout||"auto")===opt.val ? "1px solid rgba(99,102,241,.4)" : "1px solid rgba(255,255,255,.08)",
+                            color: (activeProgramItemObj.imgLayout||"auto")===opt.val ? "#a5b4fc" : "var(--txt4)",
+                          }}>
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <ContentBlockManager sectionId={`programItem_${activeProgramItemObj._id}`} blocks={activeProgramItemObj.contentBlocks||[]} onUpdate={blocks=>updateProgramItem(activeProgramItemObj._id,"contentBlocks",blocks)} projectName={proj?.name} sectionTitle="Program"/>
                 <div style={{marginTop:12}}>
                   <label className="form-label">이미지</label>
@@ -13757,7 +13935,7 @@ ${secEnabled("timeline") ? (()=>{
             <div style={{fontWeight:800,fontSize:14,color:"var(--txt)"}}>📋 운영계획안 버전 선택</div>
             <button onClick={()=>setShowPlanVersions(false)} style={{background:"none",border:"none",color:"var(--txt4)",cursor:"pointer",fontSize:18}}>×</button>
           </div>
-          <div style={{fontSize:12,color:"var(--txt4)",marginBottom:10}}>불러올 운영계획안 버전을 선택하세요. 선택한 버전의 데이터로 결과보고서가 초기화됩니다.</div>
+          <div style={{fontSize:12,color:"var(--txt4)",marginBottom:10}}>불러올 운영계획안 버전을 선택하세요.</div>
           {planVersionsLoading ? (
             <div style={{textAlign:"center",color:"var(--txt4)",fontSize:13,padding:"20px 0"}}>⏳ 버전 목록 로딩 중...</div>
           ) : planVersions.length === 0 ? (
@@ -13772,17 +13950,30 @@ ${secEnabled("timeline") ? (()=>{
                     <div style={{fontWeight:700,fontSize:13,color:ver.id===0?"#818cf8":"var(--txt)"}}>{ver.name}</div>
                     <div style={{fontSize:11,color:"var(--txt4)",marginTop:2}}>{new Date(ver.timestamp).toLocaleString("ko-KR")}</div>
                   </div>
-                  <button onClick={()=>{
-                    if(!confirm(`"${ver.name}" 버전을 불러오시겠습니까?\n⚠️ 기존 결과보고서 내용이 선택한 운영계획안으로 교체됩니다.`)) return;
-                    try {
-                      const merged = mergePlanToResult(ver.data, {});
-                      setDocData(merged);
-                      setShowPlanVersions(false);
-                      toast(`📋 "${ver.name}" 운영계획안을 불러왔습니다`,"success");
-                    } catch(e) { toast("불러오기 실패: "+e.message,"error"); }
-                  }} style={{background:"rgba(99,102,241,.1)",border:"1px solid rgba(99,102,241,.25)",color:"#a5b4fc",borderRadius:6,padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer"}}>
-                    선택
-                  </button>
+                  <div style={{display:"flex",gap:6}}>
+                    <button onClick={()=>{
+                      if(!confirm(`"${ver.name}" 운영계획안을 불러옵니다.\n\n✅ 기존 결과보고서에 작성한 내용(메모, 이미지 등)은 유지하고,\n운영계획안에서 새로 추가/변경된 내용만 병합합니다.`)) return;
+                      try {
+                        const merged = smartMergePlanToResult(ver.data, docData);
+                        setDocData(merged);
+                        setShowPlanVersions(false);
+                        toast(`📋 "${ver.name}" — 기존 데이터 유지 + 새 내용 병합 완료`,"success");
+                      } catch(e) { toast("불러오기 실패: "+e.message,"error"); }
+                    }} style={{background:"rgba(16,185,129,.1)",border:"1px solid rgba(16,185,129,.3)",color:"#6ee7b7",borderRadius:6,padding:"6px 10px",fontSize:10,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+                      ✅ 기존유지
+                    </button>
+                    <button onClick={()=>{
+                      if(!confirm(`"${ver.name}" 운영계획안을 불러옵니다.\n\n⚠️ 기존 결과보고서 내용이 모두 교체됩니다.\n처음부터 다시 작성하려는 경우 선택하세요.`)) return;
+                      try {
+                        const merged = mergePlanToResult(ver.data, {});
+                        setDocData(merged);
+                        setShowPlanVersions(false);
+                        toast(`📋 "${ver.name}" 운영계획안을 새로 불러왔습니다`,"success");
+                      } catch(e) { toast("불러오기 실패: "+e.message,"error"); }
+                    }} style={{background:"rgba(245,158,11,.08)",border:"1px solid rgba(245,158,11,.25)",color:"#fbbf24",borderRadius:6,padding:"6px 10px",fontSize:10,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+                      🔄 전체교체
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
