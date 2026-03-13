@@ -10565,21 +10565,21 @@ function AITimelinePanel({ project, onApplyTimeline, onApplyCueSheet }) {
 }
 
 // ── 운영계획안 → 결과보고서 데이터 로드/병합 헬퍼 ──
-// ★ v27f: IDB 타임아웃 헬퍼 (IDB 연결 불량 시 폴백)
-function idbWithTimeout(promise, ms=3000) {
-  return Promise.race([promise, new Promise((_,rej) => setTimeout(() => rej(new Error('IDB_TIMEOUT')), ms))]);
+// ★ v27f: 비동기 타임아웃 헬퍼 (IDB/Cloud 연결 불량 시 폴백)
+function asyncTimeout(promise, ms=3000) {
+  return Promise.race([promise, new Promise((_,rej) => setTimeout(() => rej(new Error('ASYNC_TIMEOUT')), ms))]);
 }
 
 async function loadPlanDataForResult(projectId) {
   const planKey = `eventos_doc_${projectId}_plan`;
   if (CLOUD_CONFIG.ENABLED) {
     try {
-      const cloud = await CloudSync.loadDoc(planKey);
+      const cloud = await asyncTimeout(CloudSync.loadDoc(planKey), 4000);
       if (cloud && typeof cloud === "object" && Object.keys(cloud).length) return cloud;
     } catch {}
   }
   try {
-    const idb = await idbWithTimeout(loadFromIDB(planKey));
+    const idb = await asyncTimeout(loadFromIDB(planKey), 3000);
     if (idb && typeof idb === "object" && Object.keys(idb).length) return idb;
   } catch {}
   try {
@@ -10595,9 +10595,8 @@ async function loadPlanVersionsForResult(projectId) {
   // ① R2 클라우드에서 버전 배열 로드
   if (CLOUD_CONFIG.ENABLED) {
     try {
-      const cv = await CloudSync.loadDoc(versionsKey);
+      const cv = await asyncTimeout(CloudSync.loadDoc(versionsKey), 4000);
       if (Array.isArray(cv) && cv.length > 0) {
-        // 최신 plan도 추가 (버전과 별도)
         const current = await loadPlanDataForResult(projectId);
         if (current) {
           const hasLatest = cv.some(v => v.id === 0);
@@ -10609,7 +10608,7 @@ async function loadPlanVersionsForResult(projectId) {
   }
   // ② IDB에서 버전 로드 (타임아웃 적용)
   try {
-    const iv = await idbWithTimeout(loadFromIDB(versionsKey));
+    const iv = await asyncTimeout(loadFromIDB(versionsKey), 3000);
     if (Array.isArray(iv) && iv.length > 0) {
       const current = await loadPlanDataForResult(projectId);
       if (current) {
