@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260315v27n";
+  var CODE_VER = "20260315v27o";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -12116,7 +12116,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     (de.designItems||[]).forEach(item => { if (item.images) allImages.push(...item.images); });
     (pr.programItems||[]).forEach(item => { if (item.images) allImages.push(...item.images); });
 
-    // ── R2 이미지 → base64 사전 변환 (5개씩 병렬) ──
+    // ── R2 이미지 → base64 사전 변환 (5개씩 병렬) + ★ v27o: 실패 시 1회 재시도 ──
     const imgMap = {};
     const r2Images = allImages.filter(img => img && img.r2Key);
     if (r2Images.length > 0) {
@@ -12131,16 +12131,31 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           if (r.status === "fulfilled" && r.value) imgMap[img.r2Key] = r.value;
         });
         const loaded = Math.min(i + BATCH, r2Images.length);
-        console.log("[PDF] 🖼️ 이미지 로딩 " + loaded + "/" + r2Images.length);
         if (progressEl) progressEl.textContent = "이미지 로딩 중... " + loaded + "/" + r2Images.length;
       }
-      console.log("[PDF] ✅ 이미지 사전 로딩 완료:", Object.keys(imgMap).length + "/" + r2Images.length);
+      // ★ v27o: 실패한 이미지 1회 재시도
+      const failedImages = r2Images.filter(img => !imgMap[img.r2Key]);
+      if (failedImages.length > 0) {
+        console.warn("[PDF] ⚠️ " + failedImages.length + "개 이미지 재시도...");
+        if (progressEl) progressEl.textContent = "실패 이미지 재시도 중... " + failedImages.length + "개";
+        for (const img of failedImages) {
+          try {
+            const r = await fetchImageAsBase64(img);
+            if (r) imgMap[img.r2Key] = r;
+          } catch(e) { console.warn("[PDF] 재시도 실패:", img.r2Key); }
+        }
+      }
+      const finalFail = r2Images.length - Object.keys(imgMap).length;
+      console.log("[PDF] ✅ 이미지 로딩 완료:", Object.keys(imgMap).length + "/" + r2Images.length + (finalFail > 0 ? " (⚠️ " + finalFail + "개 실패)" : ""));
+      if (progressEl) progressEl.textContent = "이미지 로딩 완료 " + Object.keys(imgMap).length + "/" + r2Images.length + (finalFail > 0 ? " (⚠️ " + finalFail + "개 실패)" : "");
     }
 
-    // ── base64 매핑된 이미지 소스 (PDF 전용) ──
+    // ── ★ v27o: base64 매핑된 이미지 소스 (PDF 전용) — 개선된 fallback ──
     const pdfImgSrc = (img) => {
       if (!img) return "";
       if (img.r2Key && imgMap[img.r2Key]) return imgMap[img.r2Key];
+      if (img.data && typeof img.data === "string" && img.data.startsWith("data:")) return img.data;
+      if (img.r2Key) console.warn("[PDF] ⚠️ 이미지 누락:", img.r2Key, img.name || "");
       return getImageSrc(img);
     };
 
@@ -12266,14 +12281,14 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       if (!src) return "";
       return `<div style="margin:8px 0;text-align:center">${ch.title?`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#374151">${ch.title}</div>`:""}<img src="${src}" style="max-width:55%;max-height:200px;height:auto"/></div>`;
     };
-    // ★ v27g: 차트 2열 배치 (이미지처럼 자동 크기 조절)
+    // ★ v27o: 차트 2열 배치 — LEGO 모드에서 height:100% 로 컨테이너 채움
     const chartRowHtml = (charts) => {
       const validCharts = charts.filter(ch => chartDataUrls[ch.id]);
       if (!validCharts.length) return "";
       const w = validCharts.length === 1 ? "55%" : "48%";
-      return `<div style="display:flex;gap:2%;justify-content:center;align-items:flex-start;margin:8px 0;flex-wrap:wrap">${validCharts.map(ch => {
+      return `<div style="display:flex;gap:2%;justify-content:center;align-items:flex-start;margin:8px 0;flex-wrap:wrap;height:100%">${validCharts.map(ch => {
         const src = chartDataUrls[ch.id];
-        return `<div style="width:${w};text-align:center">${ch.title?`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#374151">${ch.title}</div>`:""}<img src="${src}" style="width:100%;height:auto"/></div>`;
+        return `<div style="width:${w};text-align:center;height:100%">${ch.title?`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#374151">${ch.title}</div>`:""}<img src="${src}" style="width:100%;height:100%;max-height:100%;object-fit:contain"/></div>`;
       }).join("")}</div>`;
     };
     const contentBlocksHtml = (blocks) => {
@@ -12323,9 +12338,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     const PAGE_BODY_MAX_H = 500;
     // ★ v27n: aiSummary를 서브 요소로 분해 + 차트 2열 그룹핑 + 플렉스 레이아웃
     const flattenBlocks = (blocks) => {
-      // 1단계: 원시 요소 수집 (각 아이템을 개별 {h, html, flexStyle}로)
+      // ★ v27o: LEGO 블록 — flexStyle 제거, itemType 추가
       const raw = [];
-      // ★ v27k: 글로벌 AI 순서 지원 + 파일 경계 없이 병합
       const globalOrderBlock = (blocks||[]).find(b => b.type === "_aiGlobalOrder");
       const aiBlocks = (blocks||[]).filter(b => b.type === "aiSummary");
       const aiBlockMap = {};
@@ -12352,31 +12366,22 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         return aiItems;
       };
 
-      // ★ v27l: AI 항목 간 섹션 구분선
       const aiDivider = `<div style="border-top:1.5px solid #e2e8f0;margin:14px 0"></div>`;
       const aiDividerH = 30;
-
-      // ★ v27n: 개별 아이템 → flexStyle 포함하여 raw에 푸시
-      const tableFlexStyle = (tbl) => {
-        const tw = tbl.tableWidth || "full";
-        return tw === "compact" ? "flex:0 0 auto;max-width:50%"
-             : tw === "auto" ? "flex:0 0 auto;max-width:65%"
-             : "width:100%";
-      };
 
       const processAiItem = (b, item, isLast) => {
         if (item.type === "summary" && b.summary) {
           const title = b.customTitle || b.fileName || "AI 분석 요약";
           const sHtml = `<div style="margin:8px 0;padding:14px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;border-left:3px solid ${_kc}"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">${title}</div><div style="font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div></div>`;
           const sH = estTextH(b.summary) + 30;
-          raw.push({ k:"html", h:sH, html:sHtml, flexStyle:"width:100%" });
-          if (!isLast) raw.push({ k:"html", h:aiDividerH, html:aiDivider, flexStyle:"width:100%" });
+          raw.push({ k:"html", h:sH, html:sHtml, itemType:"text" });
+          if (!isLast) raw.push({ k:"html", h:aiDividerH, html:aiDivider, itemType:"divider" });
         } else if (item.type === "table") {
           const t = (b.tables||[]).find(t => t.id === item.id);
           if (t) {
             const tH = estTableH(t);
-            raw.push({ k:"html", h:tH, html:tableBlockHtml(t), flexStyle:tableFlexStyle(t) });
-            if (!isLast) raw.push({ k:"html", h:aiDividerH, html:aiDivider, flexStyle:"width:100%" });
+            raw.push({ k:"html", h:tH, html:tableBlockHtml(t), itemType:"table" });
+            if (!isLast) raw.push({ k:"html", h:aiDividerH, html:aiDivider, itemType:"divider" });
           }
         } else if (item.type === "chart") {
           const c = (b.charts||[]).find(c => c.id === item.id);
@@ -12386,12 +12391,11 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         }
       };
 
-      // aiSummary 블록이 처음 나올 위치에 모든 AI 항목을 삽입
       let aiInserted = false;
       (blocks||[]).forEach(b => {
         if (b.type === "_aiGlobalOrder") return;
         if (b.type === "table") {
-          raw.push({ k: "html", h: estTableH(b), html: tableBlockHtml(b), flexStyle:tableFlexStyle(b) });
+          raw.push({ k: "html", h: estTableH(b), html: tableBlockHtml(b), itemType:"table" });
         } else if (b.type === "chart") {
           raw.push({ k: "chart", data: b });
         } else if (b.type === "aiSummary") {
@@ -12403,7 +12407,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         }
       });
 
-      // 2단계: 연속 차트를 2개씩 그룹핑 + 단일 차트는 flexible
+      // 2단계: 연속 차트를 2개씩 그룹핑
       const items = [];
       for (let i = 0; i < raw.length; i++) {
         if (raw[i].k === "pagebreak") {
@@ -12413,12 +12417,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           while (i + 1 < raw.length && raw[i + 1].k === "chart") { i++; charts.push(raw[i].data); }
           for (let j = 0; j < charts.length; j += 2) {
             const pair = charts.slice(j, j + 2);
-            if (pair.length === 2) {
-              items.push({ h: estChartRowH(pair.length), html: chartRowHtml(pair), flexStyle:"width:100%" });
-            } else {
-              // ★ v27n: 단일 차트 — 컴팩트 표 옆에 나란히 배치 가능
-              items.push({ h: estChartRowH(1), html: chartRowHtml(pair), flexStyle:"flex:1 1 45%;min-width:45%" });
-            }
+            items.push({ h: estChartRowH(pair.length), html: chartRowHtml(pair), itemType:"chart" });
           }
         } else {
           items.push(raw[i]);
@@ -12431,46 +12430,54 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     const contentBlocksPagesHtml = (blocks, makeHeaderHtml, footerHtml) => {
       const items = flattenBlocks(blocks);
       if (!items.length) return "";
-      const isFlexible = (it) => !(it.flexStyle||"width:100%").includes("width:100%");
+      // ★ v27o: LEGO 모드 vs 자동 모드
+      const hasExplicitBreaks = items.some(it => it.pagebreak);
       const pages = [];
-      let curItems = [];
-      let curH = 0;
-      items.forEach(item => {
-        if (item.pagebreak) {
-          if (curItems.length > 0) { pages.push(curItems); curItems = []; curH = 0; }
-          return;
-        }
-        // ★ v27n: flexible 아이템 나란히 배치 시 max(h1,h2)
-        const prev = curItems.length ? curItems[curItems.length - 1] : null;
-        if (prev && isFlexible(prev) && isFlexible(item) && !prev._paired) {
-          const pairedH = Math.max(prev.h, item.h);
-          const delta = pairedH - prev.h;
-          if (curH + delta <= PAGE_BODY_MAX_H) {
-            prev._paired = true;
-            item._paired = true;
-            curItems.push(item);
-            curH += delta;
-            return;
-          }
-        }
-        if (curItems.length > 0 && curH + item.h > PAGE_BODY_MAX_H) {
-          pages.push(curItems);
-          curItems = [item];
-          curH = item.h;
-        } else {
-          curItems.push(item);
-          curH += item.h;
-        }
-      });
-      if (curItems.length > 0) pages.push(curItems);
+
+      if (hasExplicitBreaks) {
+        // ── LEGO 모드: PD 페이지 나누기만으로 분할 ──
+        let cur = [];
+        items.forEach(item => {
+          if (item.pagebreak) { if (cur.length) pages.push(cur); cur = []; }
+          else cur.push(item);
+        });
+        if (cur.length) pages.push(cur);
+      } else {
+        // ── 자동 모드: PAGE_BODY_MAX_H 기반 (하위 호환) ──
+        let curItems = [];
+        let curH = 0;
+        items.forEach(item => {
+          if (item.pagebreak) { if (curItems.length) { pages.push(curItems); curItems = []; curH = 0; } return; }
+          if (curItems.length > 0 && curH + item.h > PAGE_BODY_MAX_H) {
+            pages.push(curItems);
+            curItems = [item]; curH = item.h;
+          } else { curItems.push(item); curH += item.h; }
+        });
+        if (curItems.length) pages.push(curItems);
+      }
+
       return pages.map((pageItems, pi) => {
-        // ★ v27n: 플렉스 컨테이너로 래핑 — 컴팩트 표+차트 나란히 배치
-        const html = `<div style="display:flex;flex-wrap:wrap;gap:8px 12px;align-items:flex-start">${pageItems.map(it => `<div style="${it.flexStyle||'width:100%'}">${it.html}</div>`).join("")}</div>`;
-        return `<div class="page sec-page">
+        if (hasExplicitBreaks) {
+          // LEGO: 수직 flex — 차트가 남은 공간 채움
+          const html = pageItems.map(it => {
+            const isChart = it.itemType === "chart";
+            const flex = isChart ? "flex:1 1 0;min-height:60px" : "flex:0 0 auto";
+            return `<div style="${flex}">${it.html}</div>`;
+          }).join("");
+          return `<div class="page sec-page">
+  ${makeHeaderHtml(pi > 0)}
+  <div class="sec-body" style="display:flex;flex-direction:column;gap:8px">${html}</div>
+  ${footerHtml}
+</div>`;
+        } else {
+          // 자동: 단순 수직 스택
+          const html = pageItems.map(it => it.html).join("");
+          return `<div class="page sec-page">
   ${makeHeaderHtml(pi > 0)}
   <div class="sec-body">${html}</div>
   ${footerHtml}
 </div>`;
+        }
       }).join("");
     };
 
@@ -12671,29 +12678,42 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
 ${isContentFirst ? vCbPagesHtml + vImgPageHtml : vImgPageHtml + vCbPagesHtml}`;
   }
 
-  // 기본: 한 페이지에 텍스트 + 이미지 (contentBlocks는 별도 페이지)
+  // ★ v27o: LEGO 모드 — imageBreaks가 있으면 그룹 기반 인라인
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
-  // ★ v27m: 비분할 모드에서도 imageRows 행 초과 시 페이지 분할
-  const vMaxInline = vActualCols * vImageRows;
-  const vInlineImgs = vImgs.length > vMaxInline ? vImgs.slice(0, vMaxInline) : vImgs;
-  const vOverflowImgs = vImgs.length > vMaxInline ? vImgs.slice(vMaxInline) : [];
-  // ★ v27l: vh → mm (인쇄 안전)
-  const vInlineMaxH = vInlineImgs.length ? (Math.ceil(vInlineImgs.length / vActualCols) <= 1 ? (vHasDesc ? '110mm' : '140mm') : (vHasDesc ? '52mm' : '65mm')) : '110mm';
-  const vOverflowPageHtml = vOverflowImgs.length ? itemImgPagesHtml(vOverflowImgs, vCols,
-    `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`, vImageRows, vItem.imageBreaks) : "";
+  const vHeader = `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`;
+  const vFooter = `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`;
+  let vInlineImgs, vInlineCols, vExtraPagesHtml = "";
+  if (vItem.imageBreaks?.length) {
+    const groups = splitImageGroups(vImgs, vItem.imageBreaks, vCols, vImageRows);
+    const g1 = groups[0];
+    const g1Cols = Math.min(g1.imgs.length, g1.cols);
+    const g1Max = g1Cols * g1.rows;
+    vInlineImgs = g1.imgs.length > g1Max ? g1.imgs.slice(0, g1Max) : g1.imgs;
+    vInlineCols = g1Cols;
+    const g1Over = g1.imgs.length > g1Max ? g1.imgs.slice(g1Max) : [];
+    const g1OverHtml = g1Over.length ? renderImagePages(g1Over, g1Cols, g1.rows, (pi,pc,mh) => `<div class="page sec-page">${vHeader}<div class="sec-body"><div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pc},1fr)">${pi.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${mh};width:100%;object-fit:contain"/>`).join("")}</div></div></div>${vFooter}</div>`) : "";
+    const restHtml = groups.slice(1).map(g => renderImagePages(g.imgs, g.cols, g.rows, (pi,pc,mh) => `<div class="page sec-page">${vHeader}<div class="sec-body"><div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pc},1fr)">${pi.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${mh};width:100%;object-fit:contain"/>`).join("")}</div></div></div>${vFooter}</div>`)).join("");
+    vExtraPagesHtml = g1OverHtml + restHtml;
+  } else {
+    const vMaxInline = vActualCols * vImageRows;
+    vInlineImgs = vImgs.length > vMaxInline ? vImgs.slice(0, vMaxInline) : vImgs;
+    vInlineCols = vActualCols;
+    const vOverflowImgs = vImgs.length > vMaxInline ? vImgs.slice(vMaxInline) : [];
+    vExtraPagesHtml = vOverflowImgs.length ? itemImgPagesHtml(vOverflowImgs, vCols, vHeader, vFooter, vImageRows, vItem.imageBreaks) : "";
+  }
+  const vInlineMaxH = vInlineImgs.length ? (Math.ceil(vInlineImgs.length / vInlineCols) <= 1 ? (vHasDesc ? '110mm' : '140mm') : (vHasDesc ? '52mm' : '65mm')) : '110mm';
   return `
 <div class="page sec-page">
-  <div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>
+  ${vHeader}
   <div class="sec-body">
     ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
-    ${vInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
+    ${vInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${vInlineCols},1fr)">
       ${vInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${vInlineMaxH};${fitStyle}width:100%;object-fit:contain"/>`).join("")}
     </div></div>` : ""}
   </div>
-  <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
+  ${vFooter}
 </div>
-${vOverflowPageHtml}${vCbPagesHtml}`;
+${vExtraPagesHtml}${vCbPagesHtml}`;
 }).join("") : ""}
 
 ${secEnabled("design") ? `<!-- 03 DESIGN -->
@@ -12770,29 +12790,43 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
 ${isContentFirst ? dCbPagesHtml + dImgPageHtml : dImgPageHtml + dCbPagesHtml}`;
   }
 
+  // ★ v27o: LEGO 모드 — imageBreaks 그룹 기반 인라인
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
-  // ★ v27m: 비분할 모드에서도 imageRows 행 초과 시 페이지 분할
-  const dMaxInline = dActualCols * dImageRows;
-  const dInlineImgs = dImgs.length > dMaxInline ? dImgs.slice(0, dMaxInline) : dImgs;
-  const dOverflowImgs = dImgs.length > dMaxInline ? dImgs.slice(dMaxInline) : [];
-  // ★ v27l: vh → mm
-  const dInlineMaxH = dInlineImgs.length ? (Math.ceil(dInlineImgs.length / dActualCols) <= 1 ? '85mm' : '40mm') : '85mm';
-  const dOverflowPageHtml = dOverflowImgs.length ? itemImgPagesHtml(dOverflowImgs, dCols,
-    `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`, dImageRows, dItem.imageBreaks) : "";
+  const dHeader = `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`;
+  const dFooter = `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`;
+  let dInlineImgs, dInlineCols, dExtraPagesHtml = "";
+  if (dItem.imageBreaks?.length) {
+    const groups = splitImageGroups(dImgs, dItem.imageBreaks, dCols, dImageRows);
+    const g1 = groups[0];
+    const g1Cols = Math.min(g1.imgs.length, g1.cols);
+    const g1Max = g1Cols * g1.rows;
+    dInlineImgs = g1.imgs.length > g1Max ? g1.imgs.slice(0, g1Max) : g1.imgs;
+    dInlineCols = g1Cols;
+    const g1Over = g1.imgs.length > g1Max ? g1.imgs.slice(g1Max) : [];
+    const g1OverHtml = g1Over.length ? renderImagePages(g1Over, g1Cols, g1.rows, (pi,pc,mh) => `<div class="page sec-page">${dHeader}<div class="sec-body"><div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pc},1fr)">${pi.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${mh};width:100%;object-fit:contain"/>`).join("")}</div></div></div>${dFooter}</div>`) : "";
+    const restHtml = groups.slice(1).map(g => renderImagePages(g.imgs, g.cols, g.rows, (pi,pc,mh) => `<div class="page sec-page">${dHeader}<div class="sec-body"><div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pc},1fr)">${pi.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${mh};width:100%;object-fit:contain"/>`).join("")}</div></div></div>${dFooter}</div>`)).join("");
+    dExtraPagesHtml = g1OverHtml + restHtml;
+  } else {
+    const dMaxInline = dActualCols * dImageRows;
+    dInlineImgs = dImgs.length > dMaxInline ? dImgs.slice(0, dMaxInline) : dImgs;
+    dInlineCols = dActualCols;
+    const dOverflowImgs = dImgs.length > dMaxInline ? dImgs.slice(dMaxInline) : [];
+    dExtraPagesHtml = dOverflowImgs.length ? itemImgPagesHtml(dOverflowImgs, dCols, dHeader, dFooter, dImageRows, dItem.imageBreaks) : "";
+  }
+  const dInlineMaxH = dInlineImgs.length ? (Math.ceil(dInlineImgs.length / dInlineCols) <= 1 ? '85mm' : '40mm') : '85mm';
   return `
 <div class="page sec-page">
-  <div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>
+  ${dHeader}
   <div class="sec-body">
     ${dInfoGrid}
     ${dItem.notes?`<div class="box"><div class="box-title">메모</div><div class="box-val">${dItem.notes}</div></div>`:""}
-    ${dInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
+    ${dInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${dInlineCols},1fr)">
       ${dInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${dInlineMaxH};${fitStyle}width:100%;object-fit:contain"/>`).join("")}
     </div></div>` : ""}
   </div>
-  <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
+  ${dFooter}
 </div>
-${dOverflowPageHtml}${dCbPagesHtml}`;
+${dExtraPagesHtml}${dCbPagesHtml}`;
 }).join("") : ""}
 
 ${secEnabled("program") ? `<!-- 04 PROGRAM -->
@@ -12887,28 +12921,42 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
 ${isContentFirst ? pCbPagesHtml + pImgPageHtml : pImgPageHtml + pCbPagesHtml}`;
   }
 
+  // ★ v27o: LEGO 모드 — imageBreaks 그룹 기반 인라인
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
-  // ★ v27m: 비분할 모드에서도 imageRows 행 초과 시 페이지 분할
-  const pMaxInline = pActualCols * pImageRows;
-  const pInlineImgs = pImgs.length > pMaxInline ? pImgs.slice(0, pMaxInline) : pImgs;
-  const pOverflowImgs = pImgs.length > pMaxInline ? pImgs.slice(pMaxInline) : [];
-  // ★ v27l: vh → mm
-  const pInlineMaxH = pInlineImgs.length ? (Math.ceil(pInlineImgs.length / pActualCols) <= 1 ? (pHasNotes ? '95mm' : '125mm') : '52mm') : '95mm';
-  const pOverflowPageHtml = pOverflowImgs.length ? itemImgPagesHtml(pOverflowImgs, pCols,
-    `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`, pImageRows, pItem.imageBreaks) : "";
+  const pHeader = `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`;
+  const pFooter = `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`;
+  let pInlineImgs, pInlineCols, pExtraPagesHtml = "";
+  if (pItem.imageBreaks?.length) {
+    const groups = splitImageGroups(pImgs, pItem.imageBreaks, pCols, pImageRows);
+    const g1 = groups[0];
+    const g1Cols = Math.min(g1.imgs.length, g1.cols);
+    const g1Max = g1Cols * g1.rows;
+    pInlineImgs = g1.imgs.length > g1Max ? g1.imgs.slice(0, g1Max) : g1.imgs;
+    pInlineCols = g1Cols;
+    const g1Over = g1.imgs.length > g1Max ? g1.imgs.slice(g1Max) : [];
+    const g1OverHtml = g1Over.length ? renderImagePages(g1Over, g1Cols, g1.rows, (pi,pc,mh) => `<div class="page sec-page">${pHeader}<div class="sec-body"><div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pc},1fr)">${pi.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${mh};width:100%;object-fit:contain"/>`).join("")}</div></div></div>${pFooter}</div>`) : "";
+    const restHtml = groups.slice(1).map(g => renderImagePages(g.imgs, g.cols, g.rows, (pi,pc,mh) => `<div class="page sec-page">${pHeader}<div class="sec-body"><div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pc},1fr)">${pi.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${mh};width:100%;object-fit:contain"/>`).join("")}</div></div></div>${pFooter}</div>`)).join("");
+    pExtraPagesHtml = g1OverHtml + restHtml;
+  } else {
+    const pMaxInline = pActualCols * pImageRows;
+    pInlineImgs = pImgs.length > pMaxInline ? pImgs.slice(0, pMaxInline) : pImgs;
+    pInlineCols = pActualCols;
+    const pOverflowImgs = pImgs.length > pMaxInline ? pImgs.slice(pMaxInline) : [];
+    pExtraPagesHtml = pOverflowImgs.length ? itemImgPagesHtml(pOverflowImgs, pCols, pHeader, pFooter, pImageRows, pItem.imageBreaks) : "";
+  }
+  const pInlineMaxH = pInlineImgs.length ? (Math.ceil(pInlineImgs.length / pInlineCols) <= 1 ? (pHasNotes ? '95mm' : '125mm') : '52mm') : '95mm';
   return `
 <div class="page sec-page">
-  <div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>
+  ${pHeader}
   <div class="sec-body">
     ${pItem.notes?`<div class="box"><div class="box-title">운영 메모</div><div class="box-val">${pItem.notes}</div></div>`:""}
-    ${pInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
+    ${pInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pInlineCols},1fr)">
       ${pInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pInlineMaxH};${fitStyle}width:100%;object-fit:contain"/>`).join("")}
     </div></div>` : ""}
   </div>
-  <div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>
+  ${pFooter}
 </div>
-${pOverflowPageHtml}${pCbPagesHtml}`;
+${pExtraPagesHtml}${pCbPagesHtml}`;
 }).join("") : ""}
 
 ${secEnabled("operation") ? `<!-- 05 OPERATION -->
