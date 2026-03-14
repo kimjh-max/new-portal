@@ -1727,20 +1727,35 @@ function useCloudState(key, defaultValue, opts) {
   }, [key]);
 
   // setFromCloud: 클라우드 데이터 적용 (write-back 안 함)
-  // ★ v27l: 롤백 방지 — 미저장 로컬 변경이 있으면 클라우드 데이터 무시
+  // ★ v27l: 롤백 방지 — 미저장 로컬 변경이 있거나, 로컬 데이터가 더 크면 무시
   const setFromCloud = useCallback((value) => {
     const isDirty = localStorage.getItem(lsKey + "_dirty") === "1";
     if (isDirty) {
       console.log("[useCloudState] 🛡️ 로컬 미저장 변경 보호:", key, "— 클라우드 데이터 무시, 로컬 데이터 유지");
-      // 로컬 데이터를 클라우드에 다시 푸시 (다음 save에서 처리됨)
       return;
+    }
+    // ★ v27l: 추가 보호 — 로컬에 이미 데이터가 있고 클라우드 데이터가 더 작으면 무시
+    // (데이터 손실 방지: 클라우드가 stale하면 보통 더 작음)
+    if (skipAutoSave) {
+      try {
+        const stored = localStorage.getItem(lsKey);
+        if (stored) {
+          const localSize = stored.length;
+          const cloudSize = JSON.stringify(value).length;
+          if (cloudSize < localSize * 0.8) {
+            console.log("[useCloudState] 🛡️ 클라우드 데이터 크기 의심:", key,
+              "cloud:", Math.round(cloudSize/1024)+"KB", "< local:", Math.round(localSize/1024)+"KB", "— 로컬 유지");
+            return;
+          }
+        }
+      } catch {}
     }
     setState(value);
     try {
       localStorage.setItem(lsKey, JSON.stringify(value));
       localStorage.setItem(lsKey + "_dirty", "0");
     } catch {}
-  }, [lsKey, key]);
+  }, [lsKey, key, skipAutoSave]);
 
   // markInitialized: 클라우드 초기 로드 완료 후 호출
   const markInitialized = useCallback(() => {
@@ -5781,7 +5796,7 @@ function Topbar({page, setPage, user, onLogout, onExport, onImport, onShowBackup
       <div className="logo">
         <div className="logo-icon">E</div>
         <div className="logo-text">EventOS</div>
-        <span style={{fontSize:9,color:"rgba(255,255,255,.3)",marginLeft:-10,marginTop:2,fontFamily:"monospace"}}>v27</span>
+        <span style={{fontSize:9,color:"rgba(255,255,255,.3)",marginLeft:-10,marginTop:2,fontFamily:"monospace"}}>v27l</span>
       </div>
       <nav>
         {pages.map(p=>(
@@ -11083,11 +11098,11 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
               console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 빈 데이터 무시");
             }
           } else if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
-            // ★ v27j: 롤백 방지 — _lastSaved 비교로 더 최신인 데이터 적용
+            // ★ v27l: 롤백 방지 — _lastSaved 비교 (클라우드가 strictly 최신일 때만 적용)
             const localData = docDataLatestRef.current;
             const localTs = localData?._lastSaved || 0;
             const cloudTs = cloudData?._lastSaved || 0;
-            if (cloudTs >= localTs) {
+            if (cloudTs > localTs) {
               setDocData(cloudData);
               saveToIDB(storageKey, cloudData).catch(()=>{});
               safeLocalSet(storageKey, JSON.stringify(cloudData));
@@ -11744,9 +11759,17 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   // ── 버전 불러오기 ──
   const loadVersion = (ver) => {
     if (!window.confirm(`"${ver.name}" 버전을 불러오시겠습니까?\n현재 작성 중인 내용이 대체됩니다.`)) return;
-    setDocData(ver.data);
-    safeLocalSet(storageKey, JSON.stringify(ver.data));
-    saveToIDB(storageKey, ver.data).catch(()=>{});
+    // ★ v27l: 롤백 방지 — 불러온 버전에 최신 타임스탬프 부여 + 즉시 클라우드 저장
+    const data = { ...ver.data, _lastSaved: Date.now() };
+    setDocData(data);
+    safeLocalSet(storageKey, JSON.stringify(data));
+    saveToIDB(storageKey, data).catch(()=>{});
+    // 클라우드에도 즉시 저장 (새로고침 시 롤백 방지)
+    if (CLOUD_CONFIG.ENABLED) {
+      CloudDataStore.writeDoc(storageKey, data).then(r => {
+        if (r.success) console.log("[DocEditor] ☁️ 버전 불러오기 → 클라우드 즉시 저장 완료");
+      }).catch(e => console.warn("[DocEditor] 버전 불러오기 클라우드 저장 실패:", e.message));
+    }
     setShowVersions(false);
     toast(`"${ver.name}" 버전을 불러왔습니다`, "success");
   };
