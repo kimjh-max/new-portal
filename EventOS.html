@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260314v27k";
+  var CODE_VER = "20260314v27l";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -11934,12 +11934,13 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       return pages.map(pageImgs => {
         const pCols = Math.min(pageImgs.length, actualCols);
         const rows = Math.ceil(pageImgs.length / pCols);
-        const mh = rows <= 1 ? '75vh' : rows <= 2 ? '35vh' : '22vh';
+        // ★ v27l: vh → mm 단위로 교체 (인쇄 시 정확한 높이)
+        const mh = rows <= 1 ? '140mm' : rows <= 2 ? '65mm' : '42mm';
         return `<div class="page sec-page">
   ${headerHtml}
   <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
     <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pCols},1fr)">
-      ${pageImgs.map(img => `<img src="${pdfImgSrc(img)}" style="max-height:${mh}"/>`).join("")}
+      ${pageImgs.map(img => `<img src="${pdfImgSrc(img)}" style="max-height:${mh};object-fit:contain"/>`).join("")}
     </div></div>
   </div>
   ${footerHtml}
@@ -11973,12 +11974,13 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     };
     preRenderAllCharts();
 
+    // ★ v27l: 표 스타일 개선 (키컬러 좌측 보더 + 셀 패딩 확대)
     const tableBlockHtml = (tbl) => {
-      const hdrs = (tbl.headers||[]).map(h => `<th style="padding:6px 10px;background:#f0f4ff;border:1px solid #d4d8e8;font-size:11px;font-weight:600;text-align:center">${h||""}</th>`).join("");
-      const rows = (tbl.rows||[]).map(row =>
-        `<tr>${(row||[]).map(cell => `<td style="padding:5px 10px;border:1px solid #d4d8e8;font-size:11px">${cell||""}</td>`).join("")}</tr>`
+      const hdrs = (tbl.headers||[]).map(h => `<th style="padding:7px 10px;background:#f0f4ff;border:1px solid #d4d8e8;font-size:10.5px;font-weight:700;text-align:center;color:#1e293b">${h||""}</th>`).join("");
+      const rows = (tbl.rows||[]).map((row,ri) =>
+        `<tr style="background:${ri%2===0?'#fff':'#fafbfc'}">${(row||[]).map(cell => `<td style="padding:6px 10px;border:1px solid #e2e8f0;font-size:10.5px;color:#374151;line-height:1.5">${cell||""}</td>`).join("")}</tr>`
       ).join("");
-      return `<div style="margin:8px 0">${tbl.title?`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#374151">${tbl.title}</div>`:""}<table style="width:100%;border-collapse:collapse">${hdrs?`<thead><tr>${hdrs}</tr></thead>`:""}${rows?`<tbody>${rows}</tbody>`:""}</table></div>`;
+      return `<div style="margin:10px 0">${tbl.title?`<div style="font-size:11px;font-weight:700;margin-bottom:6px;color:#1e293b;padding-left:8px;border-left:3px solid ${_kc}">${tbl.title}</div>`:""}<table style="width:100%;border-collapse:collapse;border-radius:4px;overflow:hidden">${hdrs?`<thead><tr>${hdrs}</tr></thead>`:""}${rows?`<tbody>${rows}</tbody>`:""}</table></div>`;
     };
     const chartBlockHtml = (ch) => {
       const src = chartDataUrls[ch.id];
@@ -12023,22 +12025,23 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     };
 
     // ★ v27g: contentBlock 높이 추정 (PDF 페이지 오버플로우 방지)
+    // ★ v27l: 높이 추정 보정 (텍스트 래핑/셀 패딩 버퍼 확대)
     const estTableH = (t) => {
-      const headerH = (t.headers||[]).length ? 36 : 0;
-      const rowsH = (t.rows||[]).length * 32;
-      const titleH = t.title ? 24 : 0;
-      return titleH + headerH + rowsH + 20;
+      const headerH = (t.headers||[]).length ? 40 : 0;
+      const rowsH = (t.rows||[]).length * 36;
+      const titleH = t.title ? 28 : 0;
+      return titleH + headerH + rowsH + 24;
     };
-    const estChartRowH = (n) => (n > 0 ? 24 : 0) + 220 + 16; // 차트 행 높이 (2열 배치 기준)
+    const estChartRowH = (n) => (n > 0 ? 28 : 0) + 220 + 16;
     const estTextH = (text) => {
       if (!text) return 0;
       const lines = text.split(/\n/).length;
       const charLines = Math.ceil(text.length / 70);
-      return Math.max(lines, charLines) * 22 + 20;
+      return Math.max(lines, charLines) * 22 + 24;
     };
 
-    // ★ v27g: 페이지 본문 최대 높이
-    const PAGE_BODY_MAX_H = 520;
+    // ★ v27l: 더 보수적 페이지 본문 최대 높이 (표 오버플로우 방지)
+    const PAGE_BODY_MAX_H = 500;
     // ★ v27g: aiSummary를 서브 요소로 분해 + 차트 2열 그룹핑
     const flattenBlocks = (blocks) => {
       // 1단계: 원시 요소 수집 (차트는 type으로 마킹)
@@ -12071,7 +12074,11 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       let aiGroupHtml = "";
       const flushAiGroup = () => { if (aiGroupHtml) { raw.push({ k:"html", h:aiGroupH, html:aiGroupHtml }); aiGroupH=0; aiGroupHtml=""; } };
 
-      const processAiItem = (b, item) => {
+      // ★ v27l: AI 항목 간 섹션 구분선
+      const aiDivider = `<div style="border-top:1.5px solid #e2e8f0;margin:14px 0"></div>`;
+      const aiDividerH = 30;
+
+      const processAiItem = (b, item, isLast) => {
         if (item.type === "summary" && b.summary) {
           const title = b.customTitle || b.fileName || "AI 분석 요약";
           const sHtml = `<div style="margin:8px 0;padding:14px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;border-left:3px solid ${_kc}"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">${title}</div><div style="font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div></div>`;
@@ -12079,16 +12086,19 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           if (aiGroupH + sH > PAGE_BODY_MAX_H && aiGroupHtml) { flushAiGroup(); }
           aiGroupH += sH;
           aiGroupHtml += sHtml;
+          if (!isLast) { aiGroupH += aiDividerH; aiGroupHtml += aiDivider; }
         } else if (item.type === "table") {
           const t = (b.tables||[]).find(t => t.id === item.id);
           if (t) {
-            const tH = estTableH(t);
+            const tH = estTableH(t) + (isLast ? 0 : aiDividerH);
             if (aiGroupH + tH <= PAGE_BODY_MAX_H) {
               aiGroupH += tH;
               aiGroupHtml += tableBlockHtml(t);
+              if (!isLast) aiGroupHtml += aiDivider;
             } else {
               flushAiGroup();
-              raw.push({ k:"html", h:tH, html:tableBlockHtml(t) });
+              const standalone = tableBlockHtml(t) + (isLast ? "" : aiDivider);
+              raw.push({ k:"html", h:tH, html:standalone });
             }
           }
         } else if (item.type === "chart") {
@@ -12114,7 +12124,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           if (!aiInserted) {
             aiInserted = true;
             const allAiItems = collectAiItems();
-            allAiItems.forEach(({ block, item }) => processAiItem(block, item));
+            allAiItems.forEach(({ block, item }, idx) => processAiItem(block, item, idx === allAiItems.length - 1));
           }
         }
       });
@@ -12287,7 +12297,7 @@ ${secEnabled("overview") ? `<!-- 01 OVER VIEW -->
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>
-${(sd("overview").contentBlocks||[]).length ? contentBlocksPagesHtml(sd("overview").contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("overview")}</div><div class="sec-title-block"><div class="sec-title">Over View</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle}</div>`) : ""}
+${(sd("overview").contentBlocks||[]).length ? contentBlocksPagesHtml(sd("overview").contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("overview")}</div><div class="sec-title-block"><div class="sec-title">Over View</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle}</div>`) : ""}
 ${imgHtml("overview")}` : ""}
 
 ${secEnabled("venue") ? `<!-- 02 VENUE -->
@@ -12316,7 +12326,7 @@ ${secEnabled("venue") ? `<!-- 02 VENUE -->
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>
-${(sd("venue").contentBlocks||[]).length ? contentBlocksPagesHtml(sd("venue").contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">Venue</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle}</div>`) : ""}
+${(sd("venue").contentBlocks||[]).length ? contentBlocksPagesHtml(sd("venue").contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">Venue</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle}</div>`) : ""}
 ${imgHtml("venue")}` : ""}
 
 ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
@@ -12333,13 +12343,14 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   const userLayout = vItem.imgLayout || "auto";
   const autoNeedsSplit = vHasDesc && vImgs.length > 0 && (descLines > 5 || descLen > 150);
   const needsSplit = userLayout === "split" ? (vHasDesc && vImgs.length > 0) : userLayout === "fit" ? false : autoNeedsSplit;
-  const vMaxH = needsSplit ? '65vh' : userLayout === "fit"
-    ? (vRows <= 1 ? '35vh' : vRows <= 2 ? '16vh' : '11vh')
-    : (vRows <= 1 ? (vHasDesc ? '55vh' : '70vh') : vRows <= 2 ? (vHasDesc ? '26vh' : '33vh') : '18vh');
+  // ★ v27l: vh → mm (인쇄 정확도)
+  const vMaxH = needsSplit ? '130mm' : userLayout === "fit"
+    ? (vRows <= 1 ? '70mm' : vRows <= 2 ? '32mm' : '22mm')
+    : (vRows <= 1 ? (vHasDesc ? '110mm' : '140mm') : vRows <= 2 ? (vHasDesc ? '52mm' : '65mm') : '36mm');
 
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (vItem.contentOrder||"contentFirst") === "contentFirst";
-  const vCbPagesHtml = (vItem.contentBlocks||[]).length ? contentBlocksPagesHtml(vItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`) : "";
+  const vCbPagesHtml = (vItem.contentBlocks||[]).length ? contentBlocksPagesHtml(vItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`) : "";
   // ★ v27j: 이미지 여러 페이지 분할
   const vImgPageHtml = itemImgPagesHtml(vImgs, vCols,
     `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`,
@@ -12364,7 +12375,8 @@ ${isContentFirst ? vCbPagesHtml + vImgPageHtml : vImgPageHtml + vCbPagesHtml}`;
   const vMaxInline = vActualCols * 2;
   const vInlineImgs = vImgs.length > vMaxInline ? vImgs.slice(0, vMaxInline) : vImgs;
   const vOverflowImgs = vImgs.length > vMaxInline ? vImgs.slice(vMaxInline) : [];
-  const vInlineMaxH = vInlineImgs.length ? (Math.ceil(vInlineImgs.length / vActualCols) <= 1 ? (vHasDesc ? '55vh' : '70vh') : (vHasDesc ? '26vh' : '33vh')) : '55vh';
+  // ★ v27l: vh → mm (인쇄 안전)
+  const vInlineMaxH = vInlineImgs.length ? (Math.ceil(vInlineImgs.length / vActualCols) <= 1 ? (vHasDesc ? '110mm' : '140mm') : (vHasDesc ? '52mm' : '65mm')) : '110mm';
   const vOverflowPageHtml = vOverflowImgs.length ? itemImgPagesHtml(vOverflowImgs, vCols,
     `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`,
     `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`) : "";
@@ -12374,7 +12386,7 @@ ${isContentFirst ? vCbPagesHtml + vImgPageHtml : vImgPageHtml + vCbPagesHtml}`;
   <div class="sec-body">
     ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
     ${vInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
-      ${vInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${vInlineMaxH};${fitStyle}width:100%"/>`).join("")}
+      ${vInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${vInlineMaxH};${fitStyle}width:100%;object-fit:contain"/>`).join("")}
     </div></div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
@@ -12406,7 +12418,7 @@ ${secEnabled("design") ? `<!-- 03 DESIGN -->
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>
-${(sd("design").contentBlocks||[]).length ? contentBlocksPagesHtml(sd("design").contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">Design</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle}</div>`) : ""}
+${(sd("design").contentBlocks||[]).length ? contentBlocksPagesHtml(sd("design").contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">Design</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle}</div>`) : ""}
 ${imgHtml("design")}` : ""}
 
 ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
@@ -12422,9 +12434,10 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   const descLen = (dItem.notes||"").length;
   const autoNeedsSplit = dHasNotes && dImgs.length > 0 && (descLines > 5 || descLen > 150);
   const needsSplit = userLayout === "split" ? (dHasNotes && dImgs.length > 0) : userLayout === "fit" ? false : autoNeedsSplit;
-  const dMaxH = needsSplit ? '65vh' : userLayout === "fit"
-    ? (dRows <= 1 ? '35vh' : dRows <= 2 ? '16vh' : '11vh')
-    : (dRows <= 1 ? '42vh' : dRows <= 2 ? '20vh' : '13vh');
+  // ★ v27l: vh → mm
+  const dMaxH = needsSplit ? '130mm' : userLayout === "fit"
+    ? (dRows <= 1 ? '70mm' : dRows <= 2 ? '32mm' : '22mm')
+    : (dRows <= 1 ? '85mm' : dRows <= 2 ? '40mm' : '26mm');
 
   const dInfoGrid = `<div class="info-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:12px">
       <div class="info-box"><div class="info-label">카테고리</div><div class="info-value">${dItem.category||"-"}</div></div>
@@ -12435,7 +12448,7 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
 
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (dItem.contentOrder||"contentFirst") === "contentFirst";
-  const dCbPagesHtml = (dItem.contentBlocks||[]).length ? contentBlocksPagesHtml(dItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`) : "";
+  const dCbPagesHtml = (dItem.contentBlocks||[]).length ? contentBlocksPagesHtml(dItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`) : "";
   // ★ v27j: 이미지 여러 페이지 분할
   const dImgPageHtml = itemImgPagesHtml(dImgs, dCols,
     `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`,
@@ -12459,7 +12472,8 @@ ${isContentFirst ? dCbPagesHtml + dImgPageHtml : dImgPageHtml + dCbPagesHtml}`;
   const dMaxInline = dActualCols * 2;
   const dInlineImgs = dImgs.length > dMaxInline ? dImgs.slice(0, dMaxInline) : dImgs;
   const dOverflowImgs = dImgs.length > dMaxInline ? dImgs.slice(dMaxInline) : [];
-  const dInlineMaxH = dInlineImgs.length ? (Math.ceil(dInlineImgs.length / dActualCols) <= 1 ? '42vh' : '20vh') : '42vh';
+  // ★ v27l: vh → mm
+  const dInlineMaxH = dInlineImgs.length ? (Math.ceil(dInlineImgs.length / dActualCols) <= 1 ? '85mm' : '40mm') : '85mm';
   const dOverflowPageHtml = dOverflowImgs.length ? itemImgPagesHtml(dOverflowImgs, dCols,
     `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`,
     `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`) : "";
@@ -12470,7 +12484,7 @@ ${isContentFirst ? dCbPagesHtml + dImgPageHtml : dImgPageHtml + dCbPagesHtml}`;
     ${dInfoGrid}
     ${dItem.notes?`<div class="box"><div class="box-title">메모</div><div class="box-val">${dItem.notes}</div></div>`:""}
     ${dInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
-      ${dInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${dInlineMaxH};${fitStyle}width:100%"/>`).join("")}
+      ${dInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${dInlineMaxH};${fitStyle}width:100%;object-fit:contain"/>`).join("")}
     </div></div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
@@ -12497,7 +12511,7 @@ ${secEnabled("program") ? `<!-- 04 PROGRAM -->
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>
-${(sd("program").contentBlocks||[]).length ? contentBlocksPagesHtml(sd("program").contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">Program</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle}</div>`) : ""}
+${(sd("program").contentBlocks||[]).length ? contentBlocksPagesHtml(sd("program").contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">Program</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle}</div>`) : ""}
 ${imgHtml("program")}` : ""}
 
 ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).length ? (()=>{
@@ -12521,7 +12535,7 @@ ${secEnabled("program") && (pr.cueSheet||[]).filter(c=>c.content||c.session).len
     <div class="sec-num">${secNum("program")}</div>
     <div class="sec-title-block">
       <div class="sec-title">Cue Sheet</div>
-      <div class="sec-sub">큐시트 | OPERATIONAL CUE SHEET${pi>0?" (continued)":""}</div>
+      <div class="sec-sub">큐시트 | OPERATIONAL CUE SHEET${pi>0?" (계속)":""}</div>
     </div>
   </div>
   <div class="sec-body">
@@ -12544,13 +12558,14 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   const descLen = (pItem.notes||"").length;
   const autoNeedsSplit = pHasNotes && pImgs.length > 0 && (descLines > 5 || descLen > 150);
   const needsSplit = userLayout === "split" ? (pHasNotes && pImgs.length > 0) : userLayout === "fit" ? false : autoNeedsSplit;
-  const pMaxH = needsSplit ? '65vh' : userLayout === "fit"
-    ? (pRows <= 1 ? '35vh' : pRows <= 2 ? '16vh' : '11vh')
-    : (pRows <= 1 ? (pHasNotes ? '48vh' : '62vh') : pRows <= 2 ? '26vh' : '16vh');
+  // ★ v27l: vh → mm
+  const pMaxH = needsSplit ? '130mm' : userLayout === "fit"
+    ? (pRows <= 1 ? '70mm' : pRows <= 2 ? '32mm' : '22mm')
+    : (pRows <= 1 ? (pHasNotes ? '95mm' : '125mm') : pRows <= 2 ? '52mm' : '32mm');
 
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (pItem.contentOrder||"contentFirst") === "contentFirst";
-  const pCbPagesHtml = (pItem.contentBlocks||[]).length ? contentBlocksPagesHtml(pItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`) : "";
+  const pCbPagesHtml = (pItem.contentBlocks||[]).length ? contentBlocksPagesHtml(pItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`) : "";
   // ★ v27j: 이미지 여러 페이지 분할
   const pImgPageHtml = itemImgPagesHtml(pImgs, pCols,
     `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`,
@@ -12573,7 +12588,8 @@ ${isContentFirst ? pCbPagesHtml + pImgPageHtml : pImgPageHtml + pCbPagesHtml}`;
   const pMaxInline = pActualCols * 2;
   const pInlineImgs = pImgs.length > pMaxInline ? pImgs.slice(0, pMaxInline) : pImgs;
   const pOverflowImgs = pImgs.length > pMaxInline ? pImgs.slice(pMaxInline) : [];
-  const pInlineMaxH = pInlineImgs.length ? (Math.ceil(pInlineImgs.length / pActualCols) <= 1 ? (pHasNotes ? '48vh' : '62vh') : '26vh') : '48vh';
+  // ★ v27l: vh → mm
+  const pInlineMaxH = pInlineImgs.length ? (Math.ceil(pInlineImgs.length / pActualCols) <= 1 ? (pHasNotes ? '95mm' : '125mm') : '52mm') : '95mm';
   const pOverflowPageHtml = pOverflowImgs.length ? itemImgPagesHtml(pOverflowImgs, pCols,
     `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`,
     `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`) : "";
@@ -12583,7 +12599,7 @@ ${isContentFirst ? pCbPagesHtml + pImgPageHtml : pImgPageHtml + pCbPagesHtml}`;
   <div class="sec-body">
     ${pItem.notes?`<div class="box"><div class="box-title">운영 메모</div><div class="box-val">${pItem.notes}</div></div>`:""}
     ${pInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
-      ${pInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pInlineMaxH};${fitStyle}width:100%"/>`).join("")}
+      ${pInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pInlineMaxH};${fitStyle}width:100%;object-fit:contain"/>`).join("")}
     </div></div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>
@@ -12619,7 +12635,7 @@ ${secEnabled("operation") ? `<!-- 05 OPERATION -->
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>
-${(sd("operation").contentBlocks||[]).length ? contentBlocksPagesHtml(sd("operation").contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("operation")}</div><div class="sec-title-block"><div class="sec-title">Operation</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle}</div>`) : ""}
+${(sd("operation").contentBlocks||[]).length ? contentBlocksPagesHtml(sd("operation").contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("operation")}</div><div class="sec-title-block"><div class="sec-title">Operation</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle}</div>`) : ""}
 ${imgHtml("operation")}` : ""}
 
 ${secEnabled("timeline") ? (()=>{
@@ -12954,7 +12970,8 @@ ${secEnabled("timeline") ? (()=>{
           try {
             const b64 = await fetchImageAsBase64(img);
             if (!b64) continue;
-            itemPm.sl.addImage({data:b64,x:1.5,y:itemPm.y,w:10,h:5.2,rounding:true});
+            // ★ v27l: rounding 제거 + sizing:contain 추가 (원형 틀 + 가로 늘어남 수정)
+            itemPm.sl.addImage({data:b64,x:1.5,y:itemPm.y,w:10,h:5.2,sizing:{type:"contain",w:10,h:5.2}});
             if ((img.annotations||[]).length)
               itemPm.sl.addText(img.annotations.map(a=>a.text).join(" · "),{x:1.5,y:itemPm.y+5.2,w:10,h:0.3,fontSize:9,color:"64748B",align:"center"});
             itemPm.y+=5.6;
