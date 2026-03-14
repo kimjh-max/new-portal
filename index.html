@@ -12721,7 +12721,7 @@ ${secEnabled("timeline") ? (()=>{
   for(let i=0;i<tlAllRows.length;i+=rowsPerPage) tlPages.push(tlAllRows.slice(i,i+rowsPerPage));
   if(!tlPages.length) tlPages.push([]);
   const tlThead = `<thead><tr><th>#</th><th>구분</th><th>업무</th><th>시작일</th><th>종료일</th><th>진행률</th><th>상태</th></tr></thead>`;
-  return tlPages.map((rows,pi)=>`<!-- 06 TIME LINE ${pi>0?"(continued)":""} -->
+  return tlPages.map((rows,pi)=>`<!-- 06 TIME LINE ${pi>0?"(계속)":""} -->
 <div class="page sec-page">
   <div class="sec-header">
     <div class="sec-num">${secNum("timeline")}</div>
