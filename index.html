@@ -11,39 +11,53 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <title>EpicStage EventOS – 로그인</title>
 <script>
-// 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
+// ★ v27o: 코드 버전 관리 — 즉시 자동 업데이트 + 알림 이중 안전장치
 (function(){
-  var CODE_VER = "20260314v27m";
-  // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
+  var CODE_VER = "20260315v27o";
+  var _WU = "https://eventos-worker.kimjh-c7c.workers.dev";
+  window._EVENTOS_VER = CODE_VER;
+
+  // 전역 에러 핸들러
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
-    e.preventDefault(); // 브라우저 크래시 방지
+    e.preventDefault();
   });
+
+  // 1) localStorage 기반 캐시 우회 (HTML 파일이 바뀌었을 때)
   var stored = localStorage.getItem("eventos_code_ver");
   if(stored !== CODE_VER){
     localStorage.setItem("eventos_code_ver", CODE_VER);
     if(stored){
-      // 구버전이 있었으면 캐시 우회 새로고침
       location.href = location.pathname + "?_=" + Date.now();
+      return; // 새로고침 중이므로 아래 코드 불필요
     }
   }
-  // ?_= 쿼리가 있으면 클린 URL로 복원 (한번만)
   if(location.search.indexOf("_=") > -1){
     history.replaceState(null, "", location.pathname);
   }
-  // ★ v27m: 5분마다 최신 버전 확인 → React에 이벤트 전달
-  window._EVENTOS_VER = CODE_VER;
+
+  // 2) ★ 즉시 서버 버전 체크 → 불일치 시 자동 새로고침 (무한 루프 방지: 30초 내 재시도 차단)
+  var _lastAutoReload = parseInt(sessionStorage.getItem("_ev_ar") || "0");
+  if (Date.now() - _lastAutoReload > 30000) {
+    fetch(_WU + "/api/version").then(function(r){return r.json();}).then(function(d){
+      if(d.version && d.version !== CODE_VER){
+        console.log("[EventOS] 새 버전 감지:", d.version, "현재:", CODE_VER, "→ 자동 새로고침");
+        sessionStorage.setItem("_ev_ar", String(Date.now()));
+        localStorage.removeItem("eventos_code_ver"); // 새 HTML 로드 후 버전 갱신 유도
+        location.href = location.pathname + "?_=" + Date.now();
+      }
+    }).catch(function(){ console.warn("[EventOS] 버전 체크 실패 (오프라인?)"); });
+  }
+
+  // 3) 주기적 배너 알림 (백업 — 자동 새로고침이 실패했을 경우 수동 버튼 제공)
   setTimeout(function checkVer(){
-    var workerUrl = "";
-    try { workerUrl = window.CLOUD_CONFIG && window.CLOUD_CONFIG.WORKER_URL; } catch(e){}
-    if (!workerUrl) { setTimeout(checkVer, 60000); return; }
-    fetch(workerUrl + "/api/version").then(function(r){return r.json();}).then(function(d){
+    fetch(_WU + "/api/version").then(function(r){return r.json();}).then(function(d){
       if(d.version && d.version !== CODE_VER){
         window.dispatchEvent(new CustomEvent("eventos-update",{detail:d.version}));
       }
     }).catch(function(){});
-    setTimeout(checkVer, 5*60*1000);
-  }, 30000); // 첫 체크: 30초 후
+    setTimeout(checkVer, 3*60*1000); // 3분마다
+  }, 60000); // 1분 후 첫 배너 체크
 })();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -5809,7 +5823,7 @@ function Topbar({page, setPage, user, onLogout, onExport, onImport, onShowBackup
       <div className="logo">
         <div className="logo-icon">E</div>
         <div className="logo-text">EventOS</div>
-        <span style={{fontSize:9,color:"rgba(255,255,255,.3)",marginLeft:-10,marginTop:2,fontFamily:"monospace"}}>v27m</span>
+        <span style={{fontSize:9,color:"rgba(255,255,255,.3)",marginLeft:-10,marginTop:2,fontFamily:"monospace"}}>v27n</span>
       </div>
       <nav>
         {pages.map(p=>(
@@ -9546,7 +9560,7 @@ function makeDraggableRows(items, onReorder) {
 }
 
 /* ── Section Image Uploader ────────────────────────────────────────────────── */
-function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayoutChange, rowsMode, onRowsChange}) {
+function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayoutChange, rowsMode, onRowsChange, imageBreaks, onImageBreaksChange}) {
   const fileRef = useRef(null);
   const [annotating, setAnnotating] = useState(null);
   const [annoText, setAnnoText] = useState("");
@@ -9594,6 +9608,11 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
     const img = (images||[])[idx];
     if (img && img.r2Key) {
       CloudSync.deleteFile(img.r2Key).catch(err => console.warn("[SectionImages] R2 delete:", err));
+    }
+    // ★ v27n: 이미지 삭제 시 해당 imageBreak도 정리
+    if (onImageBreaksChange && img) {
+      const cleaned = (imageBreaks||[]).filter(b => String(b.afterImageId) !== String(img.id));
+      if (cleaned.length !== (imageBreaks||[]).length) onImageBreaksChange(cleaned);
     }
     onUpdate((images||[]).filter((_,i)=>i!==idx));
   };
@@ -9668,23 +9687,46 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
                   }}>{n}행</button>
                 ))}
               </div>
-              {/* ★ v27m: 페이지 나눔 미리보기 */}
+              {/* ★ v27n: 그룹별 페이지 나눔 미리보기 */}
               {(() => {
-                const cols = layoutMode || Math.min((images||[]).length, 3);
-                const rpp = rowsMode || 2;
-                const maxPerPage = Math.max(1, cols * rpp);
-                const pageChunks = [];
                 const allImgs = images || [];
-                for (let i = 0; i < allImgs.length; i += maxPerPage) pageChunks.push(allImgs.slice(i, i + maxPerPage));
+                const defCols = layoutMode || Math.min(allImgs.length, 3);
+                const defRows = rowsMode || 2;
+                const breaks = imageBreaks || [];
+                // 이미지를 그룹으로 분할
+                const sorted = breaks
+                  .map(b => ({ ...b, idx: allImgs.findIndex(img => String(img.id) === String(b.afterImageId)) }))
+                  .filter(b => b.idx >= 0 && b.idx < allImgs.length - 1)
+                  .sort((a, b) => a.idx - b.idx);
+                const groups = [];
+                let start = 0;
+                sorted.forEach(brk => {
+                  const g = allImgs.slice(start, brk.idx + 1);
+                  if (g.length) groups.push({ imgs: g, cols: start === 0 ? defCols : (groups.length ? groups[groups.length-1]._nc || defCols : defCols), rows: start === 0 ? defRows : (groups.length ? groups[groups.length-1]._nr || defRows : defRows) });
+                  if (groups.length) { groups[groups.length-1]._nc = brk.cols || defCols; groups[groups.length-1]._nr = brk.rows || defRows; }
+                  start = brk.idx + 1;
+                });
+                if (start < allImgs.length) {
+                  const last = sorted[sorted.length - 1];
+                  groups.push({ imgs: allImgs.slice(start), cols: last ? (last.cols||defCols) : defCols, rows: last ? (last.rows||defRows) : defRows });
+                }
+                if (!groups.length && allImgs.length) groups.push({ imgs: allImgs, cols: defCols, rows: defRows });
+                if (groups.length) { groups[0].cols = defCols; groups[0].rows = defRows; }
+                // 각 그룹 → 페이지 청크
+                const pageChunks = [];
+                groups.forEach((g, gi) => {
+                  const mpp = Math.max(1, g.cols * g.rows);
+                  for (let i = 0; i < g.imgs.length; i += mpp) pageChunks.push({ imgs: g.imgs.slice(i, i + mpp), cols: g.cols, isNewGroup: i === 0 && gi > 0 });
+                });
                 return React.createElement("div", {style:{background:"#fff",borderRadius:6,padding:12,minHeight:80}},
                   pageChunks.map((chunk, pi) => React.createElement(React.Fragment, {key:pi},
-                    pi > 0 && React.createElement("div", {style:{borderTop:"2px dashed #f59e0b",margin:"10px 0",position:"relative",textAlign:"center"}},
-                      React.createElement("span", {style:{position:"relative",top:-9,background:"#fff",padding:"0 8px",fontSize:10,color:"#f59e0b",fontWeight:700}},
-                        "📄 페이지 " + (pi+1) + " 시작"
+                    pi > 0 && React.createElement("div", {style:{borderTop: chunk.isNewGroup ? "2px dashed #ef4444" : "2px dashed #f59e0b",margin:"10px 0",position:"relative",textAlign:"center"}},
+                      React.createElement("span", {style:{position:"relative",top:-9,background:"#fff",padding:"0 8px",fontSize:10,color:chunk.isNewGroup?"#ef4444":"#f59e0b",fontWeight:700}},
+                        chunk.isNewGroup ? "✂️ 그룹 "+chunk.cols+"열 시작" : "📄 페이지 "+(pi+1)+" 시작"
                       )
                     ),
-                    React.createElement("div", {style:{display:"grid",gridTemplateColumns:"repeat("+cols+",1fr)",gap:8}},
-                      chunk.map((img,i) => React.createElement("div", {key:pi+"-"+i,style:{aspectRatio:"16/10",background:"transparent",borderRadius:4,overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}},
+                    React.createElement("div", {style:{display:"grid",gridTemplateColumns:"repeat("+chunk.cols+",1fr)",gap:8}},
+                      chunk.imgs.map((img,i) => React.createElement("div", {key:pi+"-"+i,style:{aspectRatio:"16/10",background:"transparent",borderRadius:4,overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}},
                         React.createElement("img", {src:getImageSrc(img),style:{width:"100%",height:"100%",objectFit:"contain"},alt:""})
                       ))
                     )
@@ -9692,19 +9734,22 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
                 );
               })()}
               <div style={{fontSize:10,color:"var(--txt4)",marginTop:6,textAlign:"center"}}>
-                PDF 출력 시 {layoutMode||"자동"}열 × {rowsMode||2}행 그리드로 배치됩니다 ({Math.ceil((images||[]).length / Math.max(1, (layoutMode||Math.min((images||[]).length,3)) * (rowsMode||2)))}페이지)
+                {(imageBreaks||[]).length ? `${(imageBreaks||[]).length+1}개 그룹으로 분할됨` : `PDF 출력 시 ${layoutMode||"자동"}열 × ${rowsMode||2}행 그리드`} ({Math.ceil((images||[]).length / Math.max(1, (layoutMode||Math.min((images||[]).length,3)) * (rowsMode||2)))}페이지+)
               </div>
             </div>
           )}
 
-      {/* ★ v27d3: 이미지 그리드 — 외부 파일 드롭 + 내부 드래그 순서 변경 */}
+      {/* ★ v27n: 이미지 그리드 — 외부 파일 드롭 + 내부 드래그 순서 변경 + 페이지 나누기 */}
       <div
         onDragOver={e=>{e.preventDefault();if(dragIdx===null)e.currentTarget.style.outline="2px dashed #818cf8";}}
         onDragLeave={e=>{e.currentTarget.style.outline="none";}}
         onDrop={e=>{e.preventDefault();e.currentTarget.style.outline="none";if(e.dataTransfer.files.length&&dragIdx===null)handleUpload(e.dataTransfer.files);}}
         style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10,marginTop:8,borderRadius:8,transition:"all .2s"}}>
-        {(images||[]).map((img,idx)=>(
-          <div key={img.id||idx}
+        {(images||[]).map((img,idx)=>{
+          const breakHere = (imageBreaks||[]).find(b=>String(b.afterImageId)===String(img.id));
+          const isLast = idx === (images||[]).length - 1;
+          return (<React.Fragment key={img.id||idx}>
+          <div
             draggable onDragStart={e=>{setDragIdx(idx);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",String(idx));}}
             onDragOver={e=>{e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect="move";setDragOverIdx(idx);}}
             onDragLeave={()=>setDragOverIdx(null)}
@@ -9744,7 +9789,36 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
               </div>
             </div>
           </div>
-        ))}
+          {/* ★ v27n: 이미지 사이 페이지 나누기 삽입/표시 */}
+          {!isLast && breakHere && (
+            <div style={{gridColumn:"1/-1",display:"flex",alignItems:"center",gap:6,padding:"6px 0",borderTop:"2px dashed #ef4444",borderBottom:"2px dashed #ef4444",margin:"2px 0",background:"rgba(239,68,68,.05)"}}>
+              <span style={{fontSize:10,color:"#ef4444",fontWeight:700}}>✂️</span>
+              <span style={{fontSize:9,color:"#64748b"}}>다음 그룹:</span>
+              <span style={{fontSize:9,color:"#64748b"}}>열</span>
+              {[1,2,3,4].map(n=>(
+                <button key={"c"+n} onClick={()=>{const nb=(imageBreaks||[]).map(b=>String(b.afterImageId)===String(img.id)?{...b,cols:n}:b);onImageBreaksChange&&onImageBreaksChange(nb);}}
+                  style={{fontSize:9,padding:"1px 6px",borderRadius:4,cursor:"pointer",background:(breakHere.cols||2)===n?"rgba(239,68,68,.15)":"transparent",border:(breakHere.cols||2)===n?"1px solid #ef4444":"1px solid rgba(255,255,255,.1)",color:(breakHere.cols||2)===n?"#ef4444":"#64748b"}}>{n}</button>
+              ))}
+              <span style={{fontSize:9,color:"#64748b",marginLeft:4}}>행</span>
+              {[1,2,3].map(n=>(
+                <button key={"r"+n} onClick={()=>{const nb=(imageBreaks||[]).map(b=>String(b.afterImageId)===String(img.id)?{...b,rows:n}:b);onImageBreaksChange&&onImageBreaksChange(nb);}}
+                  style={{fontSize:9,padding:"1px 6px",borderRadius:4,cursor:"pointer",background:(breakHere.rows||2)===n?"rgba(239,68,68,.15)":"transparent",border:(breakHere.rows||2)===n?"1px solid #ef4444":"1px solid rgba(255,255,255,.1)",color:(breakHere.rows||2)===n?"#ef4444":"#64748b"}}>{n}</button>
+              ))}
+              <button onClick={()=>{onImageBreaksChange&&onImageBreaksChange((imageBreaks||[]).filter(b=>String(b.afterImageId)!==String(img.id)));}}
+                style={{marginLeft:"auto",background:"none",border:"none",color:"#ef4444",fontSize:12,cursor:"pointer",fontWeight:700}}>×</button>
+            </div>
+          )}
+          {!isLast && !breakHere && (
+            <div style={{gridColumn:"1/-1",height:0,position:"relative",overflow:"visible"}}>
+              <button onClick={()=>{onImageBreaksChange&&onImageBreaksChange([...(imageBreaks||[]),{afterImageId:String(img.id),cols:layoutMode||2,rows:rowsMode||2}]);}}
+                className="img-break-btn"
+                style={{position:"absolute",left:"50%",transform:"translateX(-50%) translateY(-8px)",opacity:0,transition:"opacity .2s",background:"rgba(239,68,68,.08)",border:"1px dashed #ef4444",color:"#ef4444",borderRadius:12,padding:"2px 10px",fontSize:9,cursor:"pointer",zIndex:5,whiteSpace:"nowrap"}}>
+                ✂️ 페이지 나누기
+              </button>
+            </div>
+          )}
+          </React.Fragment>);
+        })}
       </div>
     </div>
   );
@@ -12056,7 +12130,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     (de.designItems||[]).forEach(item => { if (item.images) allImages.push(...item.images); });
     (pr.programItems||[]).forEach(item => { if (item.images) allImages.push(...item.images); });
 
-    // ── R2 이미지 → base64 사전 변환 (5개씩 병렬) ──
+    // ── R2 이미지 → base64 사전 변환 (5개씩 병렬) + ★ v27o: 실패 시 1회 재시도 ──
     const imgMap = {};
     const r2Images = allImages.filter(img => img && img.r2Key);
     if (r2Images.length > 0) {
@@ -12071,16 +12145,31 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           if (r.status === "fulfilled" && r.value) imgMap[img.r2Key] = r.value;
         });
         const loaded = Math.min(i + BATCH, r2Images.length);
-        console.log("[PDF] 🖼️ 이미지 로딩 " + loaded + "/" + r2Images.length);
         if (progressEl) progressEl.textContent = "이미지 로딩 중... " + loaded + "/" + r2Images.length;
       }
-      console.log("[PDF] ✅ 이미지 사전 로딩 완료:", Object.keys(imgMap).length + "/" + r2Images.length);
+      // ★ v27o: 실패한 이미지 1회 재시도
+      const failedImages = r2Images.filter(img => !imgMap[img.r2Key]);
+      if (failedImages.length > 0) {
+        console.warn("[PDF] ⚠️ " + failedImages.length + "개 이미지 재시도...");
+        if (progressEl) progressEl.textContent = "실패 이미지 재시도 중... " + failedImages.length + "개";
+        for (const img of failedImages) {
+          try {
+            const r = await fetchImageAsBase64(img);
+            if (r) imgMap[img.r2Key] = r;
+          } catch(e) { console.warn("[PDF] 재시도 실패:", img.r2Key); }
+        }
+      }
+      const finalFail = r2Images.length - Object.keys(imgMap).length;
+      console.log("[PDF] ✅ 이미지 로딩 완료:", Object.keys(imgMap).length + "/" + r2Images.length + (finalFail > 0 ? " (⚠️ " + finalFail + "개 실패)" : ""));
+      if (progressEl) progressEl.textContent = "이미지 로딩 완료 " + Object.keys(imgMap).length + "/" + r2Images.length + (finalFail > 0 ? " (⚠️ " + finalFail + "개 실패)" : "");
     }
 
-    // ── base64 매핑된 이미지 소스 (PDF 전용) ──
+    // ── ★ v27o: base64 매핑된 이미지 소스 (PDF 전용) — 개선된 fallback ──
     const pdfImgSrc = (img) => {
       if (!img) return "";
       if (img.r2Key && imgMap[img.r2Key]) return imgMap[img.r2Key];
+      if (img.data && typeof img.data === "string" && img.data.startsWith("data:")) return img.data;
+      if (img.r2Key) console.warn("[PDF] ⚠️ 이미지 누락:", img.r2Key, img.name || "");
       return getImageSrc(img);
     };
 
@@ -12090,41 +12179,67 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       return idx >= 0 ? SECTIONS[idx].num : "00";
     };
 
-    // ★ v27f: 이미지 페이지 — overflow 방지 + 센터링 개선
-    // ★ v27m: vh → mm 단위 수정 (이미지 누락 버그 수정) + imageRows 지원
+    // ★ v27n: 이미지 그룹 분할 헬퍼 (imageBreaks 기반)
+    const splitImageGroups = (imgs, breaks, defaultCols, defaultRows) => {
+      if (!imgs || !imgs.length) return [];
+      if (!breaks || !breaks.length) return [{ imgs, cols: defaultCols, rows: defaultRows }];
+      const sorted = breaks
+        .map(b => ({ ...b, idx: imgs.findIndex(img => String(img.id) === String(b.afterImageId)) }))
+        .filter(b => b.idx >= 0 && b.idx < imgs.length - 1)
+        .sort((a, b) => a.idx - b.idx);
+      if (!sorted.length) return [{ imgs, cols: defaultCols, rows: defaultRows }];
+      const groups = [];
+      let start = 0;
+      sorted.forEach(brk => {
+        const g = imgs.slice(start, brk.idx + 1);
+        if (g.length) groups.push({ imgs: g, cols: start === 0 ? defaultCols : groups.length ? (groups[groups.length-1]._nextCols||defaultCols) : defaultCols, rows: start === 0 ? defaultRows : groups.length ? (groups[groups.length-1]._nextRows||defaultRows) : defaultRows });
+        // break의 cols/rows는 다음 그룹에 적용
+        if (groups.length) { groups[groups.length-1]._nextCols = brk.cols || defaultCols; groups[groups.length-1]._nextRows = brk.rows || defaultRows; }
+        start = brk.idx + 1;
+      });
+      if (start < imgs.length) {
+        const last = sorted[sorted.length - 1];
+        groups.push({ imgs: imgs.slice(start), cols: last.cols || defaultCols, rows: last.rows || defaultRows });
+      }
+      // 첫 그룹은 항상 default
+      if (groups.length) { groups[0].cols = defaultCols; groups[0].rows = defaultRows; }
+      return groups;
+    };
+
+    // 그룹 내 이미지를 페이지 단위로 렌더링하는 공통 함수
+    const renderImagePages = (groupImgs, cols, rowsPerPage, makePageHtml) => {
+      const actualCols = Math.min(groupImgs.length, cols);
+      const maxPerPage = Math.max(1, actualCols * rowsPerPage);
+      const pages = [];
+      for (let i = 0; i < groupImgs.length; i += maxPerPage) pages.push(groupImgs.slice(i, i + maxPerPage));
+      return pages.map(pageImgs => {
+        const pCols = Math.min(pageImgs.length, actualCols);
+        const rows = Math.ceil(pageImgs.length / pCols);
+        const mh = rows <= 1 ? '140mm' : rows <= 2 ? '65mm' : '42mm';
+        return makePageHtml(pageImgs, pCols, mh);
+      }).join("");
+    };
+
+    // ★ v27n: 섹션 이미지 → imageBreaks 기반 그룹별 렌더링
     const imgHtml = (sectionId) => {
       const sec = sd(sectionId);
       const imgs = sec.images || [];
       if (!imgs.length) return "";
       const layout = sec.imageLayout || 0;
-      const cols = layout || (imgs.length === 1 ? 1 : imgs.length <= 4 ? 2 : 3);
-      const rowsPerPage = sec.imageRows || 2;
-      const maxPerPage = Math.min(imgs.length, cols * rowsPerPage);
-      const pages = [];
-      for (let i = 0; i < imgs.length; i += maxPerPage) pages.push(imgs.slice(i, i + maxPerPage));
-      return pages.map(pageImgs => {
-        const actualCols = Math.min(pageImgs.length, cols);
-        const rows = Math.ceil(pageImgs.length / actualCols);
-        // ★ v27m: vh → mm 단위 (인쇄 안전)
-        const mh = rows <= 1 ? '140mm' : rows <= 2 ? '65mm' : '42mm';
-        return `<div class="page img-page"><div class="img-grid" style="grid-template-columns:repeat(${actualCols},1fr)">${pageImgs.map(img => `<img src="${pdfImgSrc(img)}" style="max-height:${mh};object-fit:contain"/>`).join("")}</div></div>`;
-      }).join("");
+      const defCols = layout || (imgs.length === 1 ? 1 : imgs.length <= 4 ? 2 : 3);
+      const defRows = sec.imageRows || 2;
+      const groups = splitImageGroups(imgs, sec.imageBreaks, defCols, defRows);
+      return groups.map(g => renderImagePages(g.imgs, g.cols, g.rows, (pageImgs, pCols, mh) =>
+        `<div class="page img-page"><div class="img-grid" style="grid-template-columns:repeat(${pCols},1fr)">${pageImgs.map(img => `<img src="${pdfImgSrc(img)}" style="max-height:${mh};object-fit:contain"/>`).join("")}</div></div>`
+      )).join("");
     };
 
-    // ★ v27m: 아이템 이미지를 여러 페이지로 분할 + imageRows 지원
-    const itemImgPagesHtml = (imgs, cols, headerHtml, footerHtml, rowsPerPage) => {
+    // ★ v27n: 아이템 이미지 → imageBreaks 지원 (그룹별 별도 페이지)
+    const itemImgPagesHtml = (imgs, defCols, headerHtml, footerHtml, defRows, imageBreaks) => {
       if (!imgs.length) return "";
-      const actualCols = Math.min(imgs.length, cols);
-      const rpp = rowsPerPage || 2;
-      const maxPerPage = actualCols * rpp;
-      const pages = [];
-      for (let i = 0; i < imgs.length; i += maxPerPage) pages.push(imgs.slice(i, i + maxPerPage));
-      return pages.map(pageImgs => {
-        const pCols = Math.min(pageImgs.length, actualCols);
-        const rows = Math.ceil(pageImgs.length / pCols);
-        // ★ v27l: vh → mm 단위로 교체 (인쇄 시 정확한 높이)
-        const mh = rows <= 1 ? '140mm' : rows <= 2 ? '65mm' : '42mm';
-        return `<div class="page sec-page">
+      const groups = splitImageGroups(imgs, imageBreaks, defCols || Math.min(imgs.length, 3), defRows || 2);
+      return groups.map(g => renderImagePages(g.imgs, g.cols, g.rows, (pageImgs, pCols, mh) =>
+        `<div class="page sec-page">
   ${headerHtml}
   <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
     <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pCols},1fr)">
@@ -12132,8 +12247,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     </div></div>
   </div>
   ${footerHtml}
-</div>`;
-      }).join("");
+</div>`
+      )).join("");
     };
 
     // ── v27e: 콘텐츠 블록 PDF 출력 ──
@@ -12180,14 +12295,14 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       if (!src) return "";
       return `<div style="margin:8px 0;text-align:center">${ch.title?`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#374151">${ch.title}</div>`:""}<img src="${src}" style="max-width:55%;max-height:200px;height:auto"/></div>`;
     };
-    // ★ v27g: 차트 2열 배치 (이미지처럼 자동 크기 조절)
+    // ★ v27o: 차트 2열 배치 — LEGO 모드에서 height:100% 로 컨테이너 채움
     const chartRowHtml = (charts) => {
       const validCharts = charts.filter(ch => chartDataUrls[ch.id]);
       if (!validCharts.length) return "";
       const w = validCharts.length === 1 ? "55%" : "48%";
-      return `<div style="display:flex;gap:2%;justify-content:center;align-items:flex-start;margin:8px 0;flex-wrap:wrap">${validCharts.map(ch => {
+      return `<div style="display:flex;gap:2%;justify-content:center;align-items:flex-start;margin:8px 0;flex-wrap:wrap;height:100%">${validCharts.map(ch => {
         const src = chartDataUrls[ch.id];
-        return `<div style="width:${w};text-align:center">${ch.title?`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#374151">${ch.title}</div>`:""}<img src="${src}" style="width:100%;height:auto"/></div>`;
+        return `<div style="width:${w};text-align:center;height:100%">${ch.title?`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#374151">${ch.title}</div>`:""}<img src="${src}" style="width:100%;height:100%;max-height:100%;object-fit:contain"/></div>`;
       }).join("")}</div>`;
     };
     const contentBlocksHtml = (blocks) => {
@@ -12235,22 +12350,19 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
 
     // ★ v27l: 더 보수적 페이지 본문 최대 높이 (표 오버플로우 방지)
     const PAGE_BODY_MAX_H = 500;
-    // ★ v27g: aiSummary를 서브 요소로 분해 + 차트 2열 그룹핑
+    // ★ v27n: aiSummary를 서브 요소로 분해 + 차트 2열 그룹핑 + 플렉스 레이아웃
     const flattenBlocks = (blocks) => {
-      // 1단계: 원시 요소 수집 (차트는 type으로 마킹)
+      // ★ v27o: LEGO 블록 — flexStyle 제거, itemType 추가
       const raw = [];
-      // ★ v27k: 글로벌 AI 순서 지원 + 파일 경계 없이 병합
       const globalOrderBlock = (blocks||[]).find(b => b.type === "_aiGlobalOrder");
       const aiBlocks = (blocks||[]).filter(b => b.type === "aiSummary");
       const aiBlockMap = {};
       aiBlocks.forEach(b => { aiBlockMap[b.id] = b; });
 
-      // 글로벌 순서가 있으면 그 순서로 AI 항목 수집, 없으면 블록 순서대로
       const collectAiItems = () => {
         const aiItems = [];
         if (globalOrderBlock && globalOrderBlock.order && globalOrderBlock.order.length) {
           globalOrderBlock.order.forEach(entry => {
-            // ★ pagebreak는 블록 참조 불필요
             if (entry.type === "pagebreak") {
               aiItems.push({ block: aiBlocks[0]||{}, item: entry });
               return;
@@ -12268,11 +12380,6 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         return aiItems;
       };
 
-      let aiGroupH = 0;
-      let aiGroupHtml = "";
-      const flushAiGroup = () => { if (aiGroupHtml) { raw.push({ k:"html", h:aiGroupH, html:aiGroupHtml }); aiGroupH=0; aiGroupHtml=""; } };
-
-      // ★ v27l: AI 항목 간 섹션 구분선
       const aiDivider = `<div style="border-top:1.5px solid #e2e8f0;margin:14px 0"></div>`;
       const aiDividerH = 30;
 
@@ -12281,46 +12388,29 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           const title = b.customTitle || b.fileName || "AI 분석 요약";
           const sHtml = `<div style="margin:8px 0;padding:14px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;border-left:3px solid ${_kc}"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">${title}</div><div style="font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div></div>`;
           const sH = estTextH(b.summary) + 30;
-          if (aiGroupH + sH > PAGE_BODY_MAX_H && aiGroupHtml) { flushAiGroup(); }
-          aiGroupH += sH;
-          aiGroupHtml += sHtml;
-          if (!isLast) { aiGroupH += aiDividerH; aiGroupHtml += aiDivider; }
+          raw.push({ k:"html", h:sH, html:sHtml, itemType:"text" });
+          if (!isLast) raw.push({ k:"html", h:aiDividerH, html:aiDivider, itemType:"divider" });
         } else if (item.type === "table") {
           const t = (b.tables||[]).find(t => t.id === item.id);
           if (t) {
-            const tH = estTableH(t) + (isLast ? 0 : aiDividerH);
-            if (aiGroupH + tH <= PAGE_BODY_MAX_H) {
-              aiGroupH += tH;
-              aiGroupHtml += tableBlockHtml(t);
-              if (!isLast) aiGroupHtml += aiDivider;
-            } else {
-              flushAiGroup();
-              const standalone = tableBlockHtml(t) + (isLast ? "" : aiDivider);
-              raw.push({ k:"html", h:tH, html:standalone });
-            }
+            const tH = estTableH(t);
+            raw.push({ k:"html", h:tH, html:tableBlockHtml(t), itemType:"table" });
+            if (!isLast) raw.push({ k:"html", h:aiDividerH, html:aiDivider, itemType:"divider" });
           }
         } else if (item.type === "chart") {
           const c = (b.charts||[]).find(c => c.id === item.id);
-          if (c) {
-            flushAiGroup();
-            raw.push({ k: "chart", data: c });
-          }
+          if (c) raw.push({ k: "chart", data: c });
         } else if (item.type === "pagebreak") {
-          // ★ v27l: 프로듀서가 지정한 수동 페이지 나누기
-          flushAiGroup();
           raw.push({ k:"pagebreak", h:0, html:"" });
         }
       };
 
-      // aiSummary 블록이 처음 나올 위치에 모든 AI 항목을 삽입
       let aiInserted = false;
       (blocks||[]).forEach(b => {
-        if (b.type === "_aiGlobalOrder") return; // 메타데이터 블록 무시
+        if (b.type === "_aiGlobalOrder") return;
         if (b.type === "table") {
-          flushAiGroup();
-          raw.push({ k: "html", h: estTableH(b), html: tableBlockHtml(b) });
+          raw.push({ k: "html", h: estTableH(b), html: tableBlockHtml(b), itemType:"table" });
         } else if (b.type === "chart") {
-          flushAiGroup();
           raw.push({ k: "chart", data: b });
         } else if (b.type === "aiSummary") {
           if (!aiInserted) {
@@ -12330,8 +12420,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           }
         }
       });
-      flushAiGroup();
-      // 2단계: 연속 차트를 2개씩 그룹핑하여 행으로 만듦 + pagebreak 마커 통과
+
+      // 2단계: 연속 차트를 2개씩 그룹핑
       const items = [];
       for (let i = 0; i < raw.length; i++) {
         if (raw[i].k === "pagebreak") {
@@ -12341,7 +12431,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           while (i + 1 < raw.length && raw[i + 1].k === "chart") { i++; charts.push(raw[i].data); }
           for (let j = 0; j < charts.length; j += 2) {
             const pair = charts.slice(j, j + 2);
-            items.push({ h: estChartRowH(pair.length), html: chartRowHtml(pair) });
+            items.push({ h: estChartRowH(pair.length), html: chartRowHtml(pair), itemType:"chart" });
           }
         } else {
           items.push(raw[i]);
@@ -12350,40 +12440,58 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       return items;
     };
 
-    // ★ v27g: 분해된 요소를 여러 페이지로 분할
+    // ★ v27n: 분해된 요소를 여러 페이지로 분할 + 플렉스 레이아웃
     const contentBlocksPagesHtml = (blocks, makeHeaderHtml, footerHtml) => {
       const items = flattenBlocks(blocks);
       if (!items.length) return "";
+      // ★ v27o: LEGO 모드 vs 자동 모드
+      const hasExplicitBreaks = items.some(it => it.pagebreak);
       const pages = [];
-      let curItems = [];
-      let curH = 0;
-      items.forEach(item => {
-        // ★ v27l: 프로듀서 수동 페이지 나누기 — 강제로 새 페이지 시작
-        if (item.pagebreak) {
-          if (curItems.length > 0) {
+
+      if (hasExplicitBreaks) {
+        // ── LEGO 모드: PD 페이지 나누기만으로 분할 ──
+        let cur = [];
+        items.forEach(item => {
+          if (item.pagebreak) { if (cur.length) pages.push(cur); cur = []; }
+          else cur.push(item);
+        });
+        if (cur.length) pages.push(cur);
+      } else {
+        // ── 자동 모드: PAGE_BODY_MAX_H 기반 (하위 호환) ──
+        let curItems = [];
+        let curH = 0;
+        items.forEach(item => {
+          if (item.pagebreak) { if (curItems.length) { pages.push(curItems); curItems = []; curH = 0; } return; }
+          if (curItems.length > 0 && curH + item.h > PAGE_BODY_MAX_H) {
             pages.push(curItems);
-            curItems = [];
-            curH = 0;
-          }
-          return;
-        }
-        if (curItems.length > 0 && curH + item.h > PAGE_BODY_MAX_H) {
-          pages.push(curItems);
-          curItems = [item];
-          curH = item.h;
-        } else {
-          curItems.push(item);
-          curH += item.h;
-        }
-      });
-      if (curItems.length > 0) pages.push(curItems);
+            curItems = [item]; curH = item.h;
+          } else { curItems.push(item); curH += item.h; }
+        });
+        if (curItems.length) pages.push(curItems);
+      }
+
       return pages.map((pageItems, pi) => {
-        const html = pageItems.map(it => it.html).join("");
-        return `<div class="page sec-page">
+        if (hasExplicitBreaks) {
+          // LEGO: 수직 flex — 차트가 남은 공간 채움
+          const html = pageItems.map(it => {
+            const isChart = it.itemType === "chart";
+            const flex = isChart ? "flex:1 1 0;min-height:60px" : "flex:0 0 auto";
+            return `<div style="${flex}">${it.html}</div>`;
+          }).join("");
+          return `<div class="page sec-page">
+  ${makeHeaderHtml(pi > 0)}
+  <div class="sec-body" style="display:flex;flex-direction:column;gap:8px">${html}</div>
+  ${footerHtml}
+</div>`;
+        } else {
+          // 자동: 단순 수직 스택
+          const html = pageItems.map(it => it.html).join("");
+          return `<div class="page sec-page">
   ${makeHeaderHtml(pi > 0)}
   <div class="sec-body">${html}</div>
   ${footerHtml}
 </div>`;
+        }
       }).join("");
     };
 
@@ -12462,6 +12570,7 @@ tr:nth-child(even) td{background:#f8fafc}
 .img-page{padding:30px 40px;box-sizing:border-box;overflow:hidden;display:flex;align-items:center;justify-content:center}
 .img-page .img-grid{display:grid;gap:10px;align-items:center;align-content:center;width:100%}
 .img-page img{width:100%;height:auto;max-width:100%;object-fit:contain;display:block;margin:0 auto}
+.img-break-btn:hover{opacity:1!important}
 @media print{
   @page{margin:0;size:297mm 210mm landscape}
   .page{width:297mm;height:210mm;margin:0;page-break-after:always;overflow:hidden;box-sizing:border-box}
@@ -12568,7 +12677,7 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   const vImageRows = vItem.imageRows || 2;
   const vImgPageHtml = itemImgPagesHtml(vImgs, vCols,
     `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`, vImageRows);
+    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`, vImageRows, vItem.imageBreaks);
 
   if (needsSplit) {
     // 텍스트 페이지 + (contentBlocks or 이미지) 분리
@@ -12583,29 +12692,42 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
 ${isContentFirst ? vCbPagesHtml + vImgPageHtml : vImgPageHtml + vCbPagesHtml}`;
   }
 
-  // 기본: 한 페이지에 텍스트 + 이미지 (contentBlocks는 별도 페이지)
+  // ★ v27o: LEGO 모드 — imageBreaks가 있으면 그룹 기반 인라인
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
-  // ★ v27m: 비분할 모드에서도 imageRows 행 초과 시 페이지 분할
-  const vMaxInline = vActualCols * vImageRows;
-  const vInlineImgs = vImgs.length > vMaxInline ? vImgs.slice(0, vMaxInline) : vImgs;
-  const vOverflowImgs = vImgs.length > vMaxInline ? vImgs.slice(vMaxInline) : [];
-  // ★ v27l: vh → mm (인쇄 안전)
-  const vInlineMaxH = vInlineImgs.length ? (Math.ceil(vInlineImgs.length / vActualCols) <= 1 ? (vHasDesc ? '110mm' : '140mm') : (vHasDesc ? '52mm' : '65mm')) : '110mm';
-  const vOverflowPageHtml = vOverflowImgs.length ? itemImgPagesHtml(vOverflowImgs, vCols,
-    `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`, vImageRows) : "";
+  const vHeader = `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`;
+  const vFooter = `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`;
+  let vInlineImgs, vInlineCols, vExtraPagesHtml = "";
+  if (vItem.imageBreaks?.length) {
+    const groups = splitImageGroups(vImgs, vItem.imageBreaks, vCols, vImageRows);
+    const g1 = groups[0];
+    const g1Cols = Math.min(g1.imgs.length, g1.cols);
+    const g1Max = g1Cols * g1.rows;
+    vInlineImgs = g1.imgs.length > g1Max ? g1.imgs.slice(0, g1Max) : g1.imgs;
+    vInlineCols = g1Cols;
+    const g1Over = g1.imgs.length > g1Max ? g1.imgs.slice(g1Max) : [];
+    const g1OverHtml = g1Over.length ? renderImagePages(g1Over, g1Cols, g1.rows, (pi,pc,mh) => `<div class="page sec-page">${vHeader}<div class="sec-body"><div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pc},1fr)">${pi.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${mh};width:100%;object-fit:contain"/>`).join("")}</div></div></div>${vFooter}</div>`) : "";
+    const restHtml = groups.slice(1).map(g => renderImagePages(g.imgs, g.cols, g.rows, (pi,pc,mh) => `<div class="page sec-page">${vHeader}<div class="sec-body"><div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pc},1fr)">${pi.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${mh};width:100%;object-fit:contain"/>`).join("")}</div></div></div>${vFooter}</div>`)).join("");
+    vExtraPagesHtml = g1OverHtml + restHtml;
+  } else {
+    const vMaxInline = vActualCols * vImageRows;
+    vInlineImgs = vImgs.length > vMaxInline ? vImgs.slice(0, vMaxInline) : vImgs;
+    vInlineCols = vActualCols;
+    const vOverflowImgs = vImgs.length > vMaxInline ? vImgs.slice(vMaxInline) : [];
+    vExtraPagesHtml = vOverflowImgs.length ? itemImgPagesHtml(vOverflowImgs, vCols, vHeader, vFooter, vImageRows, vItem.imageBreaks) : "";
+  }
+  const vInlineMaxH = vInlineImgs.length ? (Math.ceil(vInlineImgs.length / vInlineCols) <= 1 ? (vHasDesc ? '110mm' : '140mm') : (vHasDesc ? '52mm' : '65mm')) : '110mm';
   return `
 <div class="page sec-page">
-  <div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>
+  ${vHeader}
   <div class="sec-body">
     ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
-    ${vInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
+    ${vInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${vInlineCols},1fr)">
       ${vInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${vInlineMaxH};${fitStyle}width:100%;object-fit:contain"/>`).join("")}
     </div></div>` : ""}
   </div>
-  <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
+  ${vFooter}
 </div>
-${vOverflowPageHtml}${vCbPagesHtml}`;
+${vExtraPagesHtml}${vCbPagesHtml}`;
 }).join("") : ""}
 
 ${secEnabled("design") ? `<!-- 03 DESIGN -->
@@ -12667,7 +12789,7 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   const dImageRows = dItem.imageRows || 2;
   const dImgPageHtml = itemImgPagesHtml(dImgs, dCols,
     `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`, dImageRows);
+    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`, dImageRows, dItem.imageBreaks);
 
   if (needsSplit) {
     return `
@@ -12682,29 +12804,43 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
 ${isContentFirst ? dCbPagesHtml + dImgPageHtml : dImgPageHtml + dCbPagesHtml}`;
   }
 
+  // ★ v27o: LEGO 모드 — imageBreaks 그룹 기반 인라인
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
-  // ★ v27m: 비분할 모드에서도 imageRows 행 초과 시 페이지 분할
-  const dMaxInline = dActualCols * dImageRows;
-  const dInlineImgs = dImgs.length > dMaxInline ? dImgs.slice(0, dMaxInline) : dImgs;
-  const dOverflowImgs = dImgs.length > dMaxInline ? dImgs.slice(dMaxInline) : [];
-  // ★ v27l: vh → mm
-  const dInlineMaxH = dInlineImgs.length ? (Math.ceil(dInlineImgs.length / dActualCols) <= 1 ? '85mm' : '40mm') : '85mm';
-  const dOverflowPageHtml = dOverflowImgs.length ? itemImgPagesHtml(dOverflowImgs, dCols,
-    `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`, dImageRows) : "";
+  const dHeader = `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`;
+  const dFooter = `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`;
+  let dInlineImgs, dInlineCols, dExtraPagesHtml = "";
+  if (dItem.imageBreaks?.length) {
+    const groups = splitImageGroups(dImgs, dItem.imageBreaks, dCols, dImageRows);
+    const g1 = groups[0];
+    const g1Cols = Math.min(g1.imgs.length, g1.cols);
+    const g1Max = g1Cols * g1.rows;
+    dInlineImgs = g1.imgs.length > g1Max ? g1.imgs.slice(0, g1Max) : g1.imgs;
+    dInlineCols = g1Cols;
+    const g1Over = g1.imgs.length > g1Max ? g1.imgs.slice(g1Max) : [];
+    const g1OverHtml = g1Over.length ? renderImagePages(g1Over, g1Cols, g1.rows, (pi,pc,mh) => `<div class="page sec-page">${dHeader}<div class="sec-body"><div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pc},1fr)">${pi.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${mh};width:100%;object-fit:contain"/>`).join("")}</div></div></div>${dFooter}</div>`) : "";
+    const restHtml = groups.slice(1).map(g => renderImagePages(g.imgs, g.cols, g.rows, (pi,pc,mh) => `<div class="page sec-page">${dHeader}<div class="sec-body"><div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pc},1fr)">${pi.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${mh};width:100%;object-fit:contain"/>`).join("")}</div></div></div>${dFooter}</div>`)).join("");
+    dExtraPagesHtml = g1OverHtml + restHtml;
+  } else {
+    const dMaxInline = dActualCols * dImageRows;
+    dInlineImgs = dImgs.length > dMaxInline ? dImgs.slice(0, dMaxInline) : dImgs;
+    dInlineCols = dActualCols;
+    const dOverflowImgs = dImgs.length > dMaxInline ? dImgs.slice(dMaxInline) : [];
+    dExtraPagesHtml = dOverflowImgs.length ? itemImgPagesHtml(dOverflowImgs, dCols, dHeader, dFooter, dImageRows, dItem.imageBreaks) : "";
+  }
+  const dInlineMaxH = dInlineImgs.length ? (Math.ceil(dInlineImgs.length / dInlineCols) <= 1 ? '85mm' : '40mm') : '85mm';
   return `
 <div class="page sec-page">
-  <div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>
+  ${dHeader}
   <div class="sec-body">
     ${dInfoGrid}
     ${dItem.notes?`<div class="box"><div class="box-title">메모</div><div class="box-val">${dItem.notes}</div></div>`:""}
-    ${dInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
+    ${dInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${dInlineCols},1fr)">
       ${dInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${dInlineMaxH};${fitStyle}width:100%;object-fit:contain"/>`).join("")}
     </div></div>` : ""}
   </div>
-  <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
+  ${dFooter}
 </div>
-${dOverflowPageHtml}${dCbPagesHtml}`;
+${dExtraPagesHtml}${dCbPagesHtml}`;
 }).join("") : ""}
 
 ${secEnabled("program") ? `<!-- 04 PROGRAM -->
@@ -12785,7 +12921,7 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   const pImageRows = pItem.imageRows || 2;
   const pImgPageHtml = itemImgPagesHtml(pImgs, pCols,
     `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`, pImageRows);
+    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`, pImageRows, pItem.imageBreaks);
 
   if (needsSplit) {
     return `
@@ -12799,28 +12935,42 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
 ${isContentFirst ? pCbPagesHtml + pImgPageHtml : pImgPageHtml + pCbPagesHtml}`;
   }
 
+  // ★ v27o: LEGO 모드 — imageBreaks 그룹 기반 인라인
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
-  // ★ v27m: 비분할 모드에서도 imageRows 행 초과 시 페이지 분할
-  const pMaxInline = pActualCols * pImageRows;
-  const pInlineImgs = pImgs.length > pMaxInline ? pImgs.slice(0, pMaxInline) : pImgs;
-  const pOverflowImgs = pImgs.length > pMaxInline ? pImgs.slice(pMaxInline) : [];
-  // ★ v27l: vh → mm
-  const pInlineMaxH = pInlineImgs.length ? (Math.ceil(pInlineImgs.length / pActualCols) <= 1 ? (pHasNotes ? '95mm' : '125mm') : '52mm') : '95mm';
-  const pOverflowPageHtml = pOverflowImgs.length ? itemImgPagesHtml(pOverflowImgs, pCols,
-    `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`, pImageRows) : "";
+  const pHeader = `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`;
+  const pFooter = `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`;
+  let pInlineImgs, pInlineCols, pExtraPagesHtml = "";
+  if (pItem.imageBreaks?.length) {
+    const groups = splitImageGroups(pImgs, pItem.imageBreaks, pCols, pImageRows);
+    const g1 = groups[0];
+    const g1Cols = Math.min(g1.imgs.length, g1.cols);
+    const g1Max = g1Cols * g1.rows;
+    pInlineImgs = g1.imgs.length > g1Max ? g1.imgs.slice(0, g1Max) : g1.imgs;
+    pInlineCols = g1Cols;
+    const g1Over = g1.imgs.length > g1Max ? g1.imgs.slice(g1Max) : [];
+    const g1OverHtml = g1Over.length ? renderImagePages(g1Over, g1Cols, g1.rows, (pi,pc,mh) => `<div class="page sec-page">${pHeader}<div class="sec-body"><div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pc},1fr)">${pi.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${mh};width:100%;object-fit:contain"/>`).join("")}</div></div></div>${pFooter}</div>`) : "";
+    const restHtml = groups.slice(1).map(g => renderImagePages(g.imgs, g.cols, g.rows, (pi,pc,mh) => `<div class="page sec-page">${pHeader}<div class="sec-body"><div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pc},1fr)">${pi.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${mh};width:100%;object-fit:contain"/>`).join("")}</div></div></div>${pFooter}</div>`)).join("");
+    pExtraPagesHtml = g1OverHtml + restHtml;
+  } else {
+    const pMaxInline = pActualCols * pImageRows;
+    pInlineImgs = pImgs.length > pMaxInline ? pImgs.slice(0, pMaxInline) : pImgs;
+    pInlineCols = pActualCols;
+    const pOverflowImgs = pImgs.length > pMaxInline ? pImgs.slice(pMaxInline) : [];
+    pExtraPagesHtml = pOverflowImgs.length ? itemImgPagesHtml(pOverflowImgs, pCols, pHeader, pFooter, pImageRows, pItem.imageBreaks) : "";
+  }
+  const pInlineMaxH = pInlineImgs.length ? (Math.ceil(pInlineImgs.length / pInlineCols) <= 1 ? (pHasNotes ? '95mm' : '125mm') : '52mm') : '95mm';
   return `
 <div class="page sec-page">
-  <div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>
+  ${pHeader}
   <div class="sec-body">
     ${pItem.notes?`<div class="box"><div class="box-title">운영 메모</div><div class="box-val">${pItem.notes}</div></div>`:""}
-    ${pInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
+    ${pInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pInlineCols},1fr)">
       ${pInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pInlineMaxH};${fitStyle}width:100%;object-fit:contain"/>`).join("")}
     </div></div>` : ""}
   </div>
-  <div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>
+  ${pFooter}
 </div>
-${pOverflowPageHtml}${pCbPagesHtml}`;
+${pExtraPagesHtml}${pCbPagesHtml}`;
 }).join("") : ""}
 
 ${secEnabled("operation") ? `<!-- 05 OPERATION -->
@@ -13569,7 +13719,7 @@ ${secEnabled("timeline") ? (()=>{
                   </tbody>
                 </table>
               </div>
-              <SectionImages sectionId="venue" docKey={docKey} images={ve.images||[]} onUpdate={imgs=>updateDoc("venue","images",imgs)} layoutMode={sd("venue").imageLayout||0} onLayoutChange={v=>updateDoc("venue","imageLayout",v)} rowsMode={sd("venue").imageRows||2} onRowsChange={v=>updateDoc("venue","imageRows",v)}/>
+              <SectionImages sectionId="venue" docKey={docKey} images={ve.images||[]} onUpdate={imgs=>updateDoc("venue","images",imgs)} layoutMode={sd("venue").imageLayout||0} onLayoutChange={v=>updateDoc("venue","imageLayout",v)} rowsMode={sd("venue").imageRows||2} onRowsChange={v=>updateDoc("venue","imageRows",v)} imageBreaks={sd("venue").imageBreaks||[]} onImageBreaksChange={v=>updateDoc("venue","imageBreaks",v)}/>
             </div>
           )}
 
@@ -13626,7 +13776,7 @@ ${secEnabled("timeline") ? (()=>{
               )}
               <div style={{marginTop:12}}>
                 <label className="form-label">이미지</label>
-                <SectionImages sectionId={`venueItem_${activeVenueItemObj._id}`} docKey={docKey} images={activeVenueItemObj.images||[]} onUpdate={imgs=>updateVenueItem(activeVenueItemObj._id,"images",imgs)} layoutMode={activeVenueItemObj.imageLayout||0} onLayoutChange={v=>updateVenueItem(activeVenueItemObj._id,"imageLayout",v)} rowsMode={activeVenueItemObj.imageRows||2} onRowsChange={v=>updateVenueItem(activeVenueItemObj._id,"imageRows",v)}/>
+                <SectionImages sectionId={`venueItem_${activeVenueItemObj._id}`} docKey={docKey} images={activeVenueItemObj.images||[]} onUpdate={imgs=>updateVenueItem(activeVenueItemObj._id,"images",imgs)} layoutMode={activeVenueItemObj.imageLayout||0} onLayoutChange={v=>updateVenueItem(activeVenueItemObj._id,"imageLayout",v)} rowsMode={activeVenueItemObj.imageRows||2} onRowsChange={v=>updateVenueItem(activeVenueItemObj._id,"imageRows",v)} imageBreaks={activeVenueItemObj.imageBreaks||[]} onImageBreaksChange={v=>updateVenueItem(activeVenueItemObj._id,"imageBreaks",v)}/>
               </div>
             </div>
           )}
@@ -13843,7 +13993,7 @@ ${secEnabled("timeline") ? (()=>{
               )}
               <div style={{marginTop:12}}>
                 <label className="form-label">제작 이미지</label>
-                <SectionImages sectionId={`designItem_${activeItemObj._id}`} docKey={docKey} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)} layoutMode={activeItemObj.imageLayout||0} onLayoutChange={v=>updateDesignItem(activeItemObj._id,"imageLayout",v)} rowsMode={activeItemObj.imageRows||2} onRowsChange={v=>updateDesignItem(activeItemObj._id,"imageRows",v)}/>
+                <SectionImages sectionId={`designItem_${activeItemObj._id}`} docKey={docKey} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)} layoutMode={activeItemObj.imageLayout||0} onLayoutChange={v=>updateDesignItem(activeItemObj._id,"imageLayout",v)} rowsMode={activeItemObj.imageRows||2} onRowsChange={v=>updateDesignItem(activeItemObj._id,"imageRows",v)} imageBreaks={activeItemObj.imageBreaks||[]} onImageBreaksChange={v=>updateDesignItem(activeItemObj._id,"imageBreaks",v)}/>
               </div>
             </div>
           )}
@@ -14141,7 +14291,7 @@ ${secEnabled("timeline") ? (()=>{
                 )}
                 <div style={{marginTop:12}}>
                   <label className="form-label">이미지</label>
-                  <SectionImages sectionId={`programItem_${activeProgramItemObj._id}`} docKey={docKey} images={activeProgramItemObj.images||[]} onUpdate={imgs=>updateProgramItem(activeProgramItemObj._id,"images",imgs)} layoutMode={activeProgramItemObj.imageLayout||0} onLayoutChange={v=>updateProgramItem(activeProgramItemObj._id,"imageLayout",v)} rowsMode={activeProgramItemObj.imageRows||2} onRowsChange={v=>updateProgramItem(activeProgramItemObj._id,"imageRows",v)}/>
+                  <SectionImages sectionId={`programItem_${activeProgramItemObj._id}`} docKey={docKey} images={activeProgramItemObj.images||[]} onUpdate={imgs=>updateProgramItem(activeProgramItemObj._id,"images",imgs)} layoutMode={activeProgramItemObj.imageLayout||0} onLayoutChange={v=>updateProgramItem(activeProgramItemObj._id,"imageLayout",v)} rowsMode={activeProgramItemObj.imageRows||2} onRowsChange={v=>updateProgramItem(activeProgramItemObj._id,"imageRows",v)} imageBreaks={activeProgramItemObj.imageBreaks||[]} onImageBreaksChange={v=>updateProgramItem(activeProgramItemObj._id,"imageBreaks",v)}/>
                 </div>
               </div>
             )}
@@ -14719,7 +14869,7 @@ ${secEnabled("timeline") ? (()=>{
             {renderSection()}
             {(activeSection !== "design" || !activeDesignItem) && (<>
               <ContentBlockManager sectionId={activeSection} blocks={sd(activeSection).contentBlocks||[]} onUpdate={blocks=>updateDoc(activeSection,"contentBlocks",blocks)} projectName={proj?.name} sectionTitle={ALL_DOC_SECTIONS.find(s=>s.id===activeSection)?.title||""}/>
-              <SectionImages sectionId={activeSection} docKey={docKey} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)} layoutMode={sd(activeSection).imageLayout||0} onLayoutChange={v=>updateDoc(activeSection,"imageLayout",v)} rowsMode={sd(activeSection).imageRows||2} onRowsChange={v=>updateDoc(activeSection,"imageRows",v)}/>
+              <SectionImages sectionId={activeSection} docKey={docKey} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)} layoutMode={sd(activeSection).imageLayout||0} onLayoutChange={v=>updateDoc(activeSection,"imageLayout",v)} rowsMode={sd(activeSection).imageRows||2} onRowsChange={v=>updateDoc(activeSection,"imageRows",v)} imageBreaks={sd(activeSection).imageBreaks||[]} onImageBreaksChange={v=>updateDoc(activeSection,"imageBreaks",v)}/>
             </>)}
           </div>
         </div>
