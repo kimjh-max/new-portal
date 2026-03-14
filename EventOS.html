@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260314v27l";
+  var CODE_VER = "20260315v27n";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -31,6 +31,19 @@
   if(location.search.indexOf("_=") > -1){
     history.replaceState(null, "", location.pathname);
   }
+  // ★ v27m: 5분마다 최신 버전 확인 → React에 이벤트 전달
+  window._EVENTOS_VER = CODE_VER;
+  setTimeout(function checkVer(){
+    var workerUrl = "";
+    try { workerUrl = window.CLOUD_CONFIG && window.CLOUD_CONFIG.WORKER_URL; } catch(e){}
+    if (!workerUrl) { setTimeout(checkVer, 60000); return; }
+    fetch(workerUrl + "/api/version").then(function(r){return r.json();}).then(function(d){
+      if(d.version && d.version !== CODE_VER){
+        window.dispatchEvent(new CustomEvent("eventos-update",{detail:d.version}));
+      }
+    }).catch(function(){});
+    setTimeout(checkVer, 5*60*1000);
+  }, 30000); // 첫 체크: 30초 후
 })();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1646,6 +1659,7 @@ function usePersistedState(key, defaultValue) {
 function useCloudState(key, defaultValue, opts) {
   const lsKey = "eventos_" + key;
   const debounceMs = (opts && opts.debounceMs) || 1500;
+  const skipAutoSave = !!(opts && opts.skipAutoSave); // ★ v27l: 별도 저장 메커니즘 사용 시 자동저장 스킵
 
   const [state, setState] = useState(() => {
     try {
@@ -1666,7 +1680,11 @@ function useCloudState(key, defaultValue, opts) {
     setState(prev => {
       const next = typeof valOrFn === "function" ? valOrFn(prev) : valOrFn;
       // 로컬 캐시 즉시 업데이트 (optimistic)
-      try { localStorage.setItem(lsKey, JSON.stringify(next)); } catch {}
+      try {
+        localStorage.setItem(lsKey, JSON.stringify(next));
+        // ★ v27l: 롤백 방지 — 미저장 변경사항 플래그
+        localStorage.setItem(lsKey + "_dirty", "1");
+      } catch {}
       return next;
     });
   }, [lsKey]);
@@ -1674,6 +1692,8 @@ function useCloudState(key, defaultValue, opts) {
   // 디바운스 클라우드 저장 (초기화 완료 후만)
   useEffect(() => {
     if (!isInitializedRef.current) return;
+    // ★ v27l: skipAutoSave 옵션 — 별도 저장 메커니즘(writeProjectsBulk 등)이 처리
+    if (skipAutoSave) return;
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       CloudDataStore.writeAppData({ [key]: stateRef.current }).then(result => {
@@ -1681,6 +1701,8 @@ function useCloudState(key, defaultValue, opts) {
           SyncManager.setStatus("success");
           SyncManager._lastSyncTime = new Date();
           SyncManager._notify();
+          // ★ v27l: 저장 성공 → dirty 플래그 해제
+          try { localStorage.setItem(lsKey + "_dirty", "0"); } catch {}
         } else if (result && result.queued) {
           console.log("[useCloudState] 📤 " + key + " 큐잉됨 (오프라인)");
         }
@@ -1691,10 +1713,12 @@ function useCloudState(key, defaultValue, opts) {
       }
     }, debounceMs);
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
-  }, [state, key, debounceMs]);
+  }, [state, key, debounceMs, skipAutoSave, lsKey]);
 
   // ── beforeunload: 탭 닫을 때 미저장 데이터 강제 전송 ──
   useEffect(() => {
+    // ★ v27l: skipAutoSave 키는 별도 저장 메커니즘의 beforeunload 핸들러 사용
+    if (skipAutoSave) return;
     const handler = () => {
       if (!isInitializedRef.current) return;
       // 디바운스 대기 중인 데이터가 있으면 즉시 전송
@@ -1716,10 +1740,35 @@ function useCloudState(key, defaultValue, opts) {
   }, [key]);
 
   // setFromCloud: 클라우드 데이터 적용 (write-back 안 함)
+  // ★ v27l: 롤백 방지 — 미저장 로컬 변경이 있거나, 로컬 데이터가 더 크면 무시
   const setFromCloud = useCallback((value) => {
+    const isDirty = localStorage.getItem(lsKey + "_dirty") === "1";
+    if (isDirty) {
+      console.log("[useCloudState] 🛡️ 로컬 미저장 변경 보호:", key, "— 클라우드 데이터 무시, 로컬 데이터 유지");
+      return;
+    }
+    // ★ v27l: 추가 보호 — 로컬에 이미 데이터가 있고 클라우드 데이터가 더 작으면 무시
+    // (데이터 손실 방지: 클라우드가 stale하면 보통 더 작음)
+    if (skipAutoSave) {
+      try {
+        const stored = localStorage.getItem(lsKey);
+        if (stored) {
+          const localSize = stored.length;
+          const cloudSize = JSON.stringify(value).length;
+          if (cloudSize < localSize * 0.8) {
+            console.log("[useCloudState] 🛡️ 클라우드 데이터 크기 의심:", key,
+              "cloud:", Math.round(cloudSize/1024)+"KB", "< local:", Math.round(localSize/1024)+"KB", "— 로컬 유지");
+            return;
+          }
+        }
+      } catch {}
+    }
     setState(value);
-    try { localStorage.setItem(lsKey, JSON.stringify(value)); } catch {}
-  }, [lsKey]);
+    try {
+      localStorage.setItem(lsKey, JSON.stringify(value));
+      localStorage.setItem(lsKey + "_dirty", "0");
+    } catch {}
+  }, [lsKey, key, skipAutoSave]);
 
   // markInitialized: 클라우드 초기 로드 완료 후 호출
   const markInitialized = useCallback(() => {
@@ -5760,7 +5809,7 @@ function Topbar({page, setPage, user, onLogout, onExport, onImport, onShowBackup
       <div className="logo">
         <div className="logo-icon">E</div>
         <div className="logo-text">EventOS</div>
-        <span style={{fontSize:9,color:"rgba(255,255,255,.3)",marginLeft:-10,marginTop:2,fontFamily:"monospace"}}>v27</span>
+        <span style={{fontSize:9,color:"rgba(255,255,255,.3)",marginLeft:-10,marginTop:2,fontFamily:"monospace"}}>v27n</span>
       </div>
       <nav>
         {pages.map(p=>(
@@ -9497,7 +9546,7 @@ function makeDraggableRows(items, onReorder) {
 }
 
 /* ── Section Image Uploader ────────────────────────────────────────────────── */
-function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayoutChange}) {
+function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayoutChange, rowsMode, onRowsChange, imageBreaks, onImageBreaksChange}) {
   const fileRef = useRef(null);
   const [annotating, setAnnotating] = useState(null);
   const [annoText, setAnnoText] = useState("");
@@ -9545,6 +9594,11 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
     const img = (images||[])[idx];
     if (img && img.r2Key) {
       CloudSync.deleteFile(img.r2Key).catch(err => console.warn("[SectionImages] R2 delete:", err));
+    }
+    // ★ v27n: 이미지 삭제 시 해당 imageBreak도 정리
+    if (onImageBreaksChange && img) {
+      const cleaned = (imageBreaks||[]).filter(b => String(b.afterImageId) !== String(img.id));
+      if (cleaned.length !== (imageBreaks||[]).length) onImageBreaksChange(cleaned);
     }
     onUpdate((images||[]).filter((_,i)=>i!==idx));
   };
@@ -9608,27 +9662,80 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
                   color:(!layoutMode||layoutMode===0)?"#a5b4fc":"var(--txt4)",border:(!layoutMode||layoutMode===0)?"1px solid #818cf8":"1px solid rgba(255,255,255,.08)"
                 }}>자동</button>
               </div>
-              <div style={{display:"grid",gridTemplateColumns:`repeat(${layoutMode||Math.min((images||[]).length,3)},1fr)`,gap:8,background:"#fff",borderRadius:6,padding:12,minHeight:80}}>
-                {(images||[]).map((img,i)=>(
-                  <div key={i} style={{aspectRatio:"16/10",background:"transparent",borderRadius:4,overflow:"hidden",border:"none",display:"flex",alignItems:"center",justifyContent:"center"}}>
-                    <img src={getImageSrc(img)} style={{width:"100%",height:"100%",objectFit:"contain"}} alt=""/>
-                  </div>
+              {/* ★ v27m: 페이지당 행 수 선택 */}
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <span style={{fontSize:11,fontWeight:700,color:"var(--txt3)"}}>페이지당 행 수</span>
+                {[1,2,3].map(n=>(
+                  <button key={n} onClick={()=>onRowsChange && onRowsChange(n)} style={{
+                    padding:"4px 10px",borderRadius:6,fontSize:11,fontWeight:(rowsMode||2)===n?700:500,cursor:"pointer",
+                    background:(rowsMode||2)===n?"rgba(245,158,11,.15)":"rgba(255,255,255,.05)",
+                    color:(rowsMode||2)===n?"#f59e0b":"var(--txt4)",border:(rowsMode||2)===n?"1px solid #f59e0b":"1px solid rgba(255,255,255,.08)"
+                  }}>{n}행</button>
                 ))}
               </div>
+              {/* ★ v27n: 그룹별 페이지 나눔 미리보기 */}
+              {(() => {
+                const allImgs = images || [];
+                const defCols = layoutMode || Math.min(allImgs.length, 3);
+                const defRows = rowsMode || 2;
+                const breaks = imageBreaks || [];
+                // 이미지를 그룹으로 분할
+                const sorted = breaks
+                  .map(b => ({ ...b, idx: allImgs.findIndex(img => String(img.id) === String(b.afterImageId)) }))
+                  .filter(b => b.idx >= 0 && b.idx < allImgs.length - 1)
+                  .sort((a, b) => a.idx - b.idx);
+                const groups = [];
+                let start = 0;
+                sorted.forEach(brk => {
+                  const g = allImgs.slice(start, brk.idx + 1);
+                  if (g.length) groups.push({ imgs: g, cols: start === 0 ? defCols : (groups.length ? groups[groups.length-1]._nc || defCols : defCols), rows: start === 0 ? defRows : (groups.length ? groups[groups.length-1]._nr || defRows : defRows) });
+                  if (groups.length) { groups[groups.length-1]._nc = brk.cols || defCols; groups[groups.length-1]._nr = brk.rows || defRows; }
+                  start = brk.idx + 1;
+                });
+                if (start < allImgs.length) {
+                  const last = sorted[sorted.length - 1];
+                  groups.push({ imgs: allImgs.slice(start), cols: last ? (last.cols||defCols) : defCols, rows: last ? (last.rows||defRows) : defRows });
+                }
+                if (!groups.length && allImgs.length) groups.push({ imgs: allImgs, cols: defCols, rows: defRows });
+                if (groups.length) { groups[0].cols = defCols; groups[0].rows = defRows; }
+                // 각 그룹 → 페이지 청크
+                const pageChunks = [];
+                groups.forEach((g, gi) => {
+                  const mpp = Math.max(1, g.cols * g.rows);
+                  for (let i = 0; i < g.imgs.length; i += mpp) pageChunks.push({ imgs: g.imgs.slice(i, i + mpp), cols: g.cols, isNewGroup: i === 0 && gi > 0 });
+                });
+                return React.createElement("div", {style:{background:"#fff",borderRadius:6,padding:12,minHeight:80}},
+                  pageChunks.map((chunk, pi) => React.createElement(React.Fragment, {key:pi},
+                    pi > 0 && React.createElement("div", {style:{borderTop: chunk.isNewGroup ? "2px dashed #ef4444" : "2px dashed #f59e0b",margin:"10px 0",position:"relative",textAlign:"center"}},
+                      React.createElement("span", {style:{position:"relative",top:-9,background:"#fff",padding:"0 8px",fontSize:10,color:chunk.isNewGroup?"#ef4444":"#f59e0b",fontWeight:700}},
+                        chunk.isNewGroup ? "✂️ 그룹 "+chunk.cols+"열 시작" : "📄 페이지 "+(pi+1)+" 시작"
+                      )
+                    ),
+                    React.createElement("div", {style:{display:"grid",gridTemplateColumns:"repeat("+chunk.cols+",1fr)",gap:8}},
+                      chunk.imgs.map((img,i) => React.createElement("div", {key:pi+"-"+i,style:{aspectRatio:"16/10",background:"transparent",borderRadius:4,overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}},
+                        React.createElement("img", {src:getImageSrc(img),style:{width:"100%",height:"100%",objectFit:"contain"},alt:""})
+                      ))
+                    )
+                  ))
+                );
+              })()}
               <div style={{fontSize:10,color:"var(--txt4)",marginTop:6,textAlign:"center"}}>
-                PDF 출력 시 {layoutMode||"자동"}열 그리드로 배치됩니다
+                {(imageBreaks||[]).length ? `${(imageBreaks||[]).length+1}개 그룹으로 분할됨` : `PDF 출력 시 ${layoutMode||"자동"}열 × ${rowsMode||2}행 그리드`} ({Math.ceil((images||[]).length / Math.max(1, (layoutMode||Math.min((images||[]).length,3)) * (rowsMode||2)))}페이지+)
               </div>
             </div>
           )}
 
-      {/* ★ v27d3: 이미지 그리드 — 외부 파일 드롭 + 내부 드래그 순서 변경 */}
+      {/* ★ v27n: 이미지 그리드 — 외부 파일 드롭 + 내부 드래그 순서 변경 + 페이지 나누기 */}
       <div
         onDragOver={e=>{e.preventDefault();if(dragIdx===null)e.currentTarget.style.outline="2px dashed #818cf8";}}
         onDragLeave={e=>{e.currentTarget.style.outline="none";}}
         onDrop={e=>{e.preventDefault();e.currentTarget.style.outline="none";if(e.dataTransfer.files.length&&dragIdx===null)handleUpload(e.dataTransfer.files);}}
         style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10,marginTop:8,borderRadius:8,transition:"all .2s"}}>
-        {(images||[]).map((img,idx)=>(
-          <div key={img.id||idx}
+        {(images||[]).map((img,idx)=>{
+          const breakHere = (imageBreaks||[]).find(b=>String(b.afterImageId)===String(img.id));
+          const isLast = idx === (images||[]).length - 1;
+          return (<React.Fragment key={img.id||idx}>
+          <div
             draggable onDragStart={e=>{setDragIdx(idx);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",String(idx));}}
             onDragOver={e=>{e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect="move";setDragOverIdx(idx);}}
             onDragLeave={()=>setDragOverIdx(null)}
@@ -9668,7 +9775,36 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
               </div>
             </div>
           </div>
-        ))}
+          {/* ★ v27n: 이미지 사이 페이지 나누기 삽입/표시 */}
+          {!isLast && breakHere && (
+            <div style={{gridColumn:"1/-1",display:"flex",alignItems:"center",gap:6,padding:"6px 0",borderTop:"2px dashed #ef4444",borderBottom:"2px dashed #ef4444",margin:"2px 0",background:"rgba(239,68,68,.05)"}}>
+              <span style={{fontSize:10,color:"#ef4444",fontWeight:700}}>✂️</span>
+              <span style={{fontSize:9,color:"#64748b"}}>다음 그룹:</span>
+              <span style={{fontSize:9,color:"#64748b"}}>열</span>
+              {[1,2,3,4].map(n=>(
+                <button key={"c"+n} onClick={()=>{const nb=(imageBreaks||[]).map(b=>String(b.afterImageId)===String(img.id)?{...b,cols:n}:b);onImageBreaksChange&&onImageBreaksChange(nb);}}
+                  style={{fontSize:9,padding:"1px 6px",borderRadius:4,cursor:"pointer",background:(breakHere.cols||2)===n?"rgba(239,68,68,.15)":"transparent",border:(breakHere.cols||2)===n?"1px solid #ef4444":"1px solid rgba(255,255,255,.1)",color:(breakHere.cols||2)===n?"#ef4444":"#64748b"}}>{n}</button>
+              ))}
+              <span style={{fontSize:9,color:"#64748b",marginLeft:4}}>행</span>
+              {[1,2,3].map(n=>(
+                <button key={"r"+n} onClick={()=>{const nb=(imageBreaks||[]).map(b=>String(b.afterImageId)===String(img.id)?{...b,rows:n}:b);onImageBreaksChange&&onImageBreaksChange(nb);}}
+                  style={{fontSize:9,padding:"1px 6px",borderRadius:4,cursor:"pointer",background:(breakHere.rows||2)===n?"rgba(239,68,68,.15)":"transparent",border:(breakHere.rows||2)===n?"1px solid #ef4444":"1px solid rgba(255,255,255,.1)",color:(breakHere.rows||2)===n?"#ef4444":"#64748b"}}>{n}</button>
+              ))}
+              <button onClick={()=>{onImageBreaksChange&&onImageBreaksChange((imageBreaks||[]).filter(b=>String(b.afterImageId)!==String(img.id)));}}
+                style={{marginLeft:"auto",background:"none",border:"none",color:"#ef4444",fontSize:12,cursor:"pointer",fontWeight:700}}>×</button>
+            </div>
+          )}
+          {!isLast && !breakHere && (
+            <div style={{gridColumn:"1/-1",height:0,position:"relative",overflow:"visible"}}>
+              <button onClick={()=>{onImageBreaksChange&&onImageBreaksChange([...(imageBreaks||[]),{afterImageId:String(img.id),cols:layoutMode||2,rows:rowsMode||2}]);}}
+                className="img-break-btn"
+                style={{position:"absolute",left:"50%",transform:"translateX(-50%) translateY(-8px)",opacity:0,transition:"opacity .2s",background:"rgba(239,68,68,.08)",border:"1px dashed #ef4444",color:"#ef4444",borderRadius:12,padding:"2px 10px",fontSize:9,cursor:"pointer",zIndex:5,whiteSpace:"nowrap"}}>
+                ✂️ 페이지 나누기
+              </button>
+            </div>
+          )}
+          </React.Fragment>);
+        })}
       </div>
     </div>
   );
@@ -9994,13 +10130,49 @@ function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle })
       <input className="form-input" placeholder="소제목 입력 (PDF에 표시됩니다)" value={block.customTitle||""} onChange={e=>onChange({customTitle:e.target.value})} style={{fontSize:12,marginTop:4,marginBottom:8}}/>
       {hasSummary && (
         <div>
-          {displayItems.map((item, idx) => {
+          {/* ★ v27m: 페이지 경계 미리보기 계산 */}
+          {(()=>{
+            let accH=0, pn=1;
+            const estItemH=(it)=>{
+              if(it.type==="summary") return 80;
+              if(it.type==="table"){const t=(block.tables||[]).find(t=>t.id===it.id); return t ? (t.title?28:0)+(t.headers?.length?40:0)+((t.rows||[]).length)*36+24 : 120;}
+              if(it.type==="chart") return 264;
+              return 0;
+            };
+            const pgMap={};
+            displayItems.forEach((it,i)=>{
+              if(it.type==="pagebreak"){accH=0;pn++;return;}
+              const h=estItemH(it);
+              if(accH+h>500&&accH>0){accH=h;pn++;pgMap[i]=pn;}
+              else{accH+=h;}
+            });
+            return displayItems.map((item, idx) => {
+              const autoPage = pgMap[idx];
+              const pageDiv = autoPage ? React.createElement("div",{key:"apg-"+idx,style:{borderTop:"2px dashed #6366f1",margin:"4px 0",padding:"2px 0",textAlign:"center"}},React.createElement("span",{style:{fontSize:9,color:"#818cf8",fontWeight:700}},"📄 페이지 "+autoPage+" 시작 (예상)")) : null;
+              const el = (()=>{
+            // ★ v27l: 페이지 나누기 마커
+            if (item.type === "pagebreak") {
+              return (
+                <div key={"pb-"+idx} {...subDragProps(idx)}>
+                  <div style={{display:"flex",alignItems:"center",gap:6,margin:"6px 0",padding:"4px 8px",background:"rgba(239,68,68,.08)",border:"1px dashed rgba(239,68,68,.3)",borderRadius:6}}>
+                    <span style={{fontSize:12,color:"#94a3b8",cursor:"grab",userSelect:"none"}}>⠿</span>
+                    <span style={{fontSize:11,color:"#ef4444",fontWeight:600,flex:1}}>--- 페이지 나누기 ---</span>
+                    <button onClick={()=>{const ni=displayItems.filter((_,i)=>i!==idx);onChange({items:ni});}}
+                      style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
+                  </div>
+                </div>
+              );
+            }
             if (item.type === "summary" && block.summary) {
               return (
                 <div key="summary" {...subDragProps(idx)}>
                   <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
                     <span style={{fontSize:12,color:"#94a3b8",cursor:"grab",userSelect:"none"}} title="드래그하여 순서 변경">⠿</span>
                     <span style={{fontSize:11,color:"#94a3b8"}}>요약</span>
+                    {/* 페이지 나누기 삽입 버튼 */}
+                    <button onClick={()=>{const ni=[...displayItems];ni.splice(idx+1,0,{type:"pagebreak"});onChange({items:ni});}}
+                      style={{marginLeft:"auto",background:"rgba(239,68,68,.06)",border:"1px solid rgba(239,68,68,.15)",color:"#f87171",borderRadius:4,padding:"1px 6px",fontSize:9,cursor:"pointer"}}
+                      title="이 항목 뒤에 페이지 나누기 삽입">+ 페이지 나누기</button>
                   </div>
                   <textarea value={block.summary} onChange={e=>onChange({summary:e.target.value})} rows={3}
                     className="form-input" style={{fontSize:12,lineHeight:1.6}}/>
@@ -10018,6 +10190,20 @@ function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle })
                     <span style={{fontSize:11,color:"#94a3b8"}}>추출된 표 {ti+1}</span>
                     <button onClick={()=>{const nt=[...(block.tables||[])];nt.splice(ti,1);const ni=(block.items||[]).filter(it=>!(it.type==="table"&&it.id===item.id));onChange({tables:nt,items:ni});}}
                       style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
+                    <button onClick={()=>{const ni=[...displayItems];ni.splice(idx+1,0,{type:"pagebreak"});onChange({items:ni});}}
+                      style={{marginLeft:"auto",background:"rgba(239,68,68,.06)",border:"1px solid rgba(239,68,68,.15)",color:"#f87171",borderRadius:4,padding:"1px 6px",fontSize:9,cursor:"pointer"}}
+                      title="이 항목 뒤에 페이지 나누기 삽입">+ 페이지 나누기</button>
+                  </div>
+                  {/* ★ v27m: 표 너비 옵션 */}
+                  <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+                    <span style={{fontSize:10,color:"#64748b"}}>PDF 너비:</span>
+                    {[["full","전체"],["auto","자동"],["compact","컴팩트"]].map(([v,l])=>(
+                      <button key={v} onClick={()=>{const t=[...(block.tables||[])];t[ti]={...t[ti],tableWidth:v};onChange({tables:t});}}
+                        style={{fontSize:9,padding:"1px 7px",borderRadius:4,border:"1px solid",cursor:"pointer",
+                          background:(tbl.tableWidth||"full")===v?"rgba(99,102,241,.15)":"rgba(255,255,255,.03)",
+                          borderColor:(tbl.tableWidth||"full")===v?"rgba(99,102,241,.4)":"rgba(255,255,255,.08)",
+                          color:(tbl.tableWidth||"full")===v?"#a5b4fc":"#64748b"}}>{l}</button>
+                    ))}
                   </div>
                   <EditableTable block={tbl} onChange={updates=>{const t=[...(block.tables||[])];t[ti]={...t[ti],...updates};onChange({tables:t});}} />
                 </div>
@@ -10034,13 +10220,19 @@ function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle })
                     <span style={{fontSize:11,color:"#94a3b8"}}>제안된 그래프 {ci+1}</span>
                     <button onClick={()=>{const nc=[...(block.charts||[])];nc.splice(ci,1);const ni=(block.items||[]).filter(it=>!(it.type==="chart"&&it.id===item.id));onChange({charts:nc,items:ni});}}
                       style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
+                    <button onClick={()=>{const ni=[...displayItems];ni.splice(idx+1,0,{type:"pagebreak"});onChange({items:ni});}}
+                      style={{marginLeft:"auto",background:"rgba(239,68,68,.06)",border:"1px solid rgba(239,68,68,.15)",color:"#f87171",borderRadius:4,padding:"1px 6px",fontSize:9,cursor:"pointer"}}
+                      title="이 항목 뒤에 페이지 나누기 삽입">+ 페이지 나누기</button>
                   </div>
                   <ChartBlock block={ch} onChange={updates=>{const c=[...(block.charts||[])];c[ci]={...c[ci],...updates};onChange({charts:c});}} />
                 </div>
               );
             }
             return null;
-          })}
+              })();
+              return autoPage ? React.createElement(React.Fragment,{key:"wrap-"+idx},pageDiv,el) : el;
+            });
+          })()}
         </div>
       )}
     </div>
@@ -10162,6 +10354,7 @@ function ContentBlockManager({ sectionId, blocks, onUpdate, projectName, section
             if (e.type==="summary") return { ...e, label: label+" — 요약 텍스트" };
             if (e.type==="table") { const t=(blk.tables||[]).find(t=>t.id===e.id); return { ...e, label: label+" — 표: "+(t?.title||"무제") }; }
             if (e.type==="chart") { const c=(blk.charts||[]).find(c=>c.id===e.id); return { ...e, label: label+" — 그래프: "+(c?.title||"무제") }; }
+            if (e.type==="pagebreak") return { ...e, label: "--- 페이지 나누기 ---" };
             return null;
           }).filter(Boolean);
         } else {
@@ -10173,6 +10366,7 @@ function ContentBlockManager({ sectionId, blocks, onUpdate, projectName, section
               if (item.type==="summary") flatItems.push({ blockId:b.id, type:"summary", label: label+" — 요약 텍스트" });
               else if (item.type==="table") { const t=(b.tables||[]).find(t=>t.id===item.id); flatItems.push({ blockId:b.id, type:"table", id:item.id, label: label+" — 표: "+(t?.title||"무제") }); }
               else if (item.type==="chart") { const c=(b.charts||[]).find(c=>c.id===item.id); flatItems.push({ blockId:b.id, type:"chart", id:item.id, label: label+" — 그래프: "+(c?.title||"무제") }); }
+              else if (item.type==="pagebreak") flatItems.push({ blockId:b.id, type:"pagebreak", label: "--- 페이지 나누기 ---" });
             });
           });
         }
@@ -10185,26 +10379,68 @@ function ContentBlockManager({ sectionId, blocks, onUpdate, projectName, section
             onUpdate([...(blocks||[]), { id: Date.now()+Math.random(), type:"_aiGlobalOrder", order:clean }]);
           }
         };
-        const typeIcon = {summary:"📝",table:"📊",chart:"📈"};
+        const typeIcon = {summary:"📝",table:"📊",chart:"📈",pagebreak:"✂️"};
+        // ★ v27m: 높이 추정 + 페이지 경계 미리보기
+        const aiBlockMap = {};
+        aiBlks.forEach(b => { aiBlockMap[b.id] = b; });
+        const estH = (fi) => {
+          if (fi.type === "summary") return 80;
+          if (fi.type === "table") {
+            const blk = aiBlockMap[fi.blockId];
+            const t = blk?.tables?.find(t=>t.id===fi.id);
+            return t ? (t.title?28:0) + (t.headers?.length?40:0) + ((t.rows||[]).length)*36 + 24 : 120;
+          }
+          if (fi.type === "chart") return 264;
+          return 0; // pagebreak = 0 (forces new page)
+        };
+        // 페이지 경계 계산
+        let accH = 0; let pageNum = 1;
+        const pageMarkers = []; // [{afterIdx, pageNum}]
+        flatItems.forEach((fi, idx) => {
+          if (fi.type === "pagebreak") { accH = 0; pageNum++; pageMarkers.push({afterIdx:idx, pageNum}); return; }
+          const h = estH(fi);
+          if (accH + h > 500 && accH > 0) { accH = h; pageNum++; pageMarkers.push({afterIdx:idx-1, pageNum, auto:true}); }
+          else { accH += h; }
+        });
+        const pageMarkerMap = {};
+        pageMarkers.forEach(pm => { pageMarkerMap[pm.afterIdx] = pm; });
+
         return React.createElement("div", {style:{marginBottom:10}},
           React.createElement("button", {onClick:()=>setShowPdfOrder(!showPdfOrder),style:{background:showPdfOrder?"rgba(245,158,11,.15)":"rgba(245,158,11,.06)",border:"1px solid rgba(245,158,11,.3)",color:"#fbbf24",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",width:"100%",textAlign:"center",transition:"all .2s"}}, showPdfOrder ? "▼ PDF 순서 편집 닫기" : "▶ PDF 순서 편집 ("+flatItems.length+"개 항목)"),
           showPdfOrder && React.createElement("div", {style:{marginTop:6,border:"1px solid rgba(245,158,11,.2)",borderRadius:8,padding:8,background:"rgba(245,158,11,.04)"}},
-            React.createElement("div",{style:{fontSize:10,color:"#94a3b8",marginBottom:6}},"드래그하여 PDF 출력 순서를 변경하세요. 파일 구분 없이 자유롭게 배치됩니다."),
-            flatItems.map((fi,idx) => React.createElement("div", {
-              key: fi.blockId+"-"+fi.type+"-"+(fi.id||"s")+"-"+idx,
-              draggable: true,
-              onDragStart: e=>{e.stopPropagation();setPdfDragIdx(idx);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain","pdf-"+idx);},
-              onDragOver: e=>{e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect="move";setPdfDragOverIdx(idx);},
-              onDragLeave: ()=>setPdfDragOverIdx(null),
-              onDrop: e=>{e.preventDefault();e.stopPropagation();if(pdfDragIdx!==null&&pdfDragIdx!==idx){const arr=[...flatItems];const[moved]=arr.splice(pdfDragIdx,1);arr.splice(idx,0,moved);savePdfOrder(arr);}setPdfDragIdx(null);setPdfDragOverIdx(null);},
-              onDragEnd: ()=>{setPdfDragIdx(null);setPdfDragOverIdx(null);},
-              style:{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",marginBottom:3,background:pdfDragOverIdx===idx?"rgba(245,158,11,.15)":"rgba(255,255,255,.03)",border:"1px solid "+(pdfDragOverIdx===idx?"rgba(245,158,11,.4)":"rgba(255,255,255,.06)"),borderRadius:6,cursor:"grab",opacity:pdfDragIdx===idx?0.4:1,transition:"all .15s",fontSize:11}
-            },
-              React.createElement("span",{style:{color:"#64748b",cursor:"grab",userSelect:"none"}},"⠿"),
-              React.createElement("span",{style:{fontSize:10}},typeIcon[fi.type]||""),
-              React.createElement("span",{style:{color:"#e2e8f0",flex:1}},fi.label),
-              React.createElement("span",{style:{color:"#64748b",fontSize:10}},String(idx+1))
-            ))
+            React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}},
+              React.createElement("span",{style:{fontSize:10,color:"#94a3b8"}},"드래그하여 PDF 출력 순서를 변경하세요."),
+              React.createElement("button",{onClick:()=>{const pb={blockId:aiBlks[0]?.id||"pb",type:"pagebreak",label:"--- 페이지 나누기 ---"};const arr=[...flatItems,pb];savePdfOrder(arr);},style:{background:"rgba(239,68,68,.08)",border:"1px dashed rgba(239,68,68,.25)",color:"#f87171",borderRadius:4,padding:"2px 8px",fontSize:10,cursor:"pointer"}},"+ 페이지 나누기")
+            ),
+            flatItems.map((fi,idx) => {
+              const marker = pageMarkerMap[idx-1];
+              const itemEl = React.createElement("div", {
+                key: fi.blockId+"-"+fi.type+"-"+(fi.id||"s")+"-"+idx,
+                draggable: true,
+                onDragStart: e=>{e.stopPropagation();setPdfDragIdx(idx);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain","pdf-"+idx);},
+                onDragOver: e=>{e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect="move";setPdfDragOverIdx(idx);},
+                onDragLeave: ()=>setPdfDragOverIdx(null),
+                onDrop: e=>{e.preventDefault();e.stopPropagation();if(pdfDragIdx!==null&&pdfDragIdx!==idx){const arr=[...flatItems];const[moved]=arr.splice(pdfDragIdx,1);arr.splice(idx,0,moved);savePdfOrder(arr);}setPdfDragIdx(null);setPdfDragOverIdx(null);},
+                onDragEnd: ()=>{setPdfDragIdx(null);setPdfDragOverIdx(null);},
+                style:{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",marginBottom:3,background:fi.type==="pagebreak"?(pdfDragOverIdx===idx?"rgba(239,68,68,.2)":"rgba(239,68,68,.08)"):(pdfDragOverIdx===idx?"rgba(245,158,11,.15)":"rgba(255,255,255,.03)"),border:"1px solid "+(fi.type==="pagebreak"?"rgba(239,68,68,.3)":(pdfDragOverIdx===idx?"rgba(245,158,11,.4)":"rgba(255,255,255,.06)")),borderRadius:6,cursor:"grab",opacity:pdfDragIdx===idx?0.4:1,transition:"all .15s",fontSize:11,borderStyle:fi.type==="pagebreak"?"dashed":"solid"}
+              },
+                React.createElement("span",{style:{color:"#64748b",cursor:"grab",userSelect:"none"}},"⠿"),
+                React.createElement("span",{style:{fontSize:10}},typeIcon[fi.type]||""),
+                React.createElement("span",{style:{color:fi.type==="pagebreak"?"#f87171":"#e2e8f0",flex:1,fontWeight:fi.type==="pagebreak"?600:400}},fi.label),
+                fi.type==="pagebreak" ? React.createElement("button",{onClick:(e)=>{e.stopPropagation();const arr=[...flatItems];arr.splice(idx,1);savePdfOrder(arr);},style:{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer",padding:"0 4px"}},"삭제") : null,
+                React.createElement("span",{style:{color:"#64748b",fontSize:10}},String(idx+1))
+              );
+              // 페이지 경계 표시 (자동 추정)
+              if (marker && marker.auto && fi.type !== "pagebreak") {
+                return React.createElement(React.Fragment, {key:"pg-"+idx},
+                  React.createElement("div",{style:{borderTop:"2px dashed #6366f1",margin:"4px 0",padding:"2px 0",textAlign:"center"}},
+                    React.createElement("span",{style:{fontSize:9,color:"#818cf8",fontWeight:700,background:"rgba(30,30,46,.9)",padding:"0 8px"}},"📄 페이지 "+marker.pageNum+" 시작 (예상)")
+                  ),
+                  itemEl
+                );
+              }
+              return itemEl;
+            })
           )
         );
       })()}
@@ -11033,11 +11269,11 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
               console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 빈 데이터 무시");
             }
           } else if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
-            // ★ v27j: 롤백 방지 — _lastSaved 비교로 더 최신인 데이터 적용
+            // ★ v27l: 롤백 방지 — _lastSaved 비교 (클라우드가 strictly 최신일 때만 적용)
             const localData = docDataLatestRef.current;
             const localTs = localData?._lastSaved || 0;
             const cloudTs = cloudData?._lastSaved || 0;
-            if (cloudTs >= localTs) {
+            if (cloudTs > localTs) {
               setDocData(cloudData);
               saveToIDB(storageKey, cloudData).catch(()=>{});
               safeLocalSet(storageKey, JSON.stringify(cloudData));
@@ -11694,9 +11930,17 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   // ── 버전 불러오기 ──
   const loadVersion = (ver) => {
     if (!window.confirm(`"${ver.name}" 버전을 불러오시겠습니까?\n현재 작성 중인 내용이 대체됩니다.`)) return;
-    setDocData(ver.data);
-    safeLocalSet(storageKey, JSON.stringify(ver.data));
-    saveToIDB(storageKey, ver.data).catch(()=>{});
+    // ★ v27l: 롤백 방지 — 불러온 버전에 최신 타임스탬프 부여 + 즉시 클라우드 저장
+    const data = { ...ver.data, _lastSaved: Date.now() };
+    setDocData(data);
+    safeLocalSet(storageKey, JSON.stringify(data));
+    saveToIDB(storageKey, data).catch(()=>{});
+    // 클라우드에도 즉시 저장 (새로고침 시 롤백 방지)
+    if (CLOUD_CONFIG.ENABLED) {
+      CloudDataStore.writeDoc(storageKey, data).then(r => {
+        if (r.success) console.log("[DocEditor] ☁️ 버전 불러오기 → 클라우드 즉시 저장 완료");
+      }).catch(e => console.warn("[DocEditor] 버전 불러오기 클라우드 저장 실패:", e.message));
+    }
     setShowVersions(false);
     toast(`"${ver.name}" 버전을 불러왔습니다`, "success");
   };
@@ -11906,37 +12150,67 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       return idx >= 0 ? SECTIONS[idx].num : "00";
     };
 
-    // ★ v27f: 이미지 페이지 — overflow 방지 + 센터링 개선
+    // ★ v27n: 이미지 그룹 분할 헬퍼 (imageBreaks 기반)
+    const splitImageGroups = (imgs, breaks, defaultCols, defaultRows) => {
+      if (!imgs || !imgs.length) return [];
+      if (!breaks || !breaks.length) return [{ imgs, cols: defaultCols, rows: defaultRows }];
+      const sorted = breaks
+        .map(b => ({ ...b, idx: imgs.findIndex(img => String(img.id) === String(b.afterImageId)) }))
+        .filter(b => b.idx >= 0 && b.idx < imgs.length - 1)
+        .sort((a, b) => a.idx - b.idx);
+      if (!sorted.length) return [{ imgs, cols: defaultCols, rows: defaultRows }];
+      const groups = [];
+      let start = 0;
+      sorted.forEach(brk => {
+        const g = imgs.slice(start, brk.idx + 1);
+        if (g.length) groups.push({ imgs: g, cols: start === 0 ? defaultCols : groups.length ? (groups[groups.length-1]._nextCols||defaultCols) : defaultCols, rows: start === 0 ? defaultRows : groups.length ? (groups[groups.length-1]._nextRows||defaultRows) : defaultRows });
+        // break의 cols/rows는 다음 그룹에 적용
+        if (groups.length) { groups[groups.length-1]._nextCols = brk.cols || defaultCols; groups[groups.length-1]._nextRows = brk.rows || defaultRows; }
+        start = brk.idx + 1;
+      });
+      if (start < imgs.length) {
+        const last = sorted[sorted.length - 1];
+        groups.push({ imgs: imgs.slice(start), cols: last.cols || defaultCols, rows: last.rows || defaultRows });
+      }
+      // 첫 그룹은 항상 default
+      if (groups.length) { groups[0].cols = defaultCols; groups[0].rows = defaultRows; }
+      return groups;
+    };
+
+    // 그룹 내 이미지를 페이지 단위로 렌더링하는 공통 함수
+    const renderImagePages = (groupImgs, cols, rowsPerPage, makePageHtml) => {
+      const actualCols = Math.min(groupImgs.length, cols);
+      const maxPerPage = Math.max(1, actualCols * rowsPerPage);
+      const pages = [];
+      for (let i = 0; i < groupImgs.length; i += maxPerPage) pages.push(groupImgs.slice(i, i + maxPerPage));
+      return pages.map(pageImgs => {
+        const pCols = Math.min(pageImgs.length, actualCols);
+        const rows = Math.ceil(pageImgs.length / pCols);
+        const mh = rows <= 1 ? '140mm' : rows <= 2 ? '65mm' : '42mm';
+        return makePageHtml(pageImgs, pCols, mh);
+      }).join("");
+    };
+
+    // ★ v27n: 섹션 이미지 → imageBreaks 기반 그룹별 렌더링
     const imgHtml = (sectionId) => {
       const sec = sd(sectionId);
       const imgs = sec.images || [];
       if (!imgs.length) return "";
       const layout = sec.imageLayout || 0;
-      const cols = layout || (imgs.length === 1 ? 1 : imgs.length <= 4 ? 2 : 3);
-      const maxPerPage = cols <= 2 ? cols * 2 : cols * 2;
-      const pages = [];
-      for (let i = 0; i < imgs.length; i += maxPerPage) pages.push(imgs.slice(i, i + maxPerPage));
-      return pages.map(pageImgs => {
-        const actualCols = Math.min(pageImgs.length, cols);
-        const rows = Math.ceil(pageImgs.length / actualCols);
-        const mh = rows <= 1 ? '75vh' : rows <= 2 ? '35vh' : '22vh';
-        return `<div class="page img-page"><div class="img-grid" style="grid-template-columns:repeat(${actualCols},1fr)">${pageImgs.map(img => `<img src="${pdfImgSrc(img)}" style="max-height:${mh}"/>`).join("")}</div></div>`;
-      }).join("");
+      const defCols = layout || (imgs.length === 1 ? 1 : imgs.length <= 4 ? 2 : 3);
+      const defRows = sec.imageRows || 2;
+      const groups = splitImageGroups(imgs, sec.imageBreaks, defCols, defRows);
+      return groups.map(g => renderImagePages(g.imgs, g.cols, g.rows, (pageImgs, pCols, mh) =>
+        `<div class="page img-page"><div class="img-grid" style="grid-template-columns:repeat(${pCols},1fr)">${pageImgs.map(img => `<img src="${pdfImgSrc(img)}" style="max-height:${mh};object-fit:contain"/>`).join("")}</div></div>`
+      )).join("");
     };
 
-    // ★ v27j: 아이템 이미지를 여러 페이지로 분할 (디자인/venue/program 아이템용)
-    const itemImgPagesHtml = (imgs, cols, headerHtml, footerHtml) => {
+    // ★ v27n: 아이템 이미지 → imageBreaks 지원 (그룹별 별도 페이지)
+    const itemImgPagesHtml = (imgs, defCols, headerHtml, footerHtml, defRows, imageBreaks) => {
       if (!imgs.length) return "";
-      const actualCols = Math.min(imgs.length, cols);
-      const maxPerPage = actualCols <= 2 ? actualCols * 2 : actualCols * 2;
-      const pages = [];
-      for (let i = 0; i < imgs.length; i += maxPerPage) pages.push(imgs.slice(i, i + maxPerPage));
-      return pages.map(pageImgs => {
-        const pCols = Math.min(pageImgs.length, actualCols);
-        const rows = Math.ceil(pageImgs.length / pCols);
-        // ★ v27l: vh → mm 단위로 교체 (인쇄 시 정확한 높이)
-        const mh = rows <= 1 ? '140mm' : rows <= 2 ? '65mm' : '42mm';
-        return `<div class="page sec-page">
+      const groups = splitImageGroups(imgs, imageBreaks, defCols || Math.min(imgs.length, 3), defRows || 2);
+      return groups.map(g => renderImagePages(g.imgs, g.cols, g.rows, (pageImgs, pCols, mh) =>
+        `<div class="page sec-page">
   ${headerHtml}
   <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
     <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pCols},1fr)">
@@ -11944,8 +12218,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     </div></div>
   </div>
   ${footerHtml}
-</div>`;
-      }).join("");
+</div>`
+      )).join("");
     };
 
     // ── v27e: 콘텐츠 블록 PDF 출력 ──
@@ -11975,12 +12249,17 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     preRenderAllCharts();
 
     // ★ v27l: 표 스타일 개선 (키컬러 좌측 보더 + 셀 패딩 확대)
+    // ★ v27m: tableWidth 옵션 지원 (full/auto/compact)
     const tableBlockHtml = (tbl) => {
+      const tw = tbl.tableWidth || "full";
+      const tableStyle = tw === "compact" ? "width:auto;margin:0 auto"
+                       : tw === "auto" ? "width:auto;max-width:100%"
+                       : "width:100%";
       const hdrs = (tbl.headers||[]).map(h => `<th style="padding:7px 10px;background:#f0f4ff;border:1px solid #d4d8e8;font-size:10.5px;font-weight:700;text-align:center;color:#1e293b">${h||""}</th>`).join("");
       const rows = (tbl.rows||[]).map((row,ri) =>
         `<tr style="background:${ri%2===0?'#fff':'#fafbfc'}">${(row||[]).map(cell => `<td style="padding:6px 10px;border:1px solid #e2e8f0;font-size:10.5px;color:#374151;line-height:1.5">${cell||""}</td>`).join("")}</tr>`
       ).join("");
-      return `<div style="margin:10px 0">${tbl.title?`<div style="font-size:11px;font-weight:700;margin-bottom:6px;color:#1e293b;padding-left:8px;border-left:3px solid ${_kc}">${tbl.title}</div>`:""}<table style="width:100%;border-collapse:collapse;border-radius:4px;overflow:hidden">${hdrs?`<thead><tr>${hdrs}</tr></thead>`:""}${rows?`<tbody>${rows}</tbody>`:""}</table></div>`;
+      return `<div style="margin:10px 0">${tbl.title?`<div style="font-size:11px;font-weight:700;margin-bottom:6px;color:#1e293b;padding-left:8px;border-left:3px solid ${_kc}">${tbl.title}</div>`:""}<table style="${tableStyle};border-collapse:collapse;border-radius:4px;overflow:hidden">${hdrs?`<thead><tr>${hdrs}</tr></thead>`:""}${rows?`<tbody>${rows}</tbody>`:""}</table></div>`;
     };
     const chartBlockHtml = (ch) => {
       const src = chartDataUrls[ch.id];
@@ -12042,9 +12321,9 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
 
     // ★ v27l: 더 보수적 페이지 본문 최대 높이 (표 오버플로우 방지)
     const PAGE_BODY_MAX_H = 500;
-    // ★ v27g: aiSummary를 서브 요소로 분해 + 차트 2열 그룹핑
+    // ★ v27n: aiSummary를 서브 요소로 분해 + 차트 2열 그룹핑 + 플렉스 레이아웃
     const flattenBlocks = (blocks) => {
-      // 1단계: 원시 요소 수집 (차트는 type으로 마킹)
+      // 1단계: 원시 요소 수집 (각 아이템을 개별 {h, html, flexStyle}로)
       const raw = [];
       // ★ v27k: 글로벌 AI 순서 지원 + 파일 경계 없이 병합
       const globalOrderBlock = (blocks||[]).find(b => b.type === "_aiGlobalOrder");
@@ -12052,11 +12331,14 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       const aiBlockMap = {};
       aiBlocks.forEach(b => { aiBlockMap[b.id] = b; });
 
-      // 글로벌 순서가 있으면 그 순서로 AI 항목 수집, 없으면 블록 순서대로
       const collectAiItems = () => {
         const aiItems = [];
         if (globalOrderBlock && globalOrderBlock.order && globalOrderBlock.order.length) {
           globalOrderBlock.order.forEach(entry => {
+            if (entry.type === "pagebreak") {
+              aiItems.push({ block: aiBlocks[0]||{}, item: entry });
+              return;
+            }
             const blk = aiBlockMap[entry.blockId];
             if (!blk) return;
             aiItems.push({ block: blk, item: entry });
@@ -12070,55 +12352,47 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         return aiItems;
       };
 
-      let aiGroupH = 0;
-      let aiGroupHtml = "";
-      const flushAiGroup = () => { if (aiGroupHtml) { raw.push({ k:"html", h:aiGroupH, html:aiGroupHtml }); aiGroupH=0; aiGroupHtml=""; } };
-
       // ★ v27l: AI 항목 간 섹션 구분선
       const aiDivider = `<div style="border-top:1.5px solid #e2e8f0;margin:14px 0"></div>`;
       const aiDividerH = 30;
+
+      // ★ v27n: 개별 아이템 → flexStyle 포함하여 raw에 푸시
+      const tableFlexStyle = (tbl) => {
+        const tw = tbl.tableWidth || "full";
+        return tw === "compact" ? "flex:0 0 auto;max-width:50%"
+             : tw === "auto" ? "flex:0 0 auto;max-width:65%"
+             : "width:100%";
+      };
 
       const processAiItem = (b, item, isLast) => {
         if (item.type === "summary" && b.summary) {
           const title = b.customTitle || b.fileName || "AI 분석 요약";
           const sHtml = `<div style="margin:8px 0;padding:14px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;border-left:3px solid ${_kc}"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">${title}</div><div style="font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div></div>`;
           const sH = estTextH(b.summary) + 30;
-          if (aiGroupH + sH > PAGE_BODY_MAX_H && aiGroupHtml) { flushAiGroup(); }
-          aiGroupH += sH;
-          aiGroupHtml += sHtml;
-          if (!isLast) { aiGroupH += aiDividerH; aiGroupHtml += aiDivider; }
+          raw.push({ k:"html", h:sH, html:sHtml, flexStyle:"width:100%" });
+          if (!isLast) raw.push({ k:"html", h:aiDividerH, html:aiDivider, flexStyle:"width:100%" });
         } else if (item.type === "table") {
           const t = (b.tables||[]).find(t => t.id === item.id);
           if (t) {
-            const tH = estTableH(t) + (isLast ? 0 : aiDividerH);
-            if (aiGroupH + tH <= PAGE_BODY_MAX_H) {
-              aiGroupH += tH;
-              aiGroupHtml += tableBlockHtml(t);
-              if (!isLast) aiGroupHtml += aiDivider;
-            } else {
-              flushAiGroup();
-              const standalone = tableBlockHtml(t) + (isLast ? "" : aiDivider);
-              raw.push({ k:"html", h:tH, html:standalone });
-            }
+            const tH = estTableH(t);
+            raw.push({ k:"html", h:tH, html:tableBlockHtml(t), flexStyle:tableFlexStyle(t) });
+            if (!isLast) raw.push({ k:"html", h:aiDividerH, html:aiDivider, flexStyle:"width:100%" });
           }
         } else if (item.type === "chart") {
           const c = (b.charts||[]).find(c => c.id === item.id);
-          if (c) {
-            flushAiGroup();
-            raw.push({ k: "chart", data: c });
-          }
+          if (c) raw.push({ k: "chart", data: c });
+        } else if (item.type === "pagebreak") {
+          raw.push({ k:"pagebreak", h:0, html:"" });
         }
       };
 
       // aiSummary 블록이 처음 나올 위치에 모든 AI 항목을 삽입
       let aiInserted = false;
       (blocks||[]).forEach(b => {
-        if (b.type === "_aiGlobalOrder") return; // 메타데이터 블록 무시
+        if (b.type === "_aiGlobalOrder") return;
         if (b.type === "table") {
-          flushAiGroup();
-          raw.push({ k: "html", h: estTableH(b), html: tableBlockHtml(b) });
+          raw.push({ k: "html", h: estTableH(b), html: tableBlockHtml(b), flexStyle:tableFlexStyle(b) });
         } else if (b.type === "chart") {
-          flushAiGroup();
           raw.push({ k: "chart", data: b });
         } else if (b.type === "aiSummary") {
           if (!aiInserted) {
@@ -12128,16 +12402,23 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
           }
         }
       });
-      flushAiGroup();
-      // 2단계: 연속 차트를 2개씩 그룹핑하여 행으로 만듦
+
+      // 2단계: 연속 차트를 2개씩 그룹핑 + 단일 차트는 flexible
       const items = [];
       for (let i = 0; i < raw.length; i++) {
-        if (raw[i].k === "chart") {
+        if (raw[i].k === "pagebreak") {
+          items.push({ h:0, html:"", pagebreak:true });
+        } else if (raw[i].k === "chart") {
           const charts = [raw[i].data];
           while (i + 1 < raw.length && raw[i + 1].k === "chart") { i++; charts.push(raw[i].data); }
           for (let j = 0; j < charts.length; j += 2) {
             const pair = charts.slice(j, j + 2);
-            items.push({ h: estChartRowH(pair.length), html: chartRowHtml(pair) });
+            if (pair.length === 2) {
+              items.push({ h: estChartRowH(pair.length), html: chartRowHtml(pair), flexStyle:"width:100%" });
+            } else {
+              // ★ v27n: 단일 차트 — 컴팩트 표 옆에 나란히 배치 가능
+              items.push({ h: estChartRowH(1), html: chartRowHtml(pair), flexStyle:"flex:1 1 45%;min-width:45%" });
+            }
           }
         } else {
           items.push(raw[i]);
@@ -12146,14 +12427,32 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       return items;
     };
 
-    // ★ v27g: 분해된 요소를 여러 페이지로 분할
+    // ★ v27n: 분해된 요소를 여러 페이지로 분할 + 플렉스 레이아웃
     const contentBlocksPagesHtml = (blocks, makeHeaderHtml, footerHtml) => {
       const items = flattenBlocks(blocks);
       if (!items.length) return "";
+      const isFlexible = (it) => !(it.flexStyle||"width:100%").includes("width:100%");
       const pages = [];
       let curItems = [];
       let curH = 0;
       items.forEach(item => {
+        if (item.pagebreak) {
+          if (curItems.length > 0) { pages.push(curItems); curItems = []; curH = 0; }
+          return;
+        }
+        // ★ v27n: flexible 아이템 나란히 배치 시 max(h1,h2)
+        const prev = curItems.length ? curItems[curItems.length - 1] : null;
+        if (prev && isFlexible(prev) && isFlexible(item) && !prev._paired) {
+          const pairedH = Math.max(prev.h, item.h);
+          const delta = pairedH - prev.h;
+          if (curH + delta <= PAGE_BODY_MAX_H) {
+            prev._paired = true;
+            item._paired = true;
+            curItems.push(item);
+            curH += delta;
+            return;
+          }
+        }
         if (curItems.length > 0 && curH + item.h > PAGE_BODY_MAX_H) {
           pages.push(curItems);
           curItems = [item];
@@ -12165,7 +12464,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       });
       if (curItems.length > 0) pages.push(curItems);
       return pages.map((pageItems, pi) => {
-        const html = pageItems.map(it => it.html).join("");
+        // ★ v27n: 플렉스 컨테이너로 래핑 — 컴팩트 표+차트 나란히 배치
+        const html = `<div style="display:flex;flex-wrap:wrap;gap:8px 12px;align-items:flex-start">${pageItems.map(it => `<div style="${it.flexStyle||'width:100%'}">${it.html}</div>`).join("")}</div>`;
         return `<div class="page sec-page">
   ${makeHeaderHtml(pi > 0)}
   <div class="sec-body">${html}</div>
@@ -12249,6 +12549,7 @@ tr:nth-child(even) td{background:#f8fafc}
 .img-page{padding:30px 40px;box-sizing:border-box;overflow:hidden;display:flex;align-items:center;justify-content:center}
 .img-page .img-grid{display:grid;gap:10px;align-items:center;align-content:center;width:100%}
 .img-page img{width:100%;height:auto;max-width:100%;object-fit:contain;display:block;margin:0 auto}
+.img-break-btn:hover{opacity:1!important}
 @media print{
   @page{margin:0;size:297mm 210mm landscape}
   .page{width:297mm;height:210mm;margin:0;page-break-after:always;overflow:hidden;box-sizing:border-box}
@@ -12352,9 +12653,10 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   const isContentFirst = (vItem.contentOrder||"contentFirst") === "contentFirst";
   const vCbPagesHtml = (vItem.contentBlocks||[]).length ? contentBlocksPagesHtml(vItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`) : "";
   // ★ v27j: 이미지 여러 페이지 분할
+  const vImageRows = vItem.imageRows || 2;
   const vImgPageHtml = itemImgPagesHtml(vImgs, vCols,
     `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`);
+    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`, vImageRows, vItem.imageBreaks);
 
   if (needsSplit) {
     // 텍스트 페이지 + (contentBlocks or 이미지) 분리
@@ -12371,15 +12673,15 @@ ${isContentFirst ? vCbPagesHtml + vImgPageHtml : vImgPageHtml + vCbPagesHtml}`;
 
   // 기본: 한 페이지에 텍스트 + 이미지 (contentBlocks는 별도 페이지)
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
-  // ★ v27k: 비분할 모드에서도 이미지 2행 초과 시 페이지 분할
-  const vMaxInline = vActualCols * 2;
+  // ★ v27m: 비분할 모드에서도 imageRows 행 초과 시 페이지 분할
+  const vMaxInline = vActualCols * vImageRows;
   const vInlineImgs = vImgs.length > vMaxInline ? vImgs.slice(0, vMaxInline) : vImgs;
   const vOverflowImgs = vImgs.length > vMaxInline ? vImgs.slice(vMaxInline) : [];
   // ★ v27l: vh → mm (인쇄 안전)
   const vInlineMaxH = vInlineImgs.length ? (Math.ceil(vInlineImgs.length / vActualCols) <= 1 ? (vHasDesc ? '110mm' : '140mm') : (vHasDesc ? '52mm' : '65mm')) : '110mm';
   const vOverflowPageHtml = vOverflowImgs.length ? itemImgPagesHtml(vOverflowImgs, vCols,
     `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`) : "";
+    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`, vImageRows, vItem.imageBreaks) : "";
   return `
 <div class="page sec-page">
   <div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>
@@ -12449,10 +12751,11 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (dItem.contentOrder||"contentFirst") === "contentFirst";
   const dCbPagesHtml = (dItem.contentBlocks||[]).length ? contentBlocksPagesHtml(dItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`) : "";
-  // ★ v27j: 이미지 여러 페이지 분할
+  // ★ v27m: 이미지 여러 페이지 분할 + imageRows 지원
+  const dImageRows = dItem.imageRows || 2;
   const dImgPageHtml = itemImgPagesHtml(dImgs, dCols,
     `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`);
+    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`, dImageRows, dItem.imageBreaks);
 
   if (needsSplit) {
     return `
@@ -12468,15 +12771,15 @@ ${isContentFirst ? dCbPagesHtml + dImgPageHtml : dImgPageHtml + dCbPagesHtml}`;
   }
 
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
-  // ★ v27k: 비분할 모드에서도 이미지 2행 초과 시 페이지 분할
-  const dMaxInline = dActualCols * 2;
+  // ★ v27m: 비분할 모드에서도 imageRows 행 초과 시 페이지 분할
+  const dMaxInline = dActualCols * dImageRows;
   const dInlineImgs = dImgs.length > dMaxInline ? dImgs.slice(0, dMaxInline) : dImgs;
   const dOverflowImgs = dImgs.length > dMaxInline ? dImgs.slice(dMaxInline) : [];
   // ★ v27l: vh → mm
   const dInlineMaxH = dInlineImgs.length ? (Math.ceil(dInlineImgs.length / dActualCols) <= 1 ? '85mm' : '40mm') : '85mm';
   const dOverflowPageHtml = dOverflowImgs.length ? itemImgPagesHtml(dOverflowImgs, dCols,
     `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`) : "";
+    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`, dImageRows, dItem.imageBreaks) : "";
   return `
 <div class="page sec-page">
   <div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>
@@ -12566,10 +12869,11 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (pItem.contentOrder||"contentFirst") === "contentFirst";
   const pCbPagesHtml = (pItem.contentBlocks||[]).length ? contentBlocksPagesHtml(pItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`) : "";
-  // ★ v27j: 이미지 여러 페이지 분할
+  // ★ v27m: 이미지 여러 페이지 분할 + imageRows 지원
+  const pImageRows = pItem.imageRows || 2;
   const pImgPageHtml = itemImgPagesHtml(pImgs, pCols,
     `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`);
+    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`, pImageRows, pItem.imageBreaks);
 
   if (needsSplit) {
     return `
@@ -12584,15 +12888,15 @@ ${isContentFirst ? pCbPagesHtml + pImgPageHtml : pImgPageHtml + pCbPagesHtml}`;
   }
 
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
-  // ★ v27k: 비분할 모드에서도 이미지 2행 초과 시 페이지 분할
-  const pMaxInline = pActualCols * 2;
+  // ★ v27m: 비분할 모드에서도 imageRows 행 초과 시 페이지 분할
+  const pMaxInline = pActualCols * pImageRows;
   const pInlineImgs = pImgs.length > pMaxInline ? pImgs.slice(0, pMaxInline) : pImgs;
   const pOverflowImgs = pImgs.length > pMaxInline ? pImgs.slice(pMaxInline) : [];
   // ★ v27l: vh → mm
   const pInlineMaxH = pInlineImgs.length ? (Math.ceil(pInlineImgs.length / pActualCols) <= 1 ? (pHasNotes ? '95mm' : '125mm') : '52mm') : '95mm';
   const pOverflowPageHtml = pOverflowImgs.length ? itemImgPagesHtml(pOverflowImgs, pCols,
     `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`) : "";
+    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`, pImageRows, pItem.imageBreaks) : "";
   return `
 <div class="page sec-page">
   <div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>
@@ -12651,7 +12955,7 @@ ${secEnabled("timeline") ? (()=>{
   for(let i=0;i<tlAllRows.length;i+=rowsPerPage) tlPages.push(tlAllRows.slice(i,i+rowsPerPage));
   if(!tlPages.length) tlPages.push([]);
   const tlThead = `<thead><tr><th>#</th><th>구분</th><th>업무</th><th>시작일</th><th>종료일</th><th>진행률</th><th>상태</th></tr></thead>`;
-  return tlPages.map((rows,pi)=>`<!-- 06 TIME LINE ${pi>0?"(continued)":""} -->
+  return tlPages.map((rows,pi)=>`<!-- 06 TIME LINE ${pi>0?"(계속)":""} -->
 <div class="page sec-page">
   <div class="sec-header">
     <div class="sec-num">${secNum("timeline")}</div>
@@ -13353,7 +13657,7 @@ ${secEnabled("timeline") ? (()=>{
                   </tbody>
                 </table>
               </div>
-              <SectionImages sectionId="venue" docKey={docKey} images={ve.images||[]} onUpdate={imgs=>updateDoc("venue","images",imgs)} layoutMode={sd("venue").imageLayout||0} onLayoutChange={v=>updateDoc("venue","imageLayout",v)}/>
+              <SectionImages sectionId="venue" docKey={docKey} images={ve.images||[]} onUpdate={imgs=>updateDoc("venue","images",imgs)} layoutMode={sd("venue").imageLayout||0} onLayoutChange={v=>updateDoc("venue","imageLayout",v)} rowsMode={sd("venue").imageRows||2} onRowsChange={v=>updateDoc("venue","imageRows",v)} imageBreaks={sd("venue").imageBreaks||[]} onImageBreaksChange={v=>updateDoc("venue","imageBreaks",v)}/>
             </div>
           )}
 
@@ -13410,7 +13714,7 @@ ${secEnabled("timeline") ? (()=>{
               )}
               <div style={{marginTop:12}}>
                 <label className="form-label">이미지</label>
-                <SectionImages sectionId={`venueItem_${activeVenueItemObj._id}`} docKey={docKey} images={activeVenueItemObj.images||[]} onUpdate={imgs=>updateVenueItem(activeVenueItemObj._id,"images",imgs)} layoutMode={activeVenueItemObj.imageLayout||0} onLayoutChange={v=>updateVenueItem(activeVenueItemObj._id,"imageLayout",v)}/>
+                <SectionImages sectionId={`venueItem_${activeVenueItemObj._id}`} docKey={docKey} images={activeVenueItemObj.images||[]} onUpdate={imgs=>updateVenueItem(activeVenueItemObj._id,"images",imgs)} layoutMode={activeVenueItemObj.imageLayout||0} onLayoutChange={v=>updateVenueItem(activeVenueItemObj._id,"imageLayout",v)} rowsMode={activeVenueItemObj.imageRows||2} onRowsChange={v=>updateVenueItem(activeVenueItemObj._id,"imageRows",v)} imageBreaks={activeVenueItemObj.imageBreaks||[]} onImageBreaksChange={v=>updateVenueItem(activeVenueItemObj._id,"imageBreaks",v)}/>
               </div>
             </div>
           )}
@@ -13627,7 +13931,7 @@ ${secEnabled("timeline") ? (()=>{
               )}
               <div style={{marginTop:12}}>
                 <label className="form-label">제작 이미지</label>
-                <SectionImages sectionId={`designItem_${activeItemObj._id}`} docKey={docKey} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)} layoutMode={activeItemObj.imageLayout||0} onLayoutChange={v=>updateDesignItem(activeItemObj._id,"imageLayout",v)}/>
+                <SectionImages sectionId={`designItem_${activeItemObj._id}`} docKey={docKey} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)} layoutMode={activeItemObj.imageLayout||0} onLayoutChange={v=>updateDesignItem(activeItemObj._id,"imageLayout",v)} rowsMode={activeItemObj.imageRows||2} onRowsChange={v=>updateDesignItem(activeItemObj._id,"imageRows",v)} imageBreaks={activeItemObj.imageBreaks||[]} onImageBreaksChange={v=>updateDesignItem(activeItemObj._id,"imageBreaks",v)}/>
               </div>
             </div>
           )}
@@ -13925,7 +14229,7 @@ ${secEnabled("timeline") ? (()=>{
                 )}
                 <div style={{marginTop:12}}>
                   <label className="form-label">이미지</label>
-                  <SectionImages sectionId={`programItem_${activeProgramItemObj._id}`} docKey={docKey} images={activeProgramItemObj.images||[]} onUpdate={imgs=>updateProgramItem(activeProgramItemObj._id,"images",imgs)} layoutMode={activeProgramItemObj.imageLayout||0} onLayoutChange={v=>updateProgramItem(activeProgramItemObj._id,"imageLayout",v)}/>
+                  <SectionImages sectionId={`programItem_${activeProgramItemObj._id}`} docKey={docKey} images={activeProgramItemObj.images||[]} onUpdate={imgs=>updateProgramItem(activeProgramItemObj._id,"images",imgs)} layoutMode={activeProgramItemObj.imageLayout||0} onLayoutChange={v=>updateProgramItem(activeProgramItemObj._id,"imageLayout",v)} rowsMode={activeProgramItemObj.imageRows||2} onRowsChange={v=>updateProgramItem(activeProgramItemObj._id,"imageRows",v)} imageBreaks={activeProgramItemObj.imageBreaks||[]} onImageBreaksChange={v=>updateProgramItem(activeProgramItemObj._id,"imageBreaks",v)}/>
                 </div>
               </div>
             )}
@@ -14503,7 +14807,7 @@ ${secEnabled("timeline") ? (()=>{
             {renderSection()}
             {(activeSection !== "design" || !activeDesignItem) && (<>
               <ContentBlockManager sectionId={activeSection} blocks={sd(activeSection).contentBlocks||[]} onUpdate={blocks=>updateDoc(activeSection,"contentBlocks",blocks)} projectName={proj?.name} sectionTitle={ALL_DOC_SECTIONS.find(s=>s.id===activeSection)?.title||""}/>
-              <SectionImages sectionId={activeSection} docKey={docKey} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)} layoutMode={sd(activeSection).imageLayout||0} onLayoutChange={v=>updateDoc(activeSection,"imageLayout",v)}/>
+              <SectionImages sectionId={activeSection} docKey={docKey} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)} layoutMode={sd(activeSection).imageLayout||0} onLayoutChange={v=>updateDoc(activeSection,"imageLayout",v)} rowsMode={sd(activeSection).imageRows||2} onRowsChange={v=>updateDoc(activeSection,"imageRows",v)} imageBreaks={sd(activeSection).imageBreaks||[]} onImageBreaksChange={v=>updateDoc(activeSection,"imageBreaks",v)}/>
             </>)}
           </div>
         </div>
@@ -15556,7 +15860,8 @@ function App() {
     } catch {}
     return null;
   });
-  const [projects, setProjects, projectsCloud] = useCloudState("projects", INIT_PROJECTS);
+  // ★ v27l: projects는 writeProjectsBulk에서 별도 저장 → writeAppData 자동저장 스킵
+  const [projects, setProjects, projectsCloud] = useCloudState("projects", INIT_PROJECTS, { skipAutoSave: true });
   const [priceList, setPriceList, priceListCloud] = useCloudState("priceList", INIT_PRICE_LIST);
   const [expenses, setExpenses, expensesCloud] = useCloudState("expenses", []);
   const [laborCosts, setLaborCosts, laborCostsCloud] = useCloudState("laborCosts", []);
@@ -15565,6 +15870,14 @@ function App() {
   const [loadingMsg, setLoadingMsg] = useState("클라우드에서 데이터를 불러오는 중...");
   // driveLoaded 호환용 (기존 코드에서 참조하는 곳이 있을 수 있음)
   const driveLoaded = appReady;
+
+  // ── ★ v27m: 버전 업데이트 알림 ──
+  const [updateAvailable, setUpdateAvailable] = useState(null);
+  useEffect(() => {
+    const handler = (e) => setUpdateAvailable(e.detail);
+    window.addEventListener("eventos-update", handler);
+    return () => window.removeEventListener("eventos-update", handler);
+  }, []);
 
   // ── 클라우드 헬스 모니터링 상태 ──
   const [cloudHealth, setCloudHealth] = useState({ status: "unknown", checks: {}, lastCheck: null, consecutiveFailures: 0 });
@@ -15589,19 +15902,50 @@ function App() {
   }, [degradedMode]);
 
   // ── 클라우드 동기화: 프로젝트 변경 시 벌크 저장 (CloudDataStore 사용) ──
+  // ★ v27l: 레이스 컨디션 방지 — 디바운스 + 직렬 저장
   const projectsRef = useRef(null);
+  const projectSaveTimerRef = useRef(null);
+  const projectSavingRef = useRef(false);
+  const projectPendingRef = useRef(null);
   useEffect(() => {
     if (!appReady) return;
     const json = JSON.stringify(projects);
     if (projectsRef.current === json) return;
     projectsRef.current = json;
-    CloudDataStore.writeProjectsBulk(projects).then(result => {
-      if (result && result.success) {
-        SyncManager.setStatus("success");
-        SyncManager._lastSyncTime = new Date();
-        SyncManager._notify();
-      }
-    }).catch(e => console.warn("[App] 프로젝트 벌크 저장 실패:", e.message));
+
+    // 디바운스: 빠른 연속 편집 시 마지막 상태만 저장 (500ms)
+    if (projectSaveTimerRef.current) clearTimeout(projectSaveTimerRef.current);
+    projectSaveTimerRef.current = setTimeout(() => {
+      const doSave = (data) => {
+        if (projectSavingRef.current) {
+          // 이미 저장 중 → 최신 데이터를 대기열에 저장
+          projectPendingRef.current = data;
+          return;
+        }
+        projectSavingRef.current = true;
+        CloudDataStore.writeProjectsBulk(data).then(result => {
+          if (result && result.success) {
+            SyncManager.setStatus("success");
+            SyncManager._lastSyncTime = new Date();
+            SyncManager._notify();
+            // ★ 저장 성공 시 타임스탬프 기록 (롤백 방지)
+            // ★ v27l: 프로젝트 저장 성공 → dirty 플래그 해제
+            try { localStorage.setItem("eventos_projects_dirty", "0"); } catch {}
+          }
+        }).catch(e => console.warn("[App] 프로젝트 벌크 저장 실패:", e.message))
+        .finally(() => {
+          projectSavingRef.current = false;
+          // 대기 중인 저장이 있으면 최신 데이터로 즉시 실행
+          if (projectPendingRef.current) {
+            const pending = projectPendingRef.current;
+            projectPendingRef.current = null;
+            doSave(pending);
+          }
+        });
+      };
+      doSave(projects);
+    }, 500);
+
     // Drive 백업도 전송 (기존 호환)
     if (DRIVE_CONFIG.ENABLED) {
       projects.forEach(p => {
@@ -15609,6 +15953,27 @@ function App() {
       });
     }
   }, [projects, appReady]);
+
+  // ★ v27l: 탭 닫기 시 프로젝트 데이터 강제 저장 (디바운스 대기 중인 경우)
+  useEffect(() => {
+    const handler = () => {
+      if (projectSaveTimerRef.current && CLOUD_CONFIG.ENABLED) {
+        clearTimeout(projectSaveTimerRef.current);
+        projectSaveTimerRef.current = null;
+        try {
+          const payload = JSON.stringify({ projects });
+          if (payload.length < 60000) {
+            navigator.sendBeacon(
+              CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "") + "/api/projects/bulk",
+              new Blob([payload], { type: "application/json" })
+            );
+          }
+        } catch (e) { console.error("[App] 프로젝트 sendBeacon fail:", e); }
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [projects]);
 
   // ── 클라우드-퍼스트 초기 로드 (로딩 화면 → 클라우드 → 렌더) ──
   useEffect(() => {
@@ -15652,6 +16017,7 @@ function App() {
 
         if (cloud && !cloud.error) {
           // setFromCloud: 클라우드 데이터 적용 (write-back 없음!)
+          // ★ v27l: _dirty 플래그로 미저장 로컬 변경 보호 (setFromCloud 내부에서 체크)
           if (cloud.users?.length) usersCloud.setFromCloud(cloud.users);
           if (cloud.projects?.length) projectsCloud.setFromCloud(cloud.projects);
           if (cloud.priceList?.length) priceListCloud.setFromCloud(cloud.priceList);
@@ -16130,6 +16496,26 @@ function App() {
           <span>클라우드 일부 기능 제한 중 — 연결 복구 시도 중...</span>
           <button onClick={()=>CloudHealthMonitor.check()} style={{background:"rgba(255,255,255,.2)",border:"1px solid rgba(255,255,255,.3)",
             color:"#fff",borderRadius:6,padding:"3px 10px",fontSize:11,cursor:"pointer",marginLeft:"auto"}}>🔄 재확인</button>
+        </div>
+      )}
+
+      {/* ── ★ v27m: 버전 업데이트 알림 배너 ── */}
+      {updateAvailable && cloudHealth.status !== "down" && (
+        <div style={{position:"fixed",top:0,left:0,right:0,zIndex:99999,
+          background:"linear-gradient(135deg,#6366f1,#4f46e5)",padding:"10px 20px",
+          display:"flex",alignItems:"center",justifyContent:"center",gap:12,
+          boxShadow:"0 2px 12px rgba(99,102,241,.4)"}}>
+          <span style={{color:"#fff",fontWeight:700,fontSize:13}}>
+            🔄 새로운 버전({updateAvailable})이 있습니다. 현재: {window._EVENTOS_VER}
+          </span>
+          <button onClick={()=>location.reload(true)}
+            style={{background:"#fff",color:"#4f46e5",fontWeight:700,padding:"4px 16px",
+              borderRadius:6,border:"none",cursor:"pointer",fontSize:12}}>
+            지금 업데이트
+          </button>
+          <button onClick={()=>setUpdateAvailable(null)}
+            style={{background:"none",border:"none",color:"rgba(255,255,255,.7)",
+              cursor:"pointer",fontSize:16,padding:"0 4px"}}>✕</button>
         </div>
       )}
 
