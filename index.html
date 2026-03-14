@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260314v27l";
+  var CODE_VER = "20260314v27m";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -31,6 +31,19 @@
   if(location.search.indexOf("_=") > -1){
     history.replaceState(null, "", location.pathname);
   }
+  // ★ v27m: 5분마다 최신 버전 확인 → React에 이벤트 전달
+  window._EVENTOS_VER = CODE_VER;
+  setTimeout(function checkVer(){
+    var workerUrl = "";
+    try { workerUrl = window.CLOUD_CONFIG && window.CLOUD_CONFIG.WORKER_URL; } catch(e){}
+    if (!workerUrl) { setTimeout(checkVer, 60000); return; }
+    fetch(workerUrl + "/api/version").then(function(r){return r.json();}).then(function(d){
+      if(d.version && d.version !== CODE_VER){
+        window.dispatchEvent(new CustomEvent("eventos-update",{detail:d.version}));
+      }
+    }).catch(function(){});
+    setTimeout(checkVer, 5*60*1000);
+  }, 30000); // 첫 체크: 30초 후
 })();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -5796,7 +5809,7 @@ function Topbar({page, setPage, user, onLogout, onExport, onImport, onShowBackup
       <div className="logo">
         <div className="logo-icon">E</div>
         <div className="logo-text">EventOS</div>
-        <span style={{fontSize:9,color:"rgba(255,255,255,.3)",marginLeft:-10,marginTop:2,fontFamily:"monospace"}}>v27l</span>
+        <span style={{fontSize:9,color:"rgba(255,255,255,.3)",marginLeft:-10,marginTop:2,fontFamily:"monospace"}}>v27m</span>
       </div>
       <nav>
         {pages.map(p=>(
@@ -9533,7 +9546,7 @@ function makeDraggableRows(items, onReorder) {
 }
 
 /* ── Section Image Uploader ────────────────────────────────────────────────── */
-function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayoutChange}) {
+function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayoutChange, rowsMode, onRowsChange}) {
   const fileRef = useRef(null);
   const [annotating, setAnnotating] = useState(null);
   const [annoText, setAnnoText] = useState("");
@@ -9644,15 +9657,42 @@ function SectionImages({sectionId, docKey, images, onUpdate, layoutMode, onLayou
                   color:(!layoutMode||layoutMode===0)?"#a5b4fc":"var(--txt4)",border:(!layoutMode||layoutMode===0)?"1px solid #818cf8":"1px solid rgba(255,255,255,.08)"
                 }}>자동</button>
               </div>
-              <div style={{display:"grid",gridTemplateColumns:`repeat(${layoutMode||Math.min((images||[]).length,3)},1fr)`,gap:8,background:"#fff",borderRadius:6,padding:12,minHeight:80}}>
-                {(images||[]).map((img,i)=>(
-                  <div key={i} style={{aspectRatio:"16/10",background:"transparent",borderRadius:4,overflow:"hidden",border:"none",display:"flex",alignItems:"center",justifyContent:"center"}}>
-                    <img src={getImageSrc(img)} style={{width:"100%",height:"100%",objectFit:"contain"}} alt=""/>
-                  </div>
+              {/* ★ v27m: 페이지당 행 수 선택 */}
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <span style={{fontSize:11,fontWeight:700,color:"var(--txt3)"}}>페이지당 행 수</span>
+                {[1,2,3].map(n=>(
+                  <button key={n} onClick={()=>onRowsChange && onRowsChange(n)} style={{
+                    padding:"4px 10px",borderRadius:6,fontSize:11,fontWeight:(rowsMode||2)===n?700:500,cursor:"pointer",
+                    background:(rowsMode||2)===n?"rgba(245,158,11,.15)":"rgba(255,255,255,.05)",
+                    color:(rowsMode||2)===n?"#f59e0b":"var(--txt4)",border:(rowsMode||2)===n?"1px solid #f59e0b":"1px solid rgba(255,255,255,.08)"
+                  }}>{n}행</button>
                 ))}
               </div>
+              {/* ★ v27m: 페이지 나눔 미리보기 */}
+              {(() => {
+                const cols = layoutMode || Math.min((images||[]).length, 3);
+                const rpp = rowsMode || 2;
+                const maxPerPage = Math.max(1, cols * rpp);
+                const pageChunks = [];
+                const allImgs = images || [];
+                for (let i = 0; i < allImgs.length; i += maxPerPage) pageChunks.push(allImgs.slice(i, i + maxPerPage));
+                return React.createElement("div", {style:{background:"#fff",borderRadius:6,padding:12,minHeight:80}},
+                  pageChunks.map((chunk, pi) => React.createElement(React.Fragment, {key:pi},
+                    pi > 0 && React.createElement("div", {style:{borderTop:"2px dashed #f59e0b",margin:"10px 0",position:"relative",textAlign:"center"}},
+                      React.createElement("span", {style:{position:"relative",top:-9,background:"#fff",padding:"0 8px",fontSize:10,color:"#f59e0b",fontWeight:700}},
+                        "📄 페이지 " + (pi+1) + " 시작"
+                      )
+                    ),
+                    React.createElement("div", {style:{display:"grid",gridTemplateColumns:"repeat("+cols+",1fr)",gap:8}},
+                      chunk.map((img,i) => React.createElement("div", {key:pi+"-"+i,style:{aspectRatio:"16/10",background:"transparent",borderRadius:4,overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}},
+                        React.createElement("img", {src:getImageSrc(img),style:{width:"100%",height:"100%",objectFit:"contain"},alt:""})
+                      ))
+                    )
+                  ))
+                );
+              })()}
               <div style={{fontSize:10,color:"var(--txt4)",marginTop:6,textAlign:"center"}}>
-                PDF 출력 시 {layoutMode||"자동"}열 그리드로 배치됩니다
+                PDF 출력 시 {layoutMode||"자동"}열 × {rowsMode||2}행 그리드로 배치됩니다 ({Math.ceil((images||[]).length / Math.max(1, (layoutMode||Math.min((images||[]).length,3)) * (rowsMode||2)))}페이지)
               </div>
             </div>
           )}
@@ -10030,7 +10070,26 @@ function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle })
       <input className="form-input" placeholder="소제목 입력 (PDF에 표시됩니다)" value={block.customTitle||""} onChange={e=>onChange({customTitle:e.target.value})} style={{fontSize:12,marginTop:4,marginBottom:8}}/>
       {hasSummary && (
         <div>
-          {displayItems.map((item, idx) => {
+          {/* ★ v27m: 페이지 경계 미리보기 계산 */}
+          {(()=>{
+            let accH=0, pn=1;
+            const estItemH=(it)=>{
+              if(it.type==="summary") return 80;
+              if(it.type==="table"){const t=(block.tables||[]).find(t=>t.id===it.id); return t ? (t.title?28:0)+(t.headers?.length?40:0)+((t.rows||[]).length)*36+24 : 120;}
+              if(it.type==="chart") return 264;
+              return 0;
+            };
+            const pgMap={};
+            displayItems.forEach((it,i)=>{
+              if(it.type==="pagebreak"){accH=0;pn++;return;}
+              const h=estItemH(it);
+              if(accH+h>500&&accH>0){accH=h;pn++;pgMap[i]=pn;}
+              else{accH+=h;}
+            });
+            return displayItems.map((item, idx) => {
+              const autoPage = pgMap[idx];
+              const pageDiv = autoPage ? React.createElement("div",{key:"apg-"+idx,style:{borderTop:"2px dashed #6366f1",margin:"4px 0",padding:"2px 0",textAlign:"center"}},React.createElement("span",{style:{fontSize:9,color:"#818cf8",fontWeight:700}},"📄 페이지 "+autoPage+" 시작 (예상)")) : null;
+              const el = (()=>{
             // ★ v27l: 페이지 나누기 마커
             if (item.type === "pagebreak") {
               return (
@@ -10075,6 +10134,17 @@ function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle })
                       style={{marginLeft:"auto",background:"rgba(239,68,68,.06)",border:"1px solid rgba(239,68,68,.15)",color:"#f87171",borderRadius:4,padding:"1px 6px",fontSize:9,cursor:"pointer"}}
                       title="이 항목 뒤에 페이지 나누기 삽입">+ 페이지 나누기</button>
                   </div>
+                  {/* ★ v27m: 표 너비 옵션 */}
+                  <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+                    <span style={{fontSize:10,color:"#64748b"}}>PDF 너비:</span>
+                    {[["full","전체"],["auto","자동"],["compact","컴팩트"]].map(([v,l])=>(
+                      <button key={v} onClick={()=>{const t=[...(block.tables||[])];t[ti]={...t[ti],tableWidth:v};onChange({tables:t});}}
+                        style={{fontSize:9,padding:"1px 7px",borderRadius:4,border:"1px solid",cursor:"pointer",
+                          background:(tbl.tableWidth||"full")===v?"rgba(99,102,241,.15)":"rgba(255,255,255,.03)",
+                          borderColor:(tbl.tableWidth||"full")===v?"rgba(99,102,241,.4)":"rgba(255,255,255,.08)",
+                          color:(tbl.tableWidth||"full")===v?"#a5b4fc":"#64748b"}}>{l}</button>
+                    ))}
+                  </div>
                   <EditableTable block={tbl} onChange={updates=>{const t=[...(block.tables||[])];t[ti]={...t[ti],...updates};onChange({tables:t});}} />
                 </div>
               );
@@ -10099,7 +10169,10 @@ function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle })
               );
             }
             return null;
-          })}
+              })();
+              return autoPage ? React.createElement(React.Fragment,{key:"wrap-"+idx},pageDiv,el) : el;
+            });
+          })()}
         </div>
       )}
     </div>
@@ -10247,6 +10320,31 @@ function ContentBlockManager({ sectionId, blocks, onUpdate, projectName, section
           }
         };
         const typeIcon = {summary:"📝",table:"📊",chart:"📈",pagebreak:"✂️"};
+        // ★ v27m: 높이 추정 + 페이지 경계 미리보기
+        const aiBlockMap = {};
+        aiBlks.forEach(b => { aiBlockMap[b.id] = b; });
+        const estH = (fi) => {
+          if (fi.type === "summary") return 80;
+          if (fi.type === "table") {
+            const blk = aiBlockMap[fi.blockId];
+            const t = blk?.tables?.find(t=>t.id===fi.id);
+            return t ? (t.title?28:0) + (t.headers?.length?40:0) + ((t.rows||[]).length)*36 + 24 : 120;
+          }
+          if (fi.type === "chart") return 264;
+          return 0; // pagebreak = 0 (forces new page)
+        };
+        // 페이지 경계 계산
+        let accH = 0; let pageNum = 1;
+        const pageMarkers = []; // [{afterIdx, pageNum}]
+        flatItems.forEach((fi, idx) => {
+          if (fi.type === "pagebreak") { accH = 0; pageNum++; pageMarkers.push({afterIdx:idx, pageNum}); return; }
+          const h = estH(fi);
+          if (accH + h > 500 && accH > 0) { accH = h; pageNum++; pageMarkers.push({afterIdx:idx-1, pageNum, auto:true}); }
+          else { accH += h; }
+        });
+        const pageMarkerMap = {};
+        pageMarkers.forEach(pm => { pageMarkerMap[pm.afterIdx] = pm; });
+
         return React.createElement("div", {style:{marginBottom:10}},
           React.createElement("button", {onClick:()=>setShowPdfOrder(!showPdfOrder),style:{background:showPdfOrder?"rgba(245,158,11,.15)":"rgba(245,158,11,.06)",border:"1px solid rgba(245,158,11,.3)",color:"#fbbf24",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",width:"100%",textAlign:"center",transition:"all .2s"}}, showPdfOrder ? "▼ PDF 순서 편집 닫기" : "▶ PDF 순서 편집 ("+flatItems.length+"개 항목)"),
           showPdfOrder && React.createElement("div", {style:{marginTop:6,border:"1px solid rgba(245,158,11,.2)",borderRadius:8,padding:8,background:"rgba(245,158,11,.04)"}},
@@ -10254,22 +10352,35 @@ function ContentBlockManager({ sectionId, blocks, onUpdate, projectName, section
               React.createElement("span",{style:{fontSize:10,color:"#94a3b8"}},"드래그하여 PDF 출력 순서를 변경하세요."),
               React.createElement("button",{onClick:()=>{const pb={blockId:aiBlks[0]?.id||"pb",type:"pagebreak",label:"--- 페이지 나누기 ---"};const arr=[...flatItems,pb];savePdfOrder(arr);},style:{background:"rgba(239,68,68,.08)",border:"1px dashed rgba(239,68,68,.25)",color:"#f87171",borderRadius:4,padding:"2px 8px",fontSize:10,cursor:"pointer"}},"+ 페이지 나누기")
             ),
-            flatItems.map((fi,idx) => React.createElement("div", {
-              key: fi.blockId+"-"+fi.type+"-"+(fi.id||"s")+"-"+idx,
-              draggable: true,
-              onDragStart: e=>{e.stopPropagation();setPdfDragIdx(idx);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain","pdf-"+idx);},
-              onDragOver: e=>{e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect="move";setPdfDragOverIdx(idx);},
-              onDragLeave: ()=>setPdfDragOverIdx(null),
-              onDrop: e=>{e.preventDefault();e.stopPropagation();if(pdfDragIdx!==null&&pdfDragIdx!==idx){const arr=[...flatItems];const[moved]=arr.splice(pdfDragIdx,1);arr.splice(idx,0,moved);savePdfOrder(arr);}setPdfDragIdx(null);setPdfDragOverIdx(null);},
-              onDragEnd: ()=>{setPdfDragIdx(null);setPdfDragOverIdx(null);},
-              style:{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",marginBottom:3,background:fi.type==="pagebreak"?(pdfDragOverIdx===idx?"rgba(239,68,68,.2)":"rgba(239,68,68,.08)"):(pdfDragOverIdx===idx?"rgba(245,158,11,.15)":"rgba(255,255,255,.03)"),border:"1px solid "+(fi.type==="pagebreak"?"rgba(239,68,68,.3)":(pdfDragOverIdx===idx?"rgba(245,158,11,.4)":"rgba(255,255,255,.06)")),borderRadius:6,cursor:"grab",opacity:pdfDragIdx===idx?0.4:1,transition:"all .15s",fontSize:11,borderStyle:fi.type==="pagebreak"?"dashed":"solid"}
-            },
-              React.createElement("span",{style:{color:"#64748b",cursor:"grab",userSelect:"none"}},"⠿"),
-              React.createElement("span",{style:{fontSize:10}},typeIcon[fi.type]||""),
-              React.createElement("span",{style:{color:fi.type==="pagebreak"?"#f87171":"#e2e8f0",flex:1,fontWeight:fi.type==="pagebreak"?600:400}},fi.label),
-              fi.type==="pagebreak" ? React.createElement("button",{onClick:(e)=>{e.stopPropagation();const arr=[...flatItems];arr.splice(idx,1);savePdfOrder(arr);},style:{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer",padding:"0 4px"}},"삭제") : null,
-              React.createElement("span",{style:{color:"#64748b",fontSize:10}},String(idx+1))
-            ))
+            flatItems.map((fi,idx) => {
+              const marker = pageMarkerMap[idx-1];
+              const itemEl = React.createElement("div", {
+                key: fi.blockId+"-"+fi.type+"-"+(fi.id||"s")+"-"+idx,
+                draggable: true,
+                onDragStart: e=>{e.stopPropagation();setPdfDragIdx(idx);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain","pdf-"+idx);},
+                onDragOver: e=>{e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect="move";setPdfDragOverIdx(idx);},
+                onDragLeave: ()=>setPdfDragOverIdx(null),
+                onDrop: e=>{e.preventDefault();e.stopPropagation();if(pdfDragIdx!==null&&pdfDragIdx!==idx){const arr=[...flatItems];const[moved]=arr.splice(pdfDragIdx,1);arr.splice(idx,0,moved);savePdfOrder(arr);}setPdfDragIdx(null);setPdfDragOverIdx(null);},
+                onDragEnd: ()=>{setPdfDragIdx(null);setPdfDragOverIdx(null);},
+                style:{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",marginBottom:3,background:fi.type==="pagebreak"?(pdfDragOverIdx===idx?"rgba(239,68,68,.2)":"rgba(239,68,68,.08)"):(pdfDragOverIdx===idx?"rgba(245,158,11,.15)":"rgba(255,255,255,.03)"),border:"1px solid "+(fi.type==="pagebreak"?"rgba(239,68,68,.3)":(pdfDragOverIdx===idx?"rgba(245,158,11,.4)":"rgba(255,255,255,.06)")),borderRadius:6,cursor:"grab",opacity:pdfDragIdx===idx?0.4:1,transition:"all .15s",fontSize:11,borderStyle:fi.type==="pagebreak"?"dashed":"solid"}
+              },
+                React.createElement("span",{style:{color:"#64748b",cursor:"grab",userSelect:"none"}},"⠿"),
+                React.createElement("span",{style:{fontSize:10}},typeIcon[fi.type]||""),
+                React.createElement("span",{style:{color:fi.type==="pagebreak"?"#f87171":"#e2e8f0",flex:1,fontWeight:fi.type==="pagebreak"?600:400}},fi.label),
+                fi.type==="pagebreak" ? React.createElement("button",{onClick:(e)=>{e.stopPropagation();const arr=[...flatItems];arr.splice(idx,1);savePdfOrder(arr);},style:{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer",padding:"0 4px"}},"삭제") : null,
+                React.createElement("span",{style:{color:"#64748b",fontSize:10}},String(idx+1))
+              );
+              // 페이지 경계 표시 (자동 추정)
+              if (marker && marker.auto && fi.type !== "pagebreak") {
+                return React.createElement(React.Fragment, {key:"pg-"+idx},
+                  React.createElement("div",{style:{borderTop:"2px dashed #6366f1",margin:"4px 0",padding:"2px 0",textAlign:"center"}},
+                    React.createElement("span",{style:{fontSize:9,color:"#818cf8",fontWeight:700,background:"rgba(30,30,46,.9)",padding:"0 8px"}},"📄 페이지 "+marker.pageNum+" 시작 (예상)")
+                  ),
+                  itemEl
+                );
+              }
+              return itemEl;
+            })
           )
         );
       })()}
@@ -11980,28 +12091,32 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     };
 
     // ★ v27f: 이미지 페이지 — overflow 방지 + 센터링 개선
+    // ★ v27m: vh → mm 단위 수정 (이미지 누락 버그 수정) + imageRows 지원
     const imgHtml = (sectionId) => {
       const sec = sd(sectionId);
       const imgs = sec.images || [];
       if (!imgs.length) return "";
       const layout = sec.imageLayout || 0;
       const cols = layout || (imgs.length === 1 ? 1 : imgs.length <= 4 ? 2 : 3);
-      const maxPerPage = cols <= 2 ? cols * 2 : cols * 2;
+      const rowsPerPage = sec.imageRows || 2;
+      const maxPerPage = Math.min(imgs.length, cols * rowsPerPage);
       const pages = [];
       for (let i = 0; i < imgs.length; i += maxPerPage) pages.push(imgs.slice(i, i + maxPerPage));
       return pages.map(pageImgs => {
         const actualCols = Math.min(pageImgs.length, cols);
         const rows = Math.ceil(pageImgs.length / actualCols);
-        const mh = rows <= 1 ? '75vh' : rows <= 2 ? '35vh' : '22vh';
-        return `<div class="page img-page"><div class="img-grid" style="grid-template-columns:repeat(${actualCols},1fr)">${pageImgs.map(img => `<img src="${pdfImgSrc(img)}" style="max-height:${mh}"/>`).join("")}</div></div>`;
+        // ★ v27m: vh → mm 단위 (인쇄 안전)
+        const mh = rows <= 1 ? '140mm' : rows <= 2 ? '65mm' : '42mm';
+        return `<div class="page img-page"><div class="img-grid" style="grid-template-columns:repeat(${actualCols},1fr)">${pageImgs.map(img => `<img src="${pdfImgSrc(img)}" style="max-height:${mh};object-fit:contain"/>`).join("")}</div></div>`;
       }).join("");
     };
 
-    // ★ v27j: 아이템 이미지를 여러 페이지로 분할 (디자인/venue/program 아이템용)
-    const itemImgPagesHtml = (imgs, cols, headerHtml, footerHtml) => {
+    // ★ v27m: 아이템 이미지를 여러 페이지로 분할 + imageRows 지원
+    const itemImgPagesHtml = (imgs, cols, headerHtml, footerHtml, rowsPerPage) => {
       if (!imgs.length) return "";
       const actualCols = Math.min(imgs.length, cols);
-      const maxPerPage = actualCols <= 2 ? actualCols * 2 : actualCols * 2;
+      const rpp = rowsPerPage || 2;
+      const maxPerPage = actualCols * rpp;
       const pages = [];
       for (let i = 0; i < imgs.length; i += maxPerPage) pages.push(imgs.slice(i, i + maxPerPage));
       return pages.map(pageImgs => {
@@ -12048,12 +12163,17 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     preRenderAllCharts();
 
     // ★ v27l: 표 스타일 개선 (키컬러 좌측 보더 + 셀 패딩 확대)
+    // ★ v27m: tableWidth 옵션 지원 (full/auto/compact)
     const tableBlockHtml = (tbl) => {
+      const tw = tbl.tableWidth || "full";
+      const tableStyle = tw === "compact" ? "width:auto;margin:0 auto"
+                       : tw === "auto" ? "width:auto;max-width:100%"
+                       : "width:100%";
       const hdrs = (tbl.headers||[]).map(h => `<th style="padding:7px 10px;background:#f0f4ff;border:1px solid #d4d8e8;font-size:10.5px;font-weight:700;text-align:center;color:#1e293b">${h||""}</th>`).join("");
       const rows = (tbl.rows||[]).map((row,ri) =>
         `<tr style="background:${ri%2===0?'#fff':'#fafbfc'}">${(row||[]).map(cell => `<td style="padding:6px 10px;border:1px solid #e2e8f0;font-size:10.5px;color:#374151;line-height:1.5">${cell||""}</td>`).join("")}</tr>`
       ).join("");
-      return `<div style="margin:10px 0">${tbl.title?`<div style="font-size:11px;font-weight:700;margin-bottom:6px;color:#1e293b;padding-left:8px;border-left:3px solid ${_kc}">${tbl.title}</div>`:""}<table style="width:100%;border-collapse:collapse;border-radius:4px;overflow:hidden">${hdrs?`<thead><tr>${hdrs}</tr></thead>`:""}${rows?`<tbody>${rows}</tbody>`:""}</table></div>`;
+      return `<div style="margin:10px 0">${tbl.title?`<div style="font-size:11px;font-weight:700;margin-bottom:6px;color:#1e293b;padding-left:8px;border-left:3px solid ${_kc}">${tbl.title}</div>`:""}<table style="${tableStyle};border-collapse:collapse;border-radius:4px;overflow:hidden">${hdrs?`<thead><tr>${hdrs}</tr></thead>`:""}${rows?`<tbody>${rows}</tbody>`:""}</table></div>`;
     };
     const chartBlockHtml = (ch) => {
       const src = chartDataUrls[ch.id];
@@ -12445,9 +12565,10 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   const isContentFirst = (vItem.contentOrder||"contentFirst") === "contentFirst";
   const vCbPagesHtml = (vItem.contentBlocks||[]).length ? contentBlocksPagesHtml(vItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`) : "";
   // ★ v27j: 이미지 여러 페이지 분할
+  const vImageRows = vItem.imageRows || 2;
   const vImgPageHtml = itemImgPagesHtml(vImgs, vCols,
     `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`);
+    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`, vImageRows);
 
   if (needsSplit) {
     // 텍스트 페이지 + (contentBlocks or 이미지) 분리
@@ -12464,15 +12585,15 @@ ${isContentFirst ? vCbPagesHtml + vImgPageHtml : vImgPageHtml + vCbPagesHtml}`;
 
   // 기본: 한 페이지에 텍스트 + 이미지 (contentBlocks는 별도 페이지)
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
-  // ★ v27k: 비분할 모드에서도 이미지 2행 초과 시 페이지 분할
-  const vMaxInline = vActualCols * 2;
+  // ★ v27m: 비분할 모드에서도 imageRows 행 초과 시 페이지 분할
+  const vMaxInline = vActualCols * vImageRows;
   const vInlineImgs = vImgs.length > vMaxInline ? vImgs.slice(0, vMaxInline) : vImgs;
   const vOverflowImgs = vImgs.length > vMaxInline ? vImgs.slice(vMaxInline) : [];
   // ★ v27l: vh → mm (인쇄 안전)
   const vInlineMaxH = vInlineImgs.length ? (Math.ceil(vInlineImgs.length / vActualCols) <= 1 ? (vHasDesc ? '110mm' : '140mm') : (vHasDesc ? '52mm' : '65mm')) : '110mm';
   const vOverflowPageHtml = vOverflowImgs.length ? itemImgPagesHtml(vOverflowImgs, vCols,
     `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`) : "";
+    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`, vImageRows) : "";
   return `
 <div class="page sec-page">
   <div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>
@@ -12542,10 +12663,11 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (dItem.contentOrder||"contentFirst") === "contentFirst";
   const dCbPagesHtml = (dItem.contentBlocks||[]).length ? contentBlocksPagesHtml(dItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`) : "";
-  // ★ v27j: 이미지 여러 페이지 분할
+  // ★ v27m: 이미지 여러 페이지 분할 + imageRows 지원
+  const dImageRows = dItem.imageRows || 2;
   const dImgPageHtml = itemImgPagesHtml(dImgs, dCols,
     `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`);
+    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`, dImageRows);
 
   if (needsSplit) {
     return `
@@ -12561,15 +12683,15 @@ ${isContentFirst ? dCbPagesHtml + dImgPageHtml : dImgPageHtml + dCbPagesHtml}`;
   }
 
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
-  // ★ v27k: 비분할 모드에서도 이미지 2행 초과 시 페이지 분할
-  const dMaxInline = dActualCols * 2;
+  // ★ v27m: 비분할 모드에서도 imageRows 행 초과 시 페이지 분할
+  const dMaxInline = dActualCols * dImageRows;
   const dInlineImgs = dImgs.length > dMaxInline ? dImgs.slice(0, dMaxInline) : dImgs;
   const dOverflowImgs = dImgs.length > dMaxInline ? dImgs.slice(dMaxInline) : [];
   // ★ v27l: vh → mm
   const dInlineMaxH = dInlineImgs.length ? (Math.ceil(dInlineImgs.length / dActualCols) <= 1 ? '85mm' : '40mm') : '85mm';
   const dOverflowPageHtml = dOverflowImgs.length ? itemImgPagesHtml(dOverflowImgs, dCols,
     `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`) : "";
+    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`, dImageRows) : "";
   return `
 <div class="page sec-page">
   <div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>
@@ -12659,10 +12781,11 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (pItem.contentOrder||"contentFirst") === "contentFirst";
   const pCbPagesHtml = (pItem.contentBlocks||[]).length ? contentBlocksPagesHtml(pItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (계속)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`) : "";
-  // ★ v27j: 이미지 여러 페이지 분할
+  // ★ v27m: 이미지 여러 페이지 분할 + imageRows 지원
+  const pImageRows = pItem.imageRows || 2;
   const pImgPageHtml = itemImgPagesHtml(pImgs, pCols,
     `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`);
+    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`, pImageRows);
 
   if (needsSplit) {
     return `
@@ -12677,15 +12800,15 @@ ${isContentFirst ? pCbPagesHtml + pImgPageHtml : pImgPageHtml + pCbPagesHtml}`;
   }
 
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
-  // ★ v27k: 비분할 모드에서도 이미지 2행 초과 시 페이지 분할
-  const pMaxInline = pActualCols * 2;
+  // ★ v27m: 비분할 모드에서도 imageRows 행 초과 시 페이지 분할
+  const pMaxInline = pActualCols * pImageRows;
   const pInlineImgs = pImgs.length > pMaxInline ? pImgs.slice(0, pMaxInline) : pImgs;
   const pOverflowImgs = pImgs.length > pMaxInline ? pImgs.slice(pMaxInline) : [];
   // ★ v27l: vh → mm
   const pInlineMaxH = pInlineImgs.length ? (Math.ceil(pInlineImgs.length / pActualCols) <= 1 ? (pHasNotes ? '95mm' : '125mm') : '52mm') : '95mm';
   const pOverflowPageHtml = pOverflowImgs.length ? itemImgPagesHtml(pOverflowImgs, pCols,
     `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`,
-    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`) : "";
+    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`, pImageRows) : "";
   return `
 <div class="page sec-page">
   <div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>
@@ -13446,7 +13569,7 @@ ${secEnabled("timeline") ? (()=>{
                   </tbody>
                 </table>
               </div>
-              <SectionImages sectionId="venue" docKey={docKey} images={ve.images||[]} onUpdate={imgs=>updateDoc("venue","images",imgs)} layoutMode={sd("venue").imageLayout||0} onLayoutChange={v=>updateDoc("venue","imageLayout",v)}/>
+              <SectionImages sectionId="venue" docKey={docKey} images={ve.images||[]} onUpdate={imgs=>updateDoc("venue","images",imgs)} layoutMode={sd("venue").imageLayout||0} onLayoutChange={v=>updateDoc("venue","imageLayout",v)} rowsMode={sd("venue").imageRows||2} onRowsChange={v=>updateDoc("venue","imageRows",v)}/>
             </div>
           )}
 
@@ -13503,7 +13626,7 @@ ${secEnabled("timeline") ? (()=>{
               )}
               <div style={{marginTop:12}}>
                 <label className="form-label">이미지</label>
-                <SectionImages sectionId={`venueItem_${activeVenueItemObj._id}`} docKey={docKey} images={activeVenueItemObj.images||[]} onUpdate={imgs=>updateVenueItem(activeVenueItemObj._id,"images",imgs)} layoutMode={activeVenueItemObj.imageLayout||0} onLayoutChange={v=>updateVenueItem(activeVenueItemObj._id,"imageLayout",v)}/>
+                <SectionImages sectionId={`venueItem_${activeVenueItemObj._id}`} docKey={docKey} images={activeVenueItemObj.images||[]} onUpdate={imgs=>updateVenueItem(activeVenueItemObj._id,"images",imgs)} layoutMode={activeVenueItemObj.imageLayout||0} onLayoutChange={v=>updateVenueItem(activeVenueItemObj._id,"imageLayout",v)} rowsMode={activeVenueItemObj.imageRows||2} onRowsChange={v=>updateVenueItem(activeVenueItemObj._id,"imageRows",v)}/>
               </div>
             </div>
           )}
@@ -13720,7 +13843,7 @@ ${secEnabled("timeline") ? (()=>{
               )}
               <div style={{marginTop:12}}>
                 <label className="form-label">제작 이미지</label>
-                <SectionImages sectionId={`designItem_${activeItemObj._id}`} docKey={docKey} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)} layoutMode={activeItemObj.imageLayout||0} onLayoutChange={v=>updateDesignItem(activeItemObj._id,"imageLayout",v)}/>
+                <SectionImages sectionId={`designItem_${activeItemObj._id}`} docKey={docKey} images={activeItemObj.images||[]} onUpdate={imgs=>updateDesignItem(activeItemObj._id,"images",imgs)} layoutMode={activeItemObj.imageLayout||0} onLayoutChange={v=>updateDesignItem(activeItemObj._id,"imageLayout",v)} rowsMode={activeItemObj.imageRows||2} onRowsChange={v=>updateDesignItem(activeItemObj._id,"imageRows",v)}/>
               </div>
             </div>
           )}
@@ -14018,7 +14141,7 @@ ${secEnabled("timeline") ? (()=>{
                 )}
                 <div style={{marginTop:12}}>
                   <label className="form-label">이미지</label>
-                  <SectionImages sectionId={`programItem_${activeProgramItemObj._id}`} docKey={docKey} images={activeProgramItemObj.images||[]} onUpdate={imgs=>updateProgramItem(activeProgramItemObj._id,"images",imgs)} layoutMode={activeProgramItemObj.imageLayout||0} onLayoutChange={v=>updateProgramItem(activeProgramItemObj._id,"imageLayout",v)}/>
+                  <SectionImages sectionId={`programItem_${activeProgramItemObj._id}`} docKey={docKey} images={activeProgramItemObj.images||[]} onUpdate={imgs=>updateProgramItem(activeProgramItemObj._id,"images",imgs)} layoutMode={activeProgramItemObj.imageLayout||0} onLayoutChange={v=>updateProgramItem(activeProgramItemObj._id,"imageLayout",v)} rowsMode={activeProgramItemObj.imageRows||2} onRowsChange={v=>updateProgramItem(activeProgramItemObj._id,"imageRows",v)}/>
                 </div>
               </div>
             )}
@@ -14596,7 +14719,7 @@ ${secEnabled("timeline") ? (()=>{
             {renderSection()}
             {(activeSection !== "design" || !activeDesignItem) && (<>
               <ContentBlockManager sectionId={activeSection} blocks={sd(activeSection).contentBlocks||[]} onUpdate={blocks=>updateDoc(activeSection,"contentBlocks",blocks)} projectName={proj?.name} sectionTitle={ALL_DOC_SECTIONS.find(s=>s.id===activeSection)?.title||""}/>
-              <SectionImages sectionId={activeSection} docKey={docKey} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)} layoutMode={sd(activeSection).imageLayout||0} onLayoutChange={v=>updateDoc(activeSection,"imageLayout",v)}/>
+              <SectionImages sectionId={activeSection} docKey={docKey} images={sd(activeSection).images} onUpdate={imgs=>updateDoc(activeSection,"images",imgs)} layoutMode={sd(activeSection).imageLayout||0} onLayoutChange={v=>updateDoc(activeSection,"imageLayout",v)} rowsMode={sd(activeSection).imageRows||2} onRowsChange={v=>updateDoc(activeSection,"imageRows",v)}/>
             </>)}
           </div>
         </div>
@@ -15660,6 +15783,14 @@ function App() {
   // driveLoaded 호환용 (기존 코드에서 참조하는 곳이 있을 수 있음)
   const driveLoaded = appReady;
 
+  // ── ★ v27m: 버전 업데이트 알림 ──
+  const [updateAvailable, setUpdateAvailable] = useState(null);
+  useEffect(() => {
+    const handler = (e) => setUpdateAvailable(e.detail);
+    window.addEventListener("eventos-update", handler);
+    return () => window.removeEventListener("eventos-update", handler);
+  }, []);
+
   // ── 클라우드 헬스 모니터링 상태 ──
   const [cloudHealth, setCloudHealth] = useState({ status: "unknown", checks: {}, lastCheck: null, consecutiveFailures: 0 });
   const [showBackupPanel, setShowBackupPanel] = useState(false);
@@ -16277,6 +16408,26 @@ function App() {
           <span>클라우드 일부 기능 제한 중 — 연결 복구 시도 중...</span>
           <button onClick={()=>CloudHealthMonitor.check()} style={{background:"rgba(255,255,255,.2)",border:"1px solid rgba(255,255,255,.3)",
             color:"#fff",borderRadius:6,padding:"3px 10px",fontSize:11,cursor:"pointer",marginLeft:"auto"}}>🔄 재확인</button>
+        </div>
+      )}
+
+      {/* ── ★ v27m: 버전 업데이트 알림 배너 ── */}
+      {updateAvailable && cloudHealth.status !== "down" && (
+        <div style={{position:"fixed",top:0,left:0,right:0,zIndex:99999,
+          background:"linear-gradient(135deg,#6366f1,#4f46e5)",padding:"10px 20px",
+          display:"flex",alignItems:"center",justifyContent:"center",gap:12,
+          boxShadow:"0 2px 12px rgba(99,102,241,.4)"}}>
+          <span style={{color:"#fff",fontWeight:700,fontSize:13}}>
+            🔄 새로운 버전({updateAvailable})이 있습니다. 현재: {window._EVENTOS_VER}
+          </span>
+          <button onClick={()=>location.reload(true)}
+            style={{background:"#fff",color:"#4f46e5",fontWeight:700,padding:"4px 16px",
+              borderRadius:6,border:"none",cursor:"pointer",fontSize:12}}>
+            지금 업데이트
+          </button>
+          <button onClick={()=>setUpdateAvailable(null)}
+            style={{background:"none",border:"none",color:"rgba(255,255,255,.7)",
+              cursor:"pointer",fontSize:16,padding:"0 4px"}}>✕</button>
         </div>
       )}
 
