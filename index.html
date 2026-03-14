@@ -1646,6 +1646,7 @@ function usePersistedState(key, defaultValue) {
 function useCloudState(key, defaultValue, opts) {
   const lsKey = "eventos_" + key;
   const debounceMs = (opts && opts.debounceMs) || 1500;
+  const skipAutoSave = !!(opts && opts.skipAutoSave); // ★ v27l: 별도 저장 메커니즘 사용 시 자동저장 스킵
 
   const [state, setState] = useState(() => {
     try {
@@ -1666,7 +1667,11 @@ function useCloudState(key, defaultValue, opts) {
     setState(prev => {
       const next = typeof valOrFn === "function" ? valOrFn(prev) : valOrFn;
       // 로컬 캐시 즉시 업데이트 (optimistic)
-      try { localStorage.setItem(lsKey, JSON.stringify(next)); } catch {}
+      try {
+        localStorage.setItem(lsKey, JSON.stringify(next));
+        // ★ v27l: 롤백 방지 — 미저장 변경사항 플래그
+        localStorage.setItem(lsKey + "_dirty", "1");
+      } catch {}
       return next;
     });
   }, [lsKey]);
@@ -1674,6 +1679,8 @@ function useCloudState(key, defaultValue, opts) {
   // 디바운스 클라우드 저장 (초기화 완료 후만)
   useEffect(() => {
     if (!isInitializedRef.current) return;
+    // ★ v27l: skipAutoSave 옵션 — 별도 저장 메커니즘(writeProjectsBulk 등)이 처리
+    if (skipAutoSave) return;
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       CloudDataStore.writeAppData({ [key]: stateRef.current }).then(result => {
@@ -1681,6 +1688,8 @@ function useCloudState(key, defaultValue, opts) {
           SyncManager.setStatus("success");
           SyncManager._lastSyncTime = new Date();
           SyncManager._notify();
+          // ★ v27l: 저장 성공 → dirty 플래그 해제
+          try { localStorage.setItem(lsKey + "_dirty", "0"); } catch {}
         } else if (result && result.queued) {
           console.log("[useCloudState] 📤 " + key + " 큐잉됨 (오프라인)");
         }
@@ -1691,10 +1700,12 @@ function useCloudState(key, defaultValue, opts) {
       }
     }, debounceMs);
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
-  }, [state, key, debounceMs]);
+  }, [state, key, debounceMs, skipAutoSave, lsKey]);
 
   // ── beforeunload: 탭 닫을 때 미저장 데이터 강제 전송 ──
   useEffect(() => {
+    // ★ v27l: skipAutoSave 키는 별도 저장 메커니즘의 beforeunload 핸들러 사용
+    if (skipAutoSave) return;
     const handler = () => {
       if (!isInitializedRef.current) return;
       // 디바운스 대기 중인 데이터가 있으면 즉시 전송
@@ -1716,10 +1727,20 @@ function useCloudState(key, defaultValue, opts) {
   }, [key]);
 
   // setFromCloud: 클라우드 데이터 적용 (write-back 안 함)
+  // ★ v27l: 롤백 방지 — 미저장 로컬 변경이 있으면 클라우드 데이터 무시
   const setFromCloud = useCallback((value) => {
+    const isDirty = localStorage.getItem(lsKey + "_dirty") === "1";
+    if (isDirty) {
+      console.log("[useCloudState] 🛡️ 로컬 미저장 변경 보호:", key, "— 클라우드 데이터 무시, 로컬 데이터 유지");
+      // 로컬 데이터를 클라우드에 다시 푸시 (다음 save에서 처리됨)
+      return;
+    }
     setState(value);
-    try { localStorage.setItem(lsKey, JSON.stringify(value)); } catch {}
-  }, [lsKey]);
+    try {
+      localStorage.setItem(lsKey, JSON.stringify(value));
+      localStorage.setItem(lsKey + "_dirty", "0");
+    } catch {}
+  }, [lsKey, key]);
 
   // markInitialized: 클라우드 초기 로드 완료 후 호출
   const markInitialized = useCallback(() => {
@@ -15605,7 +15626,8 @@ function App() {
     } catch {}
     return null;
   });
-  const [projects, setProjects, projectsCloud] = useCloudState("projects", INIT_PROJECTS);
+  // ★ v27l: projects는 writeProjectsBulk에서 별도 저장 → writeAppData 자동저장 스킵
+  const [projects, setProjects, projectsCloud] = useCloudState("projects", INIT_PROJECTS, { skipAutoSave: true });
   const [priceList, setPriceList, priceListCloud] = useCloudState("priceList", INIT_PRICE_LIST);
   const [expenses, setExpenses, expensesCloud] = useCloudState("expenses", []);
   const [laborCosts, setLaborCosts, laborCostsCloud] = useCloudState("laborCosts", []);
@@ -15638,19 +15660,50 @@ function App() {
   }, [degradedMode]);
 
   // ── 클라우드 동기화: 프로젝트 변경 시 벌크 저장 (CloudDataStore 사용) ──
+  // ★ v27l: 레이스 컨디션 방지 — 디바운스 + 직렬 저장
   const projectsRef = useRef(null);
+  const projectSaveTimerRef = useRef(null);
+  const projectSavingRef = useRef(false);
+  const projectPendingRef = useRef(null);
   useEffect(() => {
     if (!appReady) return;
     const json = JSON.stringify(projects);
     if (projectsRef.current === json) return;
     projectsRef.current = json;
-    CloudDataStore.writeProjectsBulk(projects).then(result => {
-      if (result && result.success) {
-        SyncManager.setStatus("success");
-        SyncManager._lastSyncTime = new Date();
-        SyncManager._notify();
-      }
-    }).catch(e => console.warn("[App] 프로젝트 벌크 저장 실패:", e.message));
+
+    // 디바운스: 빠른 연속 편집 시 마지막 상태만 저장 (500ms)
+    if (projectSaveTimerRef.current) clearTimeout(projectSaveTimerRef.current);
+    projectSaveTimerRef.current = setTimeout(() => {
+      const doSave = (data) => {
+        if (projectSavingRef.current) {
+          // 이미 저장 중 → 최신 데이터를 대기열에 저장
+          projectPendingRef.current = data;
+          return;
+        }
+        projectSavingRef.current = true;
+        CloudDataStore.writeProjectsBulk(data).then(result => {
+          if (result && result.success) {
+            SyncManager.setStatus("success");
+            SyncManager._lastSyncTime = new Date();
+            SyncManager._notify();
+            // ★ 저장 성공 시 타임스탬프 기록 (롤백 방지)
+            // ★ v27l: 프로젝트 저장 성공 → dirty 플래그 해제
+            try { localStorage.setItem("eventos_projects_dirty", "0"); } catch {}
+          }
+        }).catch(e => console.warn("[App] 프로젝트 벌크 저장 실패:", e.message))
+        .finally(() => {
+          projectSavingRef.current = false;
+          // 대기 중인 저장이 있으면 최신 데이터로 즉시 실행
+          if (projectPendingRef.current) {
+            const pending = projectPendingRef.current;
+            projectPendingRef.current = null;
+            doSave(pending);
+          }
+        });
+      };
+      doSave(projects);
+    }, 500);
+
     // Drive 백업도 전송 (기존 호환)
     if (DRIVE_CONFIG.ENABLED) {
       projects.forEach(p => {
@@ -15658,6 +15711,27 @@ function App() {
       });
     }
   }, [projects, appReady]);
+
+  // ★ v27l: 탭 닫기 시 프로젝트 데이터 강제 저장 (디바운스 대기 중인 경우)
+  useEffect(() => {
+    const handler = () => {
+      if (projectSaveTimerRef.current && CLOUD_CONFIG.ENABLED) {
+        clearTimeout(projectSaveTimerRef.current);
+        projectSaveTimerRef.current = null;
+        try {
+          const payload = JSON.stringify({ projects });
+          if (payload.length < 60000) {
+            navigator.sendBeacon(
+              CLOUD_CONFIG.WORKER_URL.replace(/\/$/, "") + "/api/projects/bulk",
+              new Blob([payload], { type: "application/json" })
+            );
+          }
+        } catch (e) { console.error("[App] 프로젝트 sendBeacon fail:", e); }
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [projects]);
 
   // ── 클라우드-퍼스트 초기 로드 (로딩 화면 → 클라우드 → 렌더) ──
   useEffect(() => {
@@ -15701,6 +15775,7 @@ function App() {
 
         if (cloud && !cloud.error) {
           // setFromCloud: 클라우드 데이터 적용 (write-back 없음!)
+          // ★ v27l: _dirty 플래그로 미저장 로컬 변경 보호 (setFromCloud 내부에서 체크)
           if (cloud.users?.length) usersCloud.setFromCloud(cloud.users);
           if (cloud.projects?.length) projectsCloud.setFromCloud(cloud.projects);
           if (cloud.priceList?.length) priceListCloud.setFromCloud(cloud.priceList);
