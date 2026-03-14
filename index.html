@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260314v27i";
+  var CODE_VER = "20260314v27j";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -9844,6 +9844,15 @@ function ChartBlock({ block, onChange, onDelete }) {
   );
 }
 
+// ★ v27j: aiSummary 서브아이템 기본 순서 생성 헬퍼 (컴포넌트/내보내기 공용)
+function buildDefaultItems(b) {
+  const items = [];
+  if (b.summary) items.push({ type: "summary" });
+  (b.tables || []).forEach(t => items.push({ type: "table", id: t.id }));
+  (b.charts || []).forEach(c => items.push({ type: "chart", id: c.id }));
+  return items;
+}
+
 /* ── AI 파일 요약 블록 ── */
 function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle }) {
   const [analyzing, setAnalyzing] = React.useState(false);
@@ -9931,7 +9940,12 @@ function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle })
       if (res && res.success) {
         const tables = (res.tables || []).map(t => ({ ...t, id: Date.now() + Math.random(), type: "table" }));
         const charts = (res.charts || []).map(c => ({ ...c, id: Date.now() + Math.random(), type: "chart" }));
-        onChange({ summary: res.summary || "", tables, charts });
+        // ★ v27j: items 배열 생성 (드래그앤드롭 순서 관리)
+        const items = [];
+        if (res.summary) items.push({ type: "summary" });
+        tables.forEach(t => items.push({ type: "table", id: t.id }));
+        charts.forEach(c => items.push({ type: "chart", id: c.id }));
+        onChange({ summary: res.summary || "", tables, charts, items });
         toast("AI 분석 완료", "success");
       } else {
         toast("AI 분석 실패: " + (res?.error || "알 수 없는 오류"), "error");
@@ -9946,6 +9960,27 @@ function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle })
 
   const hasSummary = block.summary || (block.tables||[]).length || (block.charts||[]).length;
 
+  // ★ v27j: 서브아이템 드래그앤드롭 순서 변경
+  const [subDragIdx, setSubDragIdx] = React.useState(null);
+  const [subDragOverIdx, setSubDragOverIdx] = React.useState(null);
+  const displayItems = block.items?.length ? block.items : buildDefaultItems(block);
+  const handleSubDrop = (fromIdx, toIdx) => {
+    if (fromIdx === toIdx) return;
+    const arr = [...displayItems];
+    const [moved] = arr.splice(fromIdx, 1);
+    arr.splice(toIdx, 0, moved);
+    onChange({ items: arr });
+  };
+  const subDragProps = (idx) => ({
+    draggable: true,
+    onDragStart: e => { e.stopPropagation(); setSubDragIdx(idx); e.dataTransfer.effectAllowed = "move"; },
+    onDragOver: e => { e.preventDefault(); e.stopPropagation(); setSubDragOverIdx(idx); },
+    onDragLeave: () => setSubDragOverIdx(null),
+    onDrop: e => { e.preventDefault(); e.stopPropagation(); if (subDragIdx !== null) handleSubDrop(subDragIdx, idx); setSubDragIdx(null); setSubDragOverIdx(null); },
+    onDragEnd: () => { setSubDragIdx(null); setSubDragOverIdx(null); },
+    style: { marginBottom: 8, opacity: subDragIdx === idx ? 0.4 : 1, outline: subDragOverIdx === idx ? "2px solid #f59e0b" : "none", borderRadius: 6, transition: "opacity .2s, outline .15s" }
+  });
+
   return (
     <div style={{marginBottom:12}}>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
@@ -9959,33 +9994,53 @@ function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle })
       <input className="form-input" placeholder="소제목 입력 (PDF에 표시됩니다)" value={block.customTitle||""} onChange={e=>onChange({customTitle:e.target.value})} style={{fontSize:12,marginTop:4,marginBottom:8}}/>
       {hasSummary && (
         <div>
-          {block.summary && (
-            <div style={{marginBottom:8}}>
-              <div style={{fontSize:11,color:"#94a3b8",marginBottom:4}}>요약</div>
-              <textarea value={block.summary} onChange={e=>onChange({summary:e.target.value})} rows={3}
-                className="form-input" style={{fontSize:12,lineHeight:1.6}}/>
-            </div>
-          )}
-          {(block.tables||[]).map((tbl,ti)=>(
-            <div key={tbl.id||ti} style={{marginBottom:8}}>
-              <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
-                <span style={{fontSize:11,color:"#94a3b8"}}>추출된 표 {ti+1}</span>
-                <button onClick={()=>{const t=[...(block.tables||[])];t.splice(ti,1);onChange({tables:t});}}
-                  style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
-              </div>
-              <EditableTable block={tbl} onChange={updates=>{const t=[...(block.tables||[])];t[ti]={...t[ti],...updates};onChange({tables:t});}} />
-            </div>
-          ))}
-          {(block.charts||[]).map((ch,ci)=>(
-            <div key={ch.id||ci} style={{marginBottom:8}}>
-              <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
-                <span style={{fontSize:11,color:"#94a3b8"}}>제안된 그래프 {ci+1}</span>
-                <button onClick={()=>{const c=[...(block.charts||[])];c.splice(ci,1);onChange({charts:c});}}
-                  style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
-              </div>
-              <ChartBlock block={ch} onChange={updates=>{const c=[...(block.charts||[])];c[ci]={...c[ci],...updates};onChange({charts:c});}} />
-            </div>
-          ))}
+          {displayItems.map((item, idx) => {
+            if (item.type === "summary" && block.summary) {
+              return (
+                <div key="summary" {...subDragProps(idx)}>
+                  <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+                    <span style={{fontSize:12,color:"#94a3b8",cursor:"grab",userSelect:"none"}} title="드래그하여 순서 변경">⠿</span>
+                    <span style={{fontSize:11,color:"#94a3b8"}}>요약</span>
+                  </div>
+                  <textarea value={block.summary} onChange={e=>onChange({summary:e.target.value})} rows={3}
+                    className="form-input" style={{fontSize:12,lineHeight:1.6}}/>
+                </div>
+              );
+            }
+            if (item.type === "table") {
+              const ti = (block.tables||[]).findIndex(t => t.id === item.id);
+              const tbl = (block.tables||[])[ti];
+              if (!tbl) return null;
+              return (
+                <div key={"table-"+item.id} {...subDragProps(idx)}>
+                  <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+                    <span style={{fontSize:12,color:"#94a3b8",cursor:"grab",userSelect:"none"}} title="드래그하여 순서 변경">⠿</span>
+                    <span style={{fontSize:11,color:"#94a3b8"}}>추출된 표 {ti+1}</span>
+                    <button onClick={()=>{const nt=[...(block.tables||[])];nt.splice(ti,1);const ni=(block.items||[]).filter(it=>!(it.type==="table"&&it.id===item.id));onChange({tables:nt,items:ni});}}
+                      style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
+                  </div>
+                  <EditableTable block={tbl} onChange={updates=>{const t=[...(block.tables||[])];t[ti]={...t[ti],...updates};onChange({tables:t});}} />
+                </div>
+              );
+            }
+            if (item.type === "chart") {
+              const ci = (block.charts||[]).findIndex(c => c.id === item.id);
+              const ch = (block.charts||[])[ci];
+              if (!ch) return null;
+              return (
+                <div key={"chart-"+item.id} {...subDragProps(idx)}>
+                  <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+                    <span style={{fontSize:12,color:"#94a3b8",cursor:"grab",userSelect:"none"}} title="드래그하여 순서 변경">⠿</span>
+                    <span style={{fontSize:11,color:"#94a3b8"}}>제안된 그래프 {ci+1}</span>
+                    <button onClick={()=>{const nc=[...(block.charts||[])];nc.splice(ci,1);const ni=(block.items||[]).filter(it=>!(it.type==="chart"&&it.id===item.id));onChange({charts:nc,items:ni});}}
+                      style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
+                  </div>
+                  <ChartBlock block={ch} onChange={updates=>{const c=[...(block.charts||[])];c[ci]={...c[ci],...updates};onChange({charts:c});}} />
+                </div>
+              );
+            }
+            return null;
+          })}
         </div>
       )}
     </div>
@@ -10016,7 +10071,7 @@ function ContentBlockManager({ sectionId, blocks, onUpdate, projectName, section
     } else if (type === "chart") {
       newBlock = { id, type: "chart", title: "", chartType: "bar", labels: ["항목1", "항목2"], datasets: [{ label: "데이터", data: [0, 0], color: "#6366f1" }] };
     } else if (type === "aiSummary") {
-      newBlock = { id, type: "aiSummary", fileName: "", summary: "", tables: [], charts: [], customTitle: "" };
+      newBlock = { id, type: "aiSummary", fileName: "", summary: "", tables: [], charts: [], customTitle: "", items: [] };
     }
     onUpdate([...(blocks || []), newBlock]);
     setShowMenu(false);
@@ -10877,16 +10932,26 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
                 console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 마이그레이션 완료 상태 → 무시");
               } else {
                 try {
-                  const cloudSize = JSON.stringify(cloudData).length;
-                  const localSize = JSON.stringify(docDataLatestRef.current || {}).length;
-                  if (cloudSize > localSize * 1.5) {
-                    // 클라우드가 훨씬 크면 → 로컬 데이터 덮어쓰기 (데이터 손실 복구)
+                  // ★ v27j: 타임스탬프 비교 우선, 크기 비교는 폴백
+                  const localTs = (docDataLatestRef.current || {})._lastSaved || 0;
+                  const cloudTs = cloudData._lastSaved || 0;
+                  if (cloudTs > localTs) {
                     setDocData(cloudData);
                     saveToIDB(storageKey, cloudData).catch(()=>{});
-                    console.log("[DocEditor] ⏰ 클라우드 데이터 적용 (타임아웃 후, 더 큰 데이터):", Math.round(cloudSize/1024) + "KB > " + Math.round(localSize/1024) + "KB");
+                    console.log("[DocEditor] ⏰ 클라우드 적용 (타임아웃 후, 더 최신 ts):", cloudTs, ">", localTs);
+                  } else if (localTs > 0) {
+                    console.log("[DocEditor] ⏰ 로컬 최신 유지 (타임아웃 후):", localTs, ">=", cloudTs);
                   } else {
-                    // 비슷한 크기 → setDocData 안 함 (사용자 편집 보호), 마이그레이션만 허용
-                    console.log("[DocEditor] ⏰ 클라우드 확인 완료 (타임아웃 후) — 마이그레이션 허용");
+                    // 둘 다 타임스탬프 없음 → 기존 크기 비교 폴백
+                    const cloudSize = JSON.stringify(cloudData).length;
+                    const localSize = JSON.stringify(docDataLatestRef.current || {}).length;
+                    if (cloudSize > localSize * 1.5) {
+                      setDocData(cloudData);
+                      saveToIDB(storageKey, cloudData).catch(()=>{});
+                      console.log("[DocEditor] ⏰ 클라우드 적용 (폴백 크기 비교):", Math.round(cloudSize/1024) + "KB > " + Math.round(localSize/1024) + "KB");
+                    } else {
+                      console.log("[DocEditor] ⏰ 클라우드 확인 완료 (타임아웃 후) — 마이그레이션 허용");
+                    }
                   }
                 } catch(e) {
                   console.log("[DocEditor] ⏰ 클라우드 도착 (타임아웃 후) — 마이그레이션 허용 (비교 생략)");
@@ -10896,13 +10961,20 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
               console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 빈 데이터 무시");
             }
           } else if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
-            setDocData(cloudData);
-            // 로컬 캐시 갱신
-            saveToIDB(storageKey, cloudData).catch(()=>{});
-            safeLocalSet(storageKey, JSON.stringify(cloudData));
-            console.log("[DocEditor] ☁️ 클라우드 데이터 적용:", storageKey);
-            // ★ v27d: 세션 캐시에 저장 (탭 전환 시 재사용)
-            sessionCache[storageKey] = cloudData;
+            // ★ v27j: 롤백 방지 — _lastSaved 비교로 더 최신인 데이터 적용
+            const localData = docDataLatestRef.current;
+            const localTs = localData?._lastSaved || 0;
+            const cloudTs = cloudData?._lastSaved || 0;
+            if (cloudTs >= localTs) {
+              setDocData(cloudData);
+              saveToIDB(storageKey, cloudData).catch(()=>{});
+              safeLocalSet(storageKey, JSON.stringify(cloudData));
+              console.log("[DocEditor] ☁️ 클라우드 데이터 적용:", storageKey, "cloudTs:", cloudTs, "localTs:", localTs);
+              sessionCache[storageKey] = cloudData;
+            } else {
+              console.log("[DocEditor] 🛡️ 로컬 최신 유지 (localTs:", localTs, "> cloudTs:", cloudTs, ")");
+              CloudDataStore.writeDoc(storageKey, localData).catch(()=>{});
+            }
           } else {
             // 클라우드에 데이터 없음 → 로컬 데이터를 클라우드에 업로드
             const localData = await loadFromIDB(storageKey);
@@ -11258,6 +11330,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       console.error("[DocEditor] ❌ 잘못된 storageKey:", storageKey);
       return;
     }
+    // ★ v27j: 롤백 방지 — 저장 시점 타임스탬프 기록
+    data = { ...data, _lastSaved: Date.now() };
     const silent = options.silent || false;
     // silent 모드 = 10초 주기 저장: 로컬 + R2 클라우드 전부 저장 (데이터 유실 제로)
     // 일반 모드 = 사용자 입력 후 0.5초 디바운스: 클라우드 + 로컬 전체 저장 + UI 업데이트
@@ -11411,8 +11485,10 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   // 탭 닫기/새로고침 시 즉시 저장 (로컬 + 클라우드 sendBeacon)
   React.useEffect(() => {
     const handler = () => {
-      const data = docDataLatestRef.current;
-      if (!data || Object.keys(data).length === 0) return;
+      const rawData = docDataLatestRef.current;
+      if (!rawData || Object.keys(rawData).length === 0) return;
+      // ★ v27j: 롤백 방지 — beforeunload 시 타임스탬프 기록
+      const data = { ...rawData, _lastSaved: Date.now() };
       // ① 로컬 즉시 저장 (IDB가 주 저장소, localStorage는 4MB 이하만)
       saveToIDB(storageKey, data).catch(()=>{});
       safeLocalSet(storageKey, JSON.stringify(data));
@@ -11776,6 +11852,29 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       }).join("");
     };
 
+    // ★ v27j: 아이템 이미지를 여러 페이지로 분할 (디자인/venue/program 아이템용)
+    const itemImgPagesHtml = (imgs, cols, headerHtml, footerHtml) => {
+      if (!imgs.length) return "";
+      const actualCols = Math.min(imgs.length, cols);
+      const maxPerPage = actualCols <= 2 ? actualCols * 2 : actualCols * 2;
+      const pages = [];
+      for (let i = 0; i < imgs.length; i += maxPerPage) pages.push(imgs.slice(i, i + maxPerPage));
+      return pages.map(pageImgs => {
+        const pCols = Math.min(pageImgs.length, actualCols);
+        const rows = Math.ceil(pageImgs.length / pCols);
+        const mh = rows <= 1 ? '75vh' : rows <= 2 ? '35vh' : '22vh';
+        return `<div class="page sec-page">
+  ${headerHtml}
+  <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
+    <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pCols},1fr)">
+      ${pageImgs.map(img => `<img src="${pdfImgSrc(img)}" style="max-height:${mh}"/>`).join("")}
+    </div></div>
+  </div>
+  ${footerHtml}
+</div>`;
+      }).join("");
+    };
+
     // ── v27e: 콘텐츠 블록 PDF 출력 ──
     const chartDataUrls = {};
     const preRenderAllCharts = () => {
@@ -11831,12 +11930,20 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         if (b.type === "chart") return chartBlockHtml(b);
         if (b.type === "aiSummary") {
           let h = "";
-          if (b.summary) {
-            const title = b.customTitle || b.fileName || "AI 분석 요약";
-            h += `<div style="margin:8px 0;padding:14px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;border-left:3px solid ${_kc}"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">${title}</div><div style="font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div></div>`;
-          }
-          (b.tables||[]).forEach(t => { h += tableBlockHtml(t); });
-          (b.charts||[]).forEach(c => { h += chartBlockHtml(c); });
+          // ★ v27j: items 순서 반영
+          const itemsOrder = b.items?.length ? b.items : buildDefaultItems(b);
+          itemsOrder.forEach(item => {
+            if (item.type === "summary" && b.summary) {
+              const title = b.customTitle || b.fileName || "AI 분석 요약";
+              h += `<div style="margin:8px 0;padding:14px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;border-left:3px solid ${_kc}"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">${title}</div><div style="font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div></div>`;
+            } else if (item.type === "table") {
+              const t = (b.tables||[]).find(t => t.id === item.id);
+              if (t) h += tableBlockHtml(t);
+            } else if (item.type === "chart") {
+              const c = (b.charts||[]).find(c => c.id === item.id);
+              if (c) h += chartBlockHtml(c);
+            }
+          });
           return h;
         }
         return "";
@@ -11870,27 +11977,37 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
         } else if (b.type === "chart") {
           raw.push({ k: "chart", data: b });
         } else if (b.type === "aiSummary") {
-          // ★ v27i: 텍스트+표를 하나의 그룹으로 묶기 시도 + 박스 스타일
+          // ★ v27j: items 기반 순서 + 텍스트/표 그룹핑 + 박스 스타일
+          const itemsOrder = b.items?.length ? b.items : buildDefaultItems(b);
           let groupH = 0;
           let groupHtml = "";
-          if (b.summary) {
-            const title = b.customTitle || b.fileName || "AI 분석 요약";
-            const sHtml = `<div style="margin:8px 0;padding:14px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;border-left:3px solid ${_kc}"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">${title}</div><div style="font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div></div>`;
-            groupH += estTextH(b.summary) + 30;
-            groupHtml += sHtml;
-          }
-          (b.tables||[]).forEach(t => {
-            const tH = estTableH(t);
-            if (groupH + tH <= PAGE_BODY_MAX_H) {
-              groupH += tH;
-              groupHtml += tableBlockHtml(t);
-            } else {
-              if (groupHtml) { raw.push({ k:"html", h:groupH, html:groupHtml }); groupH=0; groupHtml=""; }
-              raw.push({ k:"html", h:tH, html:tableBlockHtml(t) });
+          itemsOrder.forEach(item => {
+            if (item.type === "summary" && b.summary) {
+              const title = b.customTitle || b.fileName || "AI 분석 요약";
+              const sHtml = `<div style="margin:8px 0;padding:14px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;border-left:3px solid ${_kc}"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">${title}</div><div style="font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div></div>`;
+              groupH += estTextH(b.summary) + 30;
+              groupHtml += sHtml;
+            } else if (item.type === "table") {
+              const t = (b.tables||[]).find(t => t.id === item.id);
+              if (t) {
+                const tH = estTableH(t);
+                if (groupH + tH <= PAGE_BODY_MAX_H) {
+                  groupH += tH;
+                  groupHtml += tableBlockHtml(t);
+                } else {
+                  if (groupHtml) { raw.push({ k:"html", h:groupH, html:groupHtml }); groupH=0; groupHtml=""; }
+                  raw.push({ k:"html", h:tH, html:tableBlockHtml(t) });
+                }
+              }
+            } else if (item.type === "chart") {
+              const c = (b.charts||[]).find(c => c.id === item.id);
+              if (c) {
+                if (groupHtml) { raw.push({ k:"html", h:groupH, html:groupHtml }); groupH=0; groupHtml=""; }
+                raw.push({ k: "chart", data: c });
+              }
             }
           });
           if (groupHtml) { raw.push({ k:"html", h:groupH, html:groupHtml }); }
-          (b.charts||[]).forEach(c => { raw.push({ k: "chart", data: c }); });
         }
       });
       // 2단계: 연속 차트를 2개씩 그룹핑하여 행으로 만듦
@@ -12114,16 +12231,10 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (vItem.contentOrder||"contentFirst") === "contentFirst";
   const vCbPagesHtml = (vItem.contentBlocks||[]).length ? contentBlocksPagesHtml(vItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`) : "";
-  const vImgPageHtml = vImgs.length ? `
-<div class="page sec-page">
-  <div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>
-  <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
-    <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
-      ${vImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${vMaxH}"/>`).join("")}
-    </div></div>
-  </div>
-  <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
-</div>` : "";
+  // ★ v27j: 이미지 여러 페이지 분할
+  const vImgPageHtml = itemImgPagesHtml(vImgs, vCols,
+    `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`,
+    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`);
 
   if (needsSplit) {
     // 텍스트 페이지 + (contentBlocks or 이미지) 분리
@@ -12208,16 +12319,10 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (dItem.contentOrder||"contentFirst") === "contentFirst";
   const dCbPagesHtml = (dItem.contentBlocks||[]).length ? contentBlocksPagesHtml(dItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`) : "";
-  const dImgPageHtml = dImgs.length ? `
-<div class="page sec-page">
-  <div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>
-  <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
-    <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
-      ${dImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${dMaxH}"/>`).join("")}
-    </div></div>
-  </div>
-  <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
-</div>` : "";
+  // ★ v27j: 이미지 여러 페이지 분할
+  const dImgPageHtml = itemImgPagesHtml(dImgs, dCols,
+    `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`,
+    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`);
 
   if (needsSplit) {
     return `
@@ -12321,16 +12426,10 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (pItem.contentOrder||"contentFirst") === "contentFirst";
   const pCbPagesHtml = (pItem.contentBlocks||[]).length ? contentBlocksPagesHtml(pItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`) : "";
-  const pImgPageHtml = pImgs.length ? `
-<div class="page sec-page">
-  <div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>
-  <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
-    <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
-      ${pImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pMaxH}"/>`).join("")}
-    </div></div>
-  </div>
-  <div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>
-</div>` : "";
+  // ★ v27j: 이미지 여러 페이지 분할
+  const pImgPageHtml = itemImgPagesHtml(pImgs, pCols,
+    `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`,
+    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`);
 
   if (needsSplit) {
     return `
