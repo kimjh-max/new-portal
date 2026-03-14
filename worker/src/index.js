@@ -70,6 +70,23 @@ export default {
         return await handleRestoreBackup(env, parseInt(id));
       }
 
+      // ── 문서(보고서) 데이터 저장 ──
+      if (method === "POST" && path === "/api/doc") {
+        const body = await request.json();
+        return await handleSaveDoc(env, body);
+      }
+
+      // ── 문서(보고서) 데이터 로드 ──
+      if (method === "GET" && path === "/api/doc") {
+        const key = url.searchParams.get("key");
+        return await handleLoadDoc(env, key);
+      }
+
+      // ── 문서(보고서) 키 목록 ──
+      if (method === "GET" && path === "/api/docs") {
+        return await handleListDocs(env);
+      }
+
       // ── R2 파일 업로드 ──
       if (method === "POST" && path === "/api/files/upload") {
         const body = await request.json();
@@ -205,6 +222,56 @@ async function handleRestoreBackup(env, id) {
   let data;
   try { data = JSON.parse(row.data); } catch { return err("Backup data corrupted"); }
   return json({ success: true, data });
+}
+
+// ══════════════════════════════════════════════════════════════
+// 문서(보고서) 핸들러
+// ══════════════════════════════════════════════════════════════
+
+async function handleSaveDoc(env, body) {
+  const { key, data } = body;
+  if (!key) return err("key required");
+  if (data === undefined || data === null) return err("data required");
+
+  // doc_data 테이블 없으면 자동 생성
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS doc_data (doc_key TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))"
+  ).run();
+
+  await env.DB.prepare(
+    "INSERT OR REPLACE INTO doc_data (doc_key, data, updated_at) VALUES (?, ?, datetime('now'))"
+  ).bind(key, JSON.stringify(data)).run();
+
+  return json({ success: true, key, savedAt: new Date().toISOString() });
+}
+
+async function handleLoadDoc(env, key) {
+  if (!key) return err("key query parameter required");
+
+  // doc_data 테이블 없으면 자동 생성
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS doc_data (doc_key TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))"
+  ).run();
+
+  const row = await env.DB.prepare("SELECT data, updated_at FROM doc_data WHERE doc_key = ?").bind(key).first();
+  if (!row) return json({ success: true, data: null, found: false });
+
+  let data;
+  try { data = JSON.parse(row.data); } catch { data = row.data; }
+  return json({ success: true, data, found: true, updatedAt: row.updated_at });
+}
+
+async function handleListDocs(env) {
+  // doc_data 테이블 없으면 자동 생성
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS doc_data (doc_key TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))"
+  ).run();
+
+  const rows = await env.DB.prepare(
+    "SELECT doc_key, updated_at FROM doc_data ORDER BY updated_at DESC"
+  ).all();
+
+  return json({ success: true, docs: rows.results });
 }
 
 // ══════════════════════════════════════════════════════════════
