@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260314v27g";
+  var CODE_VER = "20260314v27h";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -11811,7 +11811,17 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     const chartBlockHtml = (ch) => {
       const src = chartDataUrls[ch.id];
       if (!src) return "";
-      return `<div style="margin:8px 0">${ch.title?`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#374151">${ch.title}</div>`:""}<img src="${src}" style="max-width:100%;height:auto"/></div>`;
+      return `<div style="margin:8px 0;text-align:center">${ch.title?`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#374151">${ch.title}</div>`:""}<img src="${src}" style="max-width:55%;max-height:200px;height:auto"/></div>`;
+    };
+    // ★ v27g: 차트 2열 배치 (이미지처럼 자동 크기 조절)
+    const chartRowHtml = (charts) => {
+      const validCharts = charts.filter(ch => chartDataUrls[ch.id]);
+      if (!validCharts.length) return "";
+      const w = validCharts.length === 1 ? "55%" : "48%";
+      return `<div style="display:flex;gap:2%;justify-content:center;align-items:flex-start;margin:8px 0;flex-wrap:wrap">${validCharts.map(ch => {
+        const src = chartDataUrls[ch.id];
+        return `<div style="width:${w};text-align:center">${ch.title?`<div style="font-size:11px;font-weight:600;margin-bottom:4px;color:#374151">${ch.title}</div>`:""}<img src="${src}" style="width:100%;height:auto"/></div>`;
+      }).join("")}</div>`;
     };
     const contentBlocksHtml = (blocks) => {
       if (!(blocks||[]).length) return "";
@@ -11836,7 +11846,7 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       const titleH = t.title ? 24 : 0;
       return titleH + headerH + rowsH + 20;
     };
-    const estChartH = (c) => (c && c.title ? 24 : 0) + 340 + 20;
+    const estChartRowH = (n) => (n > 0 ? 24 : 0) + 220 + 16; // 차트 행 높이 (2열 배치 기준)
     const estTextH = (text) => {
       if (!text) return 0;
       const lines = text.split(/\n/).length;
@@ -11844,23 +11854,37 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       return Math.max(lines, charLines) * 22 + 20;
     };
 
-    // ★ v27g: aiSummary를 서브 요소로 분해 → 개별 페이지네이션 가능
+    // ★ v27g: aiSummary를 서브 요소로 분해 + 차트 2열 그룹핑
     const flattenBlocks = (blocks) => {
-      const items = [];
+      // 1단계: 원시 요소 수집 (차트는 type으로 마킹)
+      const raw = [];
       (blocks||[]).forEach(b => {
         if (b.type === "table") {
-          items.push({ h: estTableH(b), html: tableBlockHtml(b) });
+          raw.push({ k: "html", h: estTableH(b), html: tableBlockHtml(b) });
         } else if (b.type === "chart") {
-          items.push({ h: estChartH(b), html: chartBlockHtml(b) });
+          raw.push({ k: "chart", data: b });
         } else if (b.type === "aiSummary") {
-          // aiSummary → 텍스트/표/차트를 개별 요소로 분해
           if (b.summary) {
-            items.push({ h: estTextH(b.summary), html: `<div style="margin:8px 0;font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div>` });
+            raw.push({ k: "html", h: estTextH(b.summary), html: `<div style="margin:8px 0;font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div>` });
           }
-          (b.tables||[]).forEach(t => { items.push({ h: estTableH(t), html: tableBlockHtml(t) }); });
-          (b.charts||[]).forEach(c => { items.push({ h: estChartH(c), html: chartBlockHtml(c) }); });
+          (b.tables||[]).forEach(t => { raw.push({ k: "html", h: estTableH(t), html: tableBlockHtml(t) }); });
+          (b.charts||[]).forEach(c => { raw.push({ k: "chart", data: c }); });
         }
       });
+      // 2단계: 연속 차트를 2개씩 그룹핑하여 행으로 만듦
+      const items = [];
+      for (let i = 0; i < raw.length; i++) {
+        if (raw[i].k === "chart") {
+          const charts = [raw[i].data];
+          while (i + 1 < raw.length && raw[i + 1].k === "chart") { i++; charts.push(raw[i].data); }
+          for (let j = 0; j < charts.length; j += 2) {
+            const pair = charts.slice(j, j + 2);
+            items.push({ h: estChartRowH(pair.length), html: chartRowHtml(pair) });
+          }
+        } else {
+          items.push(raw[i]);
+        }
+      }
       return items;
     };
 
@@ -12129,7 +12153,7 @@ ${secEnabled("design") ? `<!-- 03 DESIGN -->
       <div class="box"><div class="box-title">인쇄물</div><div class="box-val">${de.printNotes||""}</div></div>
     </div>
     <div class="box"><div class="box-title">LED/스크린 계획</div><div class="box-val">${de.ledNotes||""}</div></div>
-    ${isPlan ? "" : `<div class="box-title" style="margin-top:8px;margin-bottom:8px">현장 사진</div><div class="photo-grid">${[1,2,3,4,5,6].map(()=>`<div class="photo-box">사진 첨부</div>`).join("")}</div>`}
+    ${isPlan ? "" : ((deImgs)=>deImgs.length ? `<div class="box-title" style="margin-top:8px;margin-bottom:8px">현장 사진</div><div class="photo-grid">${deImgs.slice(0,6).map(img=>`<div class="photo-box" style="overflow:hidden"><img src="${pdfImgSrc(img)}" style="width:100%;height:100%;object-fit:cover;border-radius:8px"/></div>`).join("")}</div>` : "")((sd("design").images||[]))}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · (주)에픽스테이지</div>
 </div>
