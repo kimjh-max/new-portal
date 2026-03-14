@@ -13,7 +13,7 @@
 <script>
 // 코드 버전 관리: 캐시된 구버전 감지 시 자동 새로고침
 (function(){
-  var CODE_VER = "20260314v27h";
+  var CODE_VER = "20260314v27k";
   // 전역 에러 핸들러: unhandled rejection으로 인한 페이지 크래시 방지
   window.addEventListener("unhandledrejection", function(e) {
     console.warn("[Global] Unhandled rejection caught:", e.reason && e.reason.message || e.reason);
@@ -9844,6 +9844,15 @@ function ChartBlock({ block, onChange, onDelete }) {
   );
 }
 
+// ★ v27j: aiSummary 서브아이템 기본 순서 생성 헬퍼 (컴포넌트/내보내기 공용)
+function buildDefaultItems(b) {
+  const items = [];
+  if (b.summary) items.push({ type: "summary" });
+  (b.tables || []).forEach(t => items.push({ type: "table", id: t.id }));
+  (b.charts || []).forEach(c => items.push({ type: "chart", id: c.id }));
+  return items;
+}
+
 /* ── AI 파일 요약 블록 ── */
 function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle }) {
   const [analyzing, setAnalyzing] = React.useState(false);
@@ -9931,7 +9940,12 @@ function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle })
       if (res && res.success) {
         const tables = (res.tables || []).map(t => ({ ...t, id: Date.now() + Math.random(), type: "table" }));
         const charts = (res.charts || []).map(c => ({ ...c, id: Date.now() + Math.random(), type: "chart" }));
-        onChange({ summary: res.summary || "", tables, charts });
+        // ★ v27j: items 배열 생성 (드래그앤드롭 순서 관리)
+        const items = [];
+        if (res.summary) items.push({ type: "summary" });
+        tables.forEach(t => items.push({ type: "table", id: t.id }));
+        charts.forEach(c => items.push({ type: "chart", id: c.id }));
+        onChange({ summary: res.summary || "", tables, charts, items });
         toast("AI 분석 완료", "success");
       } else {
         toast("AI 분석 실패: " + (res?.error || "알 수 없는 오류"), "error");
@@ -9946,6 +9960,27 @@ function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle })
 
   const hasSummary = block.summary || (block.tables||[]).length || (block.charts||[]).length;
 
+  // ★ v27j: 서브아이템 드래그앤드롭 순서 변경
+  const [subDragIdx, setSubDragIdx] = React.useState(null);
+  const [subDragOverIdx, setSubDragOverIdx] = React.useState(null);
+  const displayItems = block.items?.length ? block.items : buildDefaultItems(block);
+  const handleSubDrop = (fromIdx, toIdx) => {
+    if (fromIdx === toIdx) return;
+    const arr = [...displayItems];
+    const [moved] = arr.splice(fromIdx, 1);
+    arr.splice(toIdx, 0, moved);
+    onChange({ items: arr });
+  };
+  const subDragProps = (idx) => ({
+    draggable: true,
+    onDragStart: e => { e.stopPropagation(); setSubDragIdx(idx); e.dataTransfer.effectAllowed = "move"; },
+    onDragOver: e => { e.preventDefault(); e.stopPropagation(); setSubDragOverIdx(idx); },
+    onDragLeave: () => setSubDragOverIdx(null),
+    onDrop: e => { e.preventDefault(); e.stopPropagation(); if (subDragIdx !== null) handleSubDrop(subDragIdx, idx); setSubDragIdx(null); setSubDragOverIdx(null); },
+    onDragEnd: () => { setSubDragIdx(null); setSubDragOverIdx(null); },
+    style: { marginBottom: 8, opacity: subDragIdx === idx ? 0.4 : 1, outline: subDragOverIdx === idx ? "2px solid #f59e0b" : "none", borderRadius: 6, transition: "opacity .2s, outline .15s" }
+  });
+
   return (
     <div style={{marginBottom:12}}>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
@@ -9956,35 +9991,56 @@ function AIFileSummary({ block, onChange, onDelete, projectName, sectionTitle })
           {analyzing ? progress : (hasSummary ? "다른 파일 분석" : "파일 선택")}
         </button>
       </div>
+      <input className="form-input" placeholder="소제목 입력 (PDF에 표시됩니다)" value={block.customTitle||""} onChange={e=>onChange({customTitle:e.target.value})} style={{fontSize:12,marginTop:4,marginBottom:8}}/>
       {hasSummary && (
         <div>
-          {block.summary && (
-            <div style={{marginBottom:8}}>
-              <div style={{fontSize:11,color:"#94a3b8",marginBottom:4}}>요약</div>
-              <textarea value={block.summary} onChange={e=>onChange({summary:e.target.value})} rows={3}
-                className="form-input" style={{fontSize:12,lineHeight:1.6}}/>
-            </div>
-          )}
-          {(block.tables||[]).map((tbl,ti)=>(
-            <div key={tbl.id||ti} style={{marginBottom:8}}>
-              <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
-                <span style={{fontSize:11,color:"#94a3b8"}}>추출된 표 {ti+1}</span>
-                <button onClick={()=>{const t=[...(block.tables||[])];t.splice(ti,1);onChange({tables:t});}}
-                  style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
-              </div>
-              <EditableTable block={tbl} onChange={updates=>{const t=[...(block.tables||[])];t[ti]={...t[ti],...updates};onChange({tables:t});}} />
-            </div>
-          ))}
-          {(block.charts||[]).map((ch,ci)=>(
-            <div key={ch.id||ci} style={{marginBottom:8}}>
-              <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
-                <span style={{fontSize:11,color:"#94a3b8"}}>제안된 그래프 {ci+1}</span>
-                <button onClick={()=>{const c=[...(block.charts||[])];c.splice(ci,1);onChange({charts:c});}}
-                  style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
-              </div>
-              <ChartBlock block={ch} onChange={updates=>{const c=[...(block.charts||[])];c[ci]={...c[ci],...updates};onChange({charts:c});}} />
-            </div>
-          ))}
+          {displayItems.map((item, idx) => {
+            if (item.type === "summary" && block.summary) {
+              return (
+                <div key="summary" {...subDragProps(idx)}>
+                  <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+                    <span style={{fontSize:12,color:"#94a3b8",cursor:"grab",userSelect:"none"}} title="드래그하여 순서 변경">⠿</span>
+                    <span style={{fontSize:11,color:"#94a3b8"}}>요약</span>
+                  </div>
+                  <textarea value={block.summary} onChange={e=>onChange({summary:e.target.value})} rows={3}
+                    className="form-input" style={{fontSize:12,lineHeight:1.6}}/>
+                </div>
+              );
+            }
+            if (item.type === "table") {
+              const ti = (block.tables||[]).findIndex(t => t.id === item.id);
+              const tbl = (block.tables||[])[ti];
+              if (!tbl) return null;
+              return (
+                <div key={"table-"+item.id} {...subDragProps(idx)}>
+                  <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+                    <span style={{fontSize:12,color:"#94a3b8",cursor:"grab",userSelect:"none"}} title="드래그하여 순서 변경">⠿</span>
+                    <span style={{fontSize:11,color:"#94a3b8"}}>추출된 표 {ti+1}</span>
+                    <button onClick={()=>{const nt=[...(block.tables||[])];nt.splice(ti,1);const ni=(block.items||[]).filter(it=>!(it.type==="table"&&it.id===item.id));onChange({tables:nt,items:ni});}}
+                      style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
+                  </div>
+                  <EditableTable block={tbl} onChange={updates=>{const t=[...(block.tables||[])];t[ti]={...t[ti],...updates};onChange({tables:t});}} />
+                </div>
+              );
+            }
+            if (item.type === "chart") {
+              const ci = (block.charts||[]).findIndex(c => c.id === item.id);
+              const ch = (block.charts||[])[ci];
+              if (!ch) return null;
+              return (
+                <div key={"chart-"+item.id} {...subDragProps(idx)}>
+                  <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+                    <span style={{fontSize:12,color:"#94a3b8",cursor:"grab",userSelect:"none"}} title="드래그하여 순서 변경">⠿</span>
+                    <span style={{fontSize:11,color:"#94a3b8"}}>제안된 그래프 {ci+1}</span>
+                    <button onClick={()=>{const nc=[...(block.charts||[])];nc.splice(ci,1);const ni=(block.items||[]).filter(it=>!(it.type==="chart"&&it.id===item.id));onChange({charts:nc,items:ni});}}
+                      style={{background:"none",border:"none",color:"#f87171",fontSize:10,cursor:"pointer"}}>삭제</button>
+                  </div>
+                  <ChartBlock block={ch} onChange={updates=>{const c=[...(block.charts||[])];c[ci]={...c[ci],...updates};onChange({charts:c});}} />
+                </div>
+              );
+            }
+            return null;
+          })}
         </div>
       )}
     </div>
@@ -9998,6 +10054,10 @@ function ContentBlockManager({ sectionId, blocks, onUpdate, projectName, section
   // ★ v27g: 드래그앤드롭 순서 변경
   const [dragIdx, setDragIdx] = React.useState(null);
   const [dragOverIdx, setDragOverIdx] = React.useState(null);
+  // ★ v27k: PDF 순서 편집 모드
+  const [showPdfOrder, setShowPdfOrder] = React.useState(false);
+  const [pdfDragIdx, setPdfDragIdx] = React.useState(null);
+  const [pdfDragOverIdx, setPdfDragOverIdx] = React.useState(null);
   const menuRef = React.useRef(null);
 
   React.useEffect(()=>{
@@ -10015,19 +10075,26 @@ function ContentBlockManager({ sectionId, blocks, onUpdate, projectName, section
     } else if (type === "chart") {
       newBlock = { id, type: "chart", title: "", chartType: "bar", labels: ["항목1", "항목2"], datasets: [{ label: "데이터", data: [0, 0], color: "#6366f1" }] };
     } else if (type === "aiSummary") {
-      newBlock = { id, type: "aiSummary", fileName: "", summary: "", tables: [], charts: [] };
+      newBlock = { id, type: "aiSummary", fileName: "", summary: "", tables: [], charts: [], customTitle: "", items: [] };
     }
     onUpdate([...(blocks || []), newBlock]);
     setShowMenu(false);
   };
-  const removeBlock = (id) => { if (!confirm("이 콘텐츠 블록을 삭제하시겠습니까?")) return; onUpdate((blocks||[]).filter(b=>b.id!==id)); };
+  const removeBlock = (id) => {
+    if (!confirm("이 콘텐츠 블록을 삭제하시겠습니까?")) return;
+    // ★ v27k: 블록 삭제 시 글로벌 AI 순서에서도 해당 블록 항목 제거
+    let updated = (blocks||[]).filter(b=>b.id!==id);
+    const go = updated.find(b=>b.type==="_aiGlobalOrder");
+    if (go) { updated = updated.map(b=>b.type==="_aiGlobalOrder"?{...b,order:(b.order||[]).filter(e=>e.blockId!==id)}:b); }
+    onUpdate(updated);
+  };
   const updateBlock = (id, updates) => { onUpdate((blocks||[]).map(b=>b.id===id?{...b,...updates}:b)); };
   const toggleCollapse = (id) => setCollapsed(p => ({...p, [id]: !p[id]}));
 
   const typeLabel = { table: "📊 표", chart: "📈 그래프", aiSummary: "📎 AI 요약" };
   const typeBorder = { table: "rgba(99,102,241,.3)", chart: "rgba(16,185,129,.3)", aiSummary: "rgba(245,158,11,.3)" };
 
-  if (!(blocks||[]).length && !showMenu) {
+  if (!(blocks||[]).filter(b=>b.type!=="_aiGlobalOrder").length && !showMenu) {
     return (
       <div style={{position:"relative",marginTop:12,marginBottom:4}} ref={menuRef}>
         <button onClick={()=>setShowMenu(true)}
@@ -10052,7 +10119,7 @@ function ContentBlockManager({ sectionId, blocks, onUpdate, projectName, section
 
   return (
     <div style={{marginTop:12,marginBottom:4}}>
-      {(blocks||[]).map((block, idx) => (
+      {(blocks||[]).filter(b=>b.type!=="_aiGlobalOrder").map((block, idx) => (
         <div key={block.id}
           draggable
           onDragStart={e=>{setDragIdx(idx);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",String(idx));}}
@@ -10080,6 +10147,67 @@ function ContentBlockManager({ sectionId, blocks, onUpdate, projectName, section
           )}
         </div>
       ))}
+      {/* ★ v27k: PDF 순서 편집 — 다중 AI 요약 블록 간 서브아이템 순서 변경 */}
+      {(()=>{
+        const aiBlks = (blocks||[]).filter(b=>b.type==="aiSummary");
+        if (aiBlks.length < 2) return null;
+        const globalOrder = (blocks||[]).find(b=>b.type==="_aiGlobalOrder");
+        // 현재 순서 계산
+        let flatItems;
+        if (globalOrder && globalOrder.order && globalOrder.order.length) {
+          flatItems = globalOrder.order.map(e => {
+            const blk = aiBlks.find(b=>b.id===e.blockId);
+            if (!blk) return null;
+            const label = blk.customTitle || blk.fileName || "AI 분석";
+            if (e.type==="summary") return { ...e, label: label+" — 요약 텍스트" };
+            if (e.type==="table") { const t=(blk.tables||[]).find(t=>t.id===e.id); return { ...e, label: label+" — 표: "+(t?.title||"무제") }; }
+            if (e.type==="chart") { const c=(blk.charts||[]).find(c=>c.id===e.id); return { ...e, label: label+" — 그래프: "+(c?.title||"무제") }; }
+            return null;
+          }).filter(Boolean);
+        } else {
+          flatItems = [];
+          aiBlks.forEach(b => {
+            const items = b.items?.length ? b.items : buildDefaultItems(b);
+            const label = b.customTitle || b.fileName || "AI 분석";
+            items.forEach(item => {
+              if (item.type==="summary") flatItems.push({ blockId:b.id, type:"summary", label: label+" — 요약 텍스트" });
+              else if (item.type==="table") { const t=(b.tables||[]).find(t=>t.id===item.id); flatItems.push({ blockId:b.id, type:"table", id:item.id, label: label+" — 표: "+(t?.title||"무제") }); }
+              else if (item.type==="chart") { const c=(b.charts||[]).find(c=>c.id===item.id); flatItems.push({ blockId:b.id, type:"chart", id:item.id, label: label+" — 그래프: "+(c?.title||"무제") }); }
+            });
+          });
+        }
+        const savePdfOrder = (newOrder) => {
+          const clean = newOrder.map(({blockId,type,id})=>id?{blockId,type,id}:{blockId,type});
+          const existing = (blocks||[]).find(b=>b.type==="_aiGlobalOrder");
+          if (existing) {
+            onUpdate((blocks||[]).map(b=>b.type==="_aiGlobalOrder"?{...b,order:clean}:b));
+          } else {
+            onUpdate([...(blocks||[]), { id: Date.now()+Math.random(), type:"_aiGlobalOrder", order:clean }]);
+          }
+        };
+        const typeIcon = {summary:"📝",table:"📊",chart:"📈"};
+        return React.createElement("div", {style:{marginBottom:10}},
+          React.createElement("button", {onClick:()=>setShowPdfOrder(!showPdfOrder),style:{background:showPdfOrder?"rgba(245,158,11,.15)":"rgba(245,158,11,.06)",border:"1px solid rgba(245,158,11,.3)",color:"#fbbf24",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",width:"100%",textAlign:"center",transition:"all .2s"}}, showPdfOrder ? "▼ PDF 순서 편집 닫기" : "▶ PDF 순서 편집 ("+flatItems.length+"개 항목)"),
+          showPdfOrder && React.createElement("div", {style:{marginTop:6,border:"1px solid rgba(245,158,11,.2)",borderRadius:8,padding:8,background:"rgba(245,158,11,.04)"}},
+            React.createElement("div",{style:{fontSize:10,color:"#94a3b8",marginBottom:6}},"드래그하여 PDF 출력 순서를 변경하세요. 파일 구분 없이 자유롭게 배치됩니다."),
+            flatItems.map((fi,idx) => React.createElement("div", {
+              key: fi.blockId+"-"+fi.type+"-"+(fi.id||"s")+"-"+idx,
+              draggable: true,
+              onDragStart: e=>{e.stopPropagation();setPdfDragIdx(idx);e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain","pdf-"+idx);},
+              onDragOver: e=>{e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect="move";setPdfDragOverIdx(idx);},
+              onDragLeave: ()=>setPdfDragOverIdx(null),
+              onDrop: e=>{e.preventDefault();e.stopPropagation();if(pdfDragIdx!==null&&pdfDragIdx!==idx){const arr=[...flatItems];const[moved]=arr.splice(pdfDragIdx,1);arr.splice(idx,0,moved);savePdfOrder(arr);}setPdfDragIdx(null);setPdfDragOverIdx(null);},
+              onDragEnd: ()=>{setPdfDragIdx(null);setPdfDragOverIdx(null);},
+              style:{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",marginBottom:3,background:pdfDragOverIdx===idx?"rgba(245,158,11,.15)":"rgba(255,255,255,.03)",border:"1px solid "+(pdfDragOverIdx===idx?"rgba(245,158,11,.4)":"rgba(255,255,255,.06)"),borderRadius:6,cursor:"grab",opacity:pdfDragIdx===idx?0.4:1,transition:"all .15s",fontSize:11}
+            },
+              React.createElement("span",{style:{color:"#64748b",cursor:"grab",userSelect:"none"}},"⠿"),
+              React.createElement("span",{style:{fontSize:10}},typeIcon[fi.type]||""),
+              React.createElement("span",{style:{color:"#e2e8f0",flex:1}},fi.label),
+              React.createElement("span",{style:{color:"#64748b",fontSize:10}},String(idx+1))
+            ))
+          )
+        );
+      })()}
       <div style={{position:"relative"}} ref={menuRef}>
         <button onClick={()=>setShowMenu(!showMenu)}
           style={{background:"transparent",border:"1px dashed rgba(255,255,255,.12)",color:"#64748b",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",transition:"all .2s"}}
@@ -10876,16 +11004,26 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
                 console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 마이그레이션 완료 상태 → 무시");
               } else {
                 try {
-                  const cloudSize = JSON.stringify(cloudData).length;
-                  const localSize = JSON.stringify(docDataLatestRef.current || {}).length;
-                  if (cloudSize > localSize * 1.5) {
-                    // 클라우드가 훨씬 크면 → 로컬 데이터 덮어쓰기 (데이터 손실 복구)
+                  // ★ v27j: 타임스탬프 비교 우선, 크기 비교는 폴백
+                  const localTs = (docDataLatestRef.current || {})._lastSaved || 0;
+                  const cloudTs = cloudData._lastSaved || 0;
+                  if (cloudTs > localTs) {
                     setDocData(cloudData);
                     saveToIDB(storageKey, cloudData).catch(()=>{});
-                    console.log("[DocEditor] ⏰ 클라우드 데이터 적용 (타임아웃 후, 더 큰 데이터):", Math.round(cloudSize/1024) + "KB > " + Math.round(localSize/1024) + "KB");
+                    console.log("[DocEditor] ⏰ 클라우드 적용 (타임아웃 후, 더 최신 ts):", cloudTs, ">", localTs);
+                  } else if (localTs > 0) {
+                    console.log("[DocEditor] ⏰ 로컬 최신 유지 (타임아웃 후):", localTs, ">=", cloudTs);
                   } else {
-                    // 비슷한 크기 → setDocData 안 함 (사용자 편집 보호), 마이그레이션만 허용
-                    console.log("[DocEditor] ⏰ 클라우드 확인 완료 (타임아웃 후) — 마이그레이션 허용");
+                    // 둘 다 타임스탬프 없음 → 기존 크기 비교 폴백
+                    const cloudSize = JSON.stringify(cloudData).length;
+                    const localSize = JSON.stringify(docDataLatestRef.current || {}).length;
+                    if (cloudSize > localSize * 1.5) {
+                      setDocData(cloudData);
+                      saveToIDB(storageKey, cloudData).catch(()=>{});
+                      console.log("[DocEditor] ⏰ 클라우드 적용 (폴백 크기 비교):", Math.round(cloudSize/1024) + "KB > " + Math.round(localSize/1024) + "KB");
+                    } else {
+                      console.log("[DocEditor] ⏰ 클라우드 확인 완료 (타임아웃 후) — 마이그레이션 허용");
+                    }
                   }
                 } catch(e) {
                   console.log("[DocEditor] ⏰ 클라우드 도착 (타임아웃 후) — 마이그레이션 허용 (비교 생략)");
@@ -10895,13 +11033,20 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
               console.log("[DocEditor] ⏰ 클라우드 데이터 도착 (타임아웃 후) — 빈 데이터 무시");
             }
           } else if (cloudData && typeof cloudData === "object" && Object.keys(cloudData).length) {
-            setDocData(cloudData);
-            // 로컬 캐시 갱신
-            saveToIDB(storageKey, cloudData).catch(()=>{});
-            safeLocalSet(storageKey, JSON.stringify(cloudData));
-            console.log("[DocEditor] ☁️ 클라우드 데이터 적용:", storageKey);
-            // ★ v27d: 세션 캐시에 저장 (탭 전환 시 재사용)
-            sessionCache[storageKey] = cloudData;
+            // ★ v27j: 롤백 방지 — _lastSaved 비교로 더 최신인 데이터 적용
+            const localData = docDataLatestRef.current;
+            const localTs = localData?._lastSaved || 0;
+            const cloudTs = cloudData?._lastSaved || 0;
+            if (cloudTs >= localTs) {
+              setDocData(cloudData);
+              saveToIDB(storageKey, cloudData).catch(()=>{});
+              safeLocalSet(storageKey, JSON.stringify(cloudData));
+              console.log("[DocEditor] ☁️ 클라우드 데이터 적용:", storageKey, "cloudTs:", cloudTs, "localTs:", localTs);
+              sessionCache[storageKey] = cloudData;
+            } else {
+              console.log("[DocEditor] 🛡️ 로컬 최신 유지 (localTs:", localTs, "> cloudTs:", cloudTs, ")");
+              CloudDataStore.writeDoc(storageKey, localData).catch(()=>{});
+            }
           } else {
             // 클라우드에 데이터 없음 → 로컬 데이터를 클라우드에 업로드
             const localData = await loadFromIDB(storageKey);
@@ -11257,6 +11402,8 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       console.error("[DocEditor] ❌ 잘못된 storageKey:", storageKey);
       return;
     }
+    // ★ v27j: 롤백 방지 — 저장 시점 타임스탬프 기록
+    data = { ...data, _lastSaved: Date.now() };
     const silent = options.silent || false;
     // silent 모드 = 10초 주기 저장: 로컬 + R2 클라우드 전부 저장 (데이터 유실 제로)
     // 일반 모드 = 사용자 입력 후 0.5초 디바운스: 클라우드 + 로컬 전체 저장 + UI 업데이트
@@ -11410,8 +11557,10 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
   // 탭 닫기/새로고침 시 즉시 저장 (로컬 + 클라우드 sendBeacon)
   React.useEffect(() => {
     const handler = () => {
-      const data = docDataLatestRef.current;
-      if (!data || Object.keys(data).length === 0) return;
+      const rawData = docDataLatestRef.current;
+      if (!rawData || Object.keys(rawData).length === 0) return;
+      // ★ v27j: 롤백 방지 — beforeunload 시 타임스탬프 기록
+      const data = { ...rawData, _lastSaved: Date.now() };
       // ① 로컬 즉시 저장 (IDB가 주 저장소, localStorage는 4MB 이하만)
       saveToIDB(storageKey, data).catch(()=>{});
       safeLocalSet(storageKey, JSON.stringify(data));
@@ -11775,6 +11924,29 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       }).join("");
     };
 
+    // ★ v27j: 아이템 이미지를 여러 페이지로 분할 (디자인/venue/program 아이템용)
+    const itemImgPagesHtml = (imgs, cols, headerHtml, footerHtml) => {
+      if (!imgs.length) return "";
+      const actualCols = Math.min(imgs.length, cols);
+      const maxPerPage = actualCols <= 2 ? actualCols * 2 : actualCols * 2;
+      const pages = [];
+      for (let i = 0; i < imgs.length; i += maxPerPage) pages.push(imgs.slice(i, i + maxPerPage));
+      return pages.map(pageImgs => {
+        const pCols = Math.min(pageImgs.length, actualCols);
+        const rows = Math.ceil(pageImgs.length / pCols);
+        const mh = rows <= 1 ? '75vh' : rows <= 2 ? '35vh' : '22vh';
+        return `<div class="page sec-page">
+  ${headerHtml}
+  <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
+    <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pCols},1fr)">
+      ${pageImgs.map(img => `<img src="${pdfImgSrc(img)}" style="max-height:${mh}"/>`).join("")}
+    </div></div>
+  </div>
+  ${footerHtml}
+</div>`;
+      }).join("");
+    };
+
     // ── v27e: 콘텐츠 블록 PDF 출력 ──
     const chartDataUrls = {};
     const preRenderAllCharts = () => {
@@ -11825,14 +11997,25 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     };
     const contentBlocksHtml = (blocks) => {
       if (!(blocks||[]).length) return "";
-      return (blocks||[]).map(b => {
+      return (blocks||[]).filter(b=>b.type!=="_aiGlobalOrder").map(b => {
         if (b.type === "table") return tableBlockHtml(b);
         if (b.type === "chart") return chartBlockHtml(b);
         if (b.type === "aiSummary") {
           let h = "";
-          if (b.summary) h += `<div style="margin:8px 0;font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div>`;
-          (b.tables||[]).forEach(t => { h += tableBlockHtml(t); });
-          (b.charts||[]).forEach(c => { h += chartBlockHtml(c); });
+          // ★ v27j: items 순서 반영
+          const itemsOrder = b.items?.length ? b.items : buildDefaultItems(b);
+          itemsOrder.forEach(item => {
+            if (item.type === "summary" && b.summary) {
+              const title = b.customTitle || b.fileName || "AI 분석 요약";
+              h += `<div style="margin:8px 0;padding:14px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;border-left:3px solid ${_kc}"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">${title}</div><div style="font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div></div>`;
+            } else if (item.type === "table") {
+              const t = (b.tables||[]).find(t => t.id === item.id);
+              if (t) h += tableBlockHtml(t);
+            } else if (item.type === "chart") {
+              const c = (b.charts||[]).find(c => c.id === item.id);
+              if (c) h += chartBlockHtml(c);
+            }
+          });
           return h;
         }
         return "";
@@ -11854,23 +12037,88 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
       return Math.max(lines, charLines) * 22 + 20;
     };
 
+    // ★ v27g: 페이지 본문 최대 높이
+    const PAGE_BODY_MAX_H = 520;
     // ★ v27g: aiSummary를 서브 요소로 분해 + 차트 2열 그룹핑
     const flattenBlocks = (blocks) => {
       // 1단계: 원시 요소 수집 (차트는 type으로 마킹)
       const raw = [];
+      // ★ v27k: 글로벌 AI 순서 지원 + 파일 경계 없이 병합
+      const globalOrderBlock = (blocks||[]).find(b => b.type === "_aiGlobalOrder");
+      const aiBlocks = (blocks||[]).filter(b => b.type === "aiSummary");
+      const aiBlockMap = {};
+      aiBlocks.forEach(b => { aiBlockMap[b.id] = b; });
+
+      // 글로벌 순서가 있으면 그 순서로 AI 항목 수집, 없으면 블록 순서대로
+      const collectAiItems = () => {
+        const aiItems = [];
+        if (globalOrderBlock && globalOrderBlock.order && globalOrderBlock.order.length) {
+          globalOrderBlock.order.forEach(entry => {
+            const blk = aiBlockMap[entry.blockId];
+            if (!blk) return;
+            aiItems.push({ block: blk, item: entry });
+          });
+        } else {
+          aiBlocks.forEach(b => {
+            const itemsOrder = b.items?.length ? b.items : buildDefaultItems(b);
+            itemsOrder.forEach(item => { aiItems.push({ block: b, item }); });
+          });
+        }
+        return aiItems;
+      };
+
+      let aiGroupH = 0;
+      let aiGroupHtml = "";
+      const flushAiGroup = () => { if (aiGroupHtml) { raw.push({ k:"html", h:aiGroupH, html:aiGroupHtml }); aiGroupH=0; aiGroupHtml=""; } };
+
+      const processAiItem = (b, item) => {
+        if (item.type === "summary" && b.summary) {
+          const title = b.customTitle || b.fileName || "AI 분석 요약";
+          const sHtml = `<div style="margin:8px 0;padding:14px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;border-left:3px solid ${_kc}"><div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px">${title}</div><div style="font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div></div>`;
+          const sH = estTextH(b.summary) + 30;
+          if (aiGroupH + sH > PAGE_BODY_MAX_H && aiGroupHtml) { flushAiGroup(); }
+          aiGroupH += sH;
+          aiGroupHtml += sHtml;
+        } else if (item.type === "table") {
+          const t = (b.tables||[]).find(t => t.id === item.id);
+          if (t) {
+            const tH = estTableH(t);
+            if (aiGroupH + tH <= PAGE_BODY_MAX_H) {
+              aiGroupH += tH;
+              aiGroupHtml += tableBlockHtml(t);
+            } else {
+              flushAiGroup();
+              raw.push({ k:"html", h:tH, html:tableBlockHtml(t) });
+            }
+          }
+        } else if (item.type === "chart") {
+          const c = (b.charts||[]).find(c => c.id === item.id);
+          if (c) {
+            flushAiGroup();
+            raw.push({ k: "chart", data: c });
+          }
+        }
+      };
+
+      // aiSummary 블록이 처음 나올 위치에 모든 AI 항목을 삽입
+      let aiInserted = false;
       (blocks||[]).forEach(b => {
+        if (b.type === "_aiGlobalOrder") return; // 메타데이터 블록 무시
         if (b.type === "table") {
+          flushAiGroup();
           raw.push({ k: "html", h: estTableH(b), html: tableBlockHtml(b) });
         } else if (b.type === "chart") {
+          flushAiGroup();
           raw.push({ k: "chart", data: b });
         } else if (b.type === "aiSummary") {
-          if (b.summary) {
-            raw.push({ k: "html", h: estTextH(b.summary), html: `<div style="margin:8px 0;font-size:11px;line-height:1.7;color:#374151">${b.summary.replace(/\n/g,"<br>")}</div>` });
+          if (!aiInserted) {
+            aiInserted = true;
+            const allAiItems = collectAiItems();
+            allAiItems.forEach(({ block, item }) => processAiItem(block, item));
           }
-          (b.tables||[]).forEach(t => { raw.push({ k: "html", h: estTableH(t), html: tableBlockHtml(t) }); });
-          (b.charts||[]).forEach(c => { raw.push({ k: "chart", data: c }); });
         }
       });
+      flushAiGroup();
       // 2단계: 연속 차트를 2개씩 그룹핑하여 행으로 만듦
       const items = [];
       for (let i = 0; i < raw.length; i++) {
@@ -11889,7 +12137,6 @@ function DocEditorPanel({docType, project, onUpdateProject}) {
     };
 
     // ★ v27g: 분해된 요소를 여러 페이지로 분할
-    const PAGE_BODY_MAX_H = 520;
     const contentBlocksPagesHtml = (blocks, makeHeaderHtml, footerHtml) => {
       const items = flattenBlocks(blocks);
       if (!items.length) return "";
@@ -11998,7 +12245,7 @@ tr:nth-child(even) td{background:#f8fafc}
   .page:last-child{page-break-after:avoid}
   .page.sec-page{display:grid;grid-template-rows:auto 1fr;height:210mm}
   .page.cover{height:210mm;display:flex;flex-direction:column}
-  .sec-body{overflow:visible;min-height:0}
+  .sec-body{overflow:hidden;min-height:0}
   .img-page{height:210mm;overflow:hidden;box-sizing:border-box;display:flex;align-items:center;justify-content:center}
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
@@ -12093,16 +12340,10 @@ ${secEnabled("venue") ? (ve.venueItems||[]).map((vItem,vIdx)=>{
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (vItem.contentOrder||"contentFirst") === "contentFirst";
   const vCbPagesHtml = (vItem.contentBlocks||[]).length ? contentBlocksPagesHtml(vItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`) : "";
-  const vImgPageHtml = vImgs.length ? `
-<div class="page sec-page">
-  <div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>
-  <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
-    <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
-      ${vImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${vMaxH}"/>`).join("")}
-    </div></div>
-  </div>
-  <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
-</div>` : "";
+  // ★ v27j: 이미지 여러 페이지 분할
+  const vImgPageHtml = itemImgPagesHtml(vImgs, vCols,
+    `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`,
+    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`);
 
   if (needsSplit) {
     // 텍스트 페이지 + (contentBlocks or 이미지) 분리
@@ -12119,18 +12360,26 @@ ${isContentFirst ? vCbPagesHtml + vImgPageHtml : vImgPageHtml + vCbPagesHtml}`;
 
   // 기본: 한 페이지에 텍스트 + 이미지 (contentBlocks는 별도 페이지)
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
+  // ★ v27k: 비분할 모드에서도 이미지 2행 초과 시 페이지 분할
+  const vMaxInline = vActualCols * 2;
+  const vInlineImgs = vImgs.length > vMaxInline ? vImgs.slice(0, vMaxInline) : vImgs;
+  const vOverflowImgs = vImgs.length > vMaxInline ? vImgs.slice(vMaxInline) : [];
+  const vInlineMaxH = vInlineImgs.length ? (Math.ceil(vInlineImgs.length / vActualCols) <= 1 ? (vHasDesc ? '55vh' : '70vh') : (vHasDesc ? '26vh' : '33vh')) : '55vh';
+  const vOverflowPageHtml = vOverflowImgs.length ? itemImgPagesHtml(vOverflowImgs, vCols,
+    `<div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>`,
+    `<div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>`) : "";
   return `
 <div class="page sec-page">
   <div class="sec-header"><div class="sec-num">${secNum("venue")}</div><div class="sec-title-block"><div class="sec-title">${vItem.itemName||"Venue Detail"}</div><div class="sec-sub">장소 상세 | VENUE DETAIL</div></div></div>
   <div class="sec-body">
     ${vItem.description?`<div class="box"><div class="box-title">설명</div><div class="box-val">${vItem.description}</div></div>`:""}
-    ${vImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
-      ${vImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${vMaxH};${fitStyle}width:100%"/>`).join("")}
+    ${vInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${vActualCols},1fr)">
+      ${vInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${vInlineMaxH};${fitStyle}width:100%"/>`).join("")}
     </div></div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${vItem.itemName||""}</div>
 </div>
-${vCbPagesHtml}`;
+${vOverflowPageHtml}${vCbPagesHtml}`;
 }).join("") : ""}
 
 ${secEnabled("design") ? `<!-- 03 DESIGN -->
@@ -12187,16 +12436,10 @@ ${secEnabled("design") ? (de.designItems||[]).map((dItem,dIdx)=>{
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (dItem.contentOrder||"contentFirst") === "contentFirst";
   const dCbPagesHtml = (dItem.contentBlocks||[]).length ? contentBlocksPagesHtml(dItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`) : "";
-  const dImgPageHtml = dImgs.length ? `
-<div class="page sec-page">
-  <div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>
-  <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
-    <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
-      ${dImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${dMaxH}"/>`).join("")}
-    </div></div>
-  </div>
-  <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
-</div>` : "";
+  // ★ v27j: 이미지 여러 페이지 분할
+  const dImgPageHtml = itemImgPagesHtml(dImgs, dCols,
+    `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`,
+    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`);
 
   if (needsSplit) {
     return `
@@ -12212,19 +12455,27 @@ ${isContentFirst ? dCbPagesHtml + dImgPageHtml : dImgPageHtml + dCbPagesHtml}`;
   }
 
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
+  // ★ v27k: 비분할 모드에서도 이미지 2행 초과 시 페이지 분할
+  const dMaxInline = dActualCols * 2;
+  const dInlineImgs = dImgs.length > dMaxInline ? dImgs.slice(0, dMaxInline) : dImgs;
+  const dOverflowImgs = dImgs.length > dMaxInline ? dImgs.slice(dMaxInline) : [];
+  const dInlineMaxH = dInlineImgs.length ? (Math.ceil(dInlineImgs.length / dActualCols) <= 1 ? '42vh' : '20vh') : '42vh';
+  const dOverflowPageHtml = dOverflowImgs.length ? itemImgPagesHtml(dOverflowImgs, dCols,
+    `<div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>`,
+    `<div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>`) : "";
   return `
 <div class="page sec-page">
   <div class="sec-header"><div class="sec-num">${secNum("design")}</div><div class="sec-title-block"><div class="sec-title">${dItem.itemName||"Design Item"}</div><div class="sec-sub">${dItem.category||"디자인"} | DESIGN ITEM ${dIdx+1}</div></div></div>
   <div class="sec-body">
     ${dInfoGrid}
     ${dItem.notes?`<div class="box"><div class="box-title">메모</div><div class="box-val">${dItem.notes}</div></div>`:""}
-    ${dImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
-      ${dImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${dMaxH};${fitStyle}width:100%"/>`).join("")}
+    ${dInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${dActualCols},1fr)">
+      ${dInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${dInlineMaxH};${fitStyle}width:100%"/>`).join("")}
     </div></div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${dItem.itemName||""}</div>
 </div>
-${dCbPagesHtml}`;
+${dOverflowPageHtml}${dCbPagesHtml}`;
 }).join("") : ""}
 
 ${secEnabled("program") ? `<!-- 04 PROGRAM -->
@@ -12300,16 +12551,10 @@ ${secEnabled("program") ? (pr.programItems||[]).map((pItem,pIdx)=>{
   // ★ v27g: contentOrder + contentBlocks 페이지 분리
   const isContentFirst = (pItem.contentOrder||"contentFirst") === "contentFirst";
   const pCbPagesHtml = (pItem.contentBlocks||[]).length ? contentBlocksPagesHtml(pItem.contentBlocks, (cont) => `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">첨부 콘텐츠${cont?" (continued)":""}</div></div></div>`, `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`) : "";
-  const pImgPageHtml = pImgs.length ? `
-<div class="page sec-page">
-  <div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>
-  <div class="sec-body" style="display:flex;align-items:center;justify-content:center">
-    <div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
-      ${pImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pMaxH}"/>`).join("")}
-    </div></div>
-  </div>
-  <div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>
-</div>` : "";
+  // ★ v27j: 이미지 여러 페이지 분할
+  const pImgPageHtml = itemImgPagesHtml(pImgs, pCols,
+    `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`,
+    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`);
 
   if (needsSplit) {
     return `
@@ -12324,18 +12569,26 @@ ${isContentFirst ? pCbPagesHtml + pImgPageHtml : pImgPageHtml + pCbPagesHtml}`;
   }
 
   const fitStyle = userLayout === "fit" ? 'object-fit:contain;' : '';
+  // ★ v27k: 비분할 모드에서도 이미지 2행 초과 시 페이지 분할
+  const pMaxInline = pActualCols * 2;
+  const pInlineImgs = pImgs.length > pMaxInline ? pImgs.slice(0, pMaxInline) : pImgs;
+  const pOverflowImgs = pImgs.length > pMaxInline ? pImgs.slice(pMaxInline) : [];
+  const pInlineMaxH = pInlineImgs.length ? (Math.ceil(pInlineImgs.length / pActualCols) <= 1 ? (pHasNotes ? '48vh' : '62vh') : '26vh') : '48vh';
+  const pOverflowPageHtml = pOverflowImgs.length ? itemImgPagesHtml(pOverflowImgs, pCols,
+    `<div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>`,
+    `<div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>`) : "";
   return `
 <div class="page sec-page">
   <div class="sec-header"><div class="sec-num">${secNum("program")}</div><div class="sec-title-block"><div class="sec-title">${pItem.itemName||"Program"}</div><div class="sec-sub">${pItem.timeSlot||""} | PROGRAM DETAIL</div></div></div>
   <div class="sec-body">
     ${pItem.notes?`<div class="box"><div class="box-title">운영 메모</div><div class="box-val">${pItem.notes}</div></div>`:""}
-    ${pImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
-      ${pImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pMaxH};${fitStyle}width:100%"/>`).join("")}
+    ${pInlineImgs.length ? `<div class="inline-imgs"><div class="img-grid" style="grid-template-columns:repeat(${pActualCols},1fr)">
+      ${pInlineImgs.map(img=>`<img src="${pdfImgSrc(img)}" style="max-height:${pInlineMaxH};${fitStyle}width:100%"/>`).join("")}
     </div></div>` : ""}
   </div>
   <div class="footer">${p.name||""} ${docTitle} · ${pItem.itemName||""}</div>
 </div>
-${pCbPagesHtml}`;
+${pOverflowPageHtml}${pCbPagesHtml}`;
 }).join("") : ""}
 
 ${secEnabled("operation") ? `<!-- 05 OPERATION -->
@@ -12546,7 +12799,7 @@ ${secEnabled("timeline") ? (()=>{
 
     // ── v27e: PPT 콘텐츠 블록 출력 ──
     const pmContentBlocks = (pm, secData) => {
-      const blocks = secData?.contentBlocks || [];
+      const blocks = (secData?.contentBlocks || []).filter(b=>b.type!=="_aiGlobalOrder");
       if (!blocks.length) return;
       blocks.forEach(b => {
         if (b.type === "table" && (b.headers||[]).length) {
